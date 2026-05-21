@@ -1,0 +1,2188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MongoDB JSON Formatter</title>
+<style>
+/* ========== CSS Variables ========== */
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-hover: #1c2128;
+  --border: #30363d;
+  --border-focus: #00ed64;
+  --text: #c9d1d9;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --primary: #00ed64;
+  --primary-hover: #00d452;
+  --primary-bg: rgba(0, 237, 100, 0.1);
+  --error: #f85149;
+  --error-bg: rgba(248, 81, 73, 0.1);
+  --warning: #d29922;
+  --warning-bg: rgba(210, 153, 34, 0.1);
+  --success: #3fb950;
+  --hl-key: #79c0ff;
+  --hl-string: #a5d6ff;
+  --hl-number: #79c0ff;
+  --hl-keyword: #ff7b72;
+  --hl-mongo: #d2a8ff;
+  --hl-bracket: #c9d1d9;
+  --hl-colon: #8b949e;
+  --radius: 8px;
+  --radius-sm: 4px;
+  --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'Courier New', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  --transition: 150ms ease;
+  --compare-center-gap: 112px;
+}
+
+[data-theme="light"] {
+  --bg: #ffffff;
+  --surface: #f6f8fa;
+  --surface-hover: #eef0f3;
+  --border: #d0d7de;
+  --border-focus: #00703c;
+  --text: #24292f;
+  --text-secondary: #656d76;
+  --text-muted: #8c959f;
+  --primary: #00703c;
+  --primary-hover: #005a30;
+  --primary-bg: rgba(0, 112, 60, 0.08);
+  --error: #cf222e;
+  --error-bg: rgba(207, 34, 46, 0.08);
+  --warning: #9a6700;
+  --warning-bg: rgba(154, 103, 0, 0.08);
+  --success: #1a7f37;
+  --hl-key: #0550ae;
+  --hl-string: #0a3069;
+  --hl-number: #0550ae;
+  --hl-keyword: #cf222e;
+  --hl-mongo: #8250df;
+  --hl-bracket: #24292f;
+  --hl-colon: #656d76;
+}
+
+/* ========== Reset & Base ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  transition: background var(--transition), color var(--transition);
+}
+
+/* ========== Layout ========== */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 100vh;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.header-left { display: flex; align-items: center; gap: 12px; }
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--primary);
+  letter-spacing: -0.3px;
+}
+
+.logo svg { flex-shrink: 0; }
+
+.header-actions { display: flex; align-items: center; gap: 8px; }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition);
+  user-select: none;
+}
+.btn:hover { background: var(--surface-hover); border-color: var(--text-secondary); }
+.btn:active { transform: scale(0.97); }
+.btn-primary {
+  color: #000;
+  background: var(--primary);
+  border-color: var(--primary);
+  font-weight: 600;
+}
+.btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.btn-icon {
+  width: 32px; height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  border-radius: var(--radius-sm);
+}
+
+/* Main editor area */
+.editor-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  transition: border-color var(--transition);
+}
+
+.panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+  transition: flex 0.3s ease;
+}
+
+.input-panel.collapsed {
+  flex: 0 0 auto;
+  min-width: auto;
+}
+.input-panel.collapsed .input-area,
+.input-panel.collapsed .error-display {
+  display: none;
+}
+.collapse-btn-collapsed { transform: rotate(180deg); }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 4px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.panel-header span {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+.panel-header .btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.panel-header .btn-icon {
+  width: auto; height: auto;
+  padding: 4px 8px;
+  font-size: 14px;
+}
+
+.panel-divider {
+  width: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background var(--transition);
+}
+
+/* Textarea */
+.input-area {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+#input {
+  flex: 1;
+  width: 100%;
+  padding: 16px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+  transition: background var(--transition), color var(--transition);
+}
+
+#input::placeholder { color: var(--text-muted); }
+
+#input:focus { box-shadow: inset 0 0 0 1px var(--border-focus); }
+
+/* Compare mode */
+.monaco-diff-container {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg);
+}
+.diff-editor-host {
+  width: 100%;
+  height: 100%;
+}
+.editor-container.diff-mode .panel,
+.editor-container.diff-mode .panel-divider {
+  display: none;
+}
+.editor-container.diff-mode .monaco-diff-container {
+  display: block;
+}
+.monaco-diff-container .monaco-diff-editor.side-by-side .editor.original {
+  width: calc(50% - (var(--compare-center-gap) / 2)) !important;
+}
+.monaco-diff-container .monaco-diff-editor.side-by-side .editor.modified {
+  left: calc(50% + (var(--compare-center-gap) / 2)) !important;
+  width: calc(50% - (var(--compare-center-gap) / 2)) !important;
+}
+.compare-center-gutter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--compare-center-gap);
+  display: none;
+  align-items: stretch;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 8;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.compare-center-gutter.visible {
+  display: flex;
+}
+.compare-center-lines {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-muted);
+  user-select: none;
+}
+.compare-center-lines-left {
+  padding-right: 12px;
+  text-align: right;
+  border-right: 1px solid var(--border);
+}
+.compare-center-lines-right {
+  padding-left: 12px;
+  text-align: left;
+}
+.compare-center-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22px;
+  white-space: nowrap;
+}
+.monaco-editor .compare-field-left-only {
+  background: rgba(248, 81, 73, 0.22);
+  box-shadow: inset 3px 0 0 var(--error);
+}
+.monaco-editor .compare-field-right-only {
+  background: rgba(63, 185, 80, 0.2);
+  box-shadow: inset 3px 0 0 var(--success);
+}
+.compare-loading,
+.compare-loading-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+.compare-loading-error {
+  color: var(--error);
+}
+.diff-btn-active {
+  color: var(--primary) !important;
+  border-color: var(--primary) !important;
+  background: var(--primary-bg) !important;
+}
+
+/* Output */
+.output-wrapper {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg);
+  transition: background var(--transition);
+  position: relative;
+}
+
+#output {
+  margin: 0;
+  padding: 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+  white-space: pre;
+  min-height: 100%;
+}
+
+/* Editable textarea (hidden in view mode) */
+.output-edit {
+  display: none;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  padding: 16px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+  transition: background var(--transition), color var(--transition);
+}
+.output-edit::placeholder { color: var(--text-muted); }
+.output-edit:focus { box-shadow: inset 0 0 0 1px var(--border-focus); }
+
+/* Edit mode toggle */
+.output-panel .output-view { display: block; }
+.output-panel .output-edit { display: none; }
+.output-panel.edit-mode .output-view { display: none; }
+.output-panel.edit-mode .output-edit { display: block; }
+.output-panel.edit-mode #editBtn { color: var(--primary); border-color: var(--primary); }
+
+.output-placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+  user-select: none;
+}
+
+.output-code { counter-reset: line; display: block; }
+
+.output-line {
+  counter-increment: line;
+  display: flex;
+  min-height: 1.65em;
+}
+
+.output-line::before {
+  content: counter(line);
+  display: inline-block;
+  width: 36px;
+  min-width: 36px;
+  padding-right: 12px;
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.output-line .line-content { flex: 1; min-width: 0; }
+
+/* Syntax highlighting */
+.hl-key    { color: var(--hl-key); }
+.hl-string { color: var(--hl-string); }
+.hl-number { color: var(--hl-number); }
+.hl-keyword{ color: var(--hl-keyword); }
+.hl-mongo  { color: var(--hl-mongo); }
+.hl-bracket{ color: var(--hl-bracket); font-weight: 600; }
+
+/* Error display */
+.error-display {
+  display: none;
+  padding: 8px 16px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--error);
+  background: var(--error-bg);
+  border-top: 1px solid var(--error);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.error-display.visible { display: block; }
+
+/* Status bar */
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--surface);
+  flex-shrink: 0;
+  transition: background var(--transition), color var(--transition);
+  gap: 16px;
+}
+
+.status-left, .status-right { display: flex; align-items: center; gap: 12px; }
+
+.status-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.status-dot.success { background: var(--success); }
+.status-dot.error   { background: var(--error); }
+.status-dot.warn    { background: var(--warning); }
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  background: #333;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.toast.show { opacity: 1; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Responsive */
+@media (max-width: 768px) {
+  :root { --compare-center-gap: 84px; }
+  .editor-container { flex-direction: column; }
+  .panel-divider { width: 100%; height: 1px; }
+  .panel { flex: none; height: 50%; }
+  .header { padding: 10px 12px; }
+  .panel-header { padding: 6px 12px; }
+  #input, #output { padding: 12px; font-size: 12px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <span class="logo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15l-4-4 1.41-1.41L11 14.17l5.59-5.59L18 10l-7 7z"/></svg>
+        MongoDB JSON
+      </span>
+      <span style="font-size:11px;color:var(--text-muted)">Formatter</span>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-icon" id="themeBtn" title="切换主题" aria-label="切换主题">🌙</button>
+      <button class="btn btn-primary" id="formatBtn" title="格式化输入内容">✨ 格式化</button>
+      <button class="btn" id="sampleBtn" title="切换到格式化模式">格式化</button>
+      <button class="btn" id="diffBtn">🔍 对比</button>
+    </div>
+  </header>
+
+  <!-- Editor -->
+  <div class="editor-container">
+    <!-- Input Panel -->
+    <div class="panel input-panel">
+      <div class="panel-header">
+        <span>INPUT</span>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-icon" id="collapseInputBtn" title="折叠输入面板">◀</button>
+          <button class="btn" id="clearBtn">清除</button>
+          <button class="btn" id="pasteBtn">📋 粘贴</button>
+        </div>
+      </div>
+      <div class="input-area">
+        <textarea id="input" placeholder="在此输入或粘贴 MongoDB JSON...&#10;支持: ObjectId, ISODate, NumberLong, BinData 等类型" spellcheck="false"></textarea>
+      </div>
+      <div class="error-display" id="errorDisplay"></div>
+    </div>
+
+    <div class="panel-divider"></div>
+
+    <!-- Output Panel -->
+    <div class="panel output-panel">
+      <div class="panel-header">
+        <span>OUTPUT</span>
+        <div style="display:flex;gap:6px;">
+          <button class="btn" id="editBtn">✏️ 编辑</button>
+          <button class="btn" id="copyBtn">📋 复制</button>
+          <button class="btn" id="minifyBtn">收起</button>
+        </div>
+      </div>
+      <div class="output-wrapper" id="outputWrapper">
+        <pre id="output" class="output-view"><code class="output-code"><span class="output-placeholder">格式化后的 JSON 将显示在这里</span></code></pre>
+        <textarea id="outputTextarea" class="output-edit" spellcheck="false" placeholder="格式化后的 JSON 将显示在这里"></textarea>
+      </div>
+    </div>
+
+    <div class="monaco-diff-container">
+      <div class="diff-editor-host" id="diffEditorContainer"></div>
+      <div class="compare-center-gutter" id="compareCenterGutter" aria-hidden="true">
+        <div class="compare-center-lines compare-center-lines-left" id="compareCenterLinesLeft"></div>
+        <div class="compare-center-lines compare-center-lines-right" id="compareCenterLinesRight"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status Bar -->
+  <footer class="status-bar">
+    <div class="status-left">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">就绪</span>
+    </div>
+    <div class="status-right">
+      <span id="charCount">字符: 0</span>
+      <span id="lineCount">行数: 0</span>
+      <span id="depthInfo"></span>
+    </div>
+  </footer>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ==================== CONSTANTS ====================
+  const MONGO_FUNCTIONS = new Set([
+    'ObjectId', 'ISODate', 'NumberLong', 'NumberInt', 'NumberDecimal',
+    'BinData', 'Timestamp', 'Date', 'RegExp', 'UUID', 'Code', 'DBRef'
+  ]);
+
+  const MONGO_KEYWORDS = new Set(['MinKey', 'MaxKey']);
+
+  const LITERALS = new Set(['true', 'false', 'null', 'undefined', 'NaN', 'Infinity']);
+  const MONACO_BASE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min';
+
+  // ==================== TOKENIZER ====================
+  function tokenize(input) {
+    const tokens = [];
+    let i = 0;
+    const len = input.length;
+
+    while (i < len) {
+      const ch = input[i];
+      const startPos = i;
+
+      // Whitespace
+      if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+        i++;
+        continue;
+      }
+
+      // Single-line comment //
+      if (ch === '/' && input[i + 1] === '/') {
+        while (i < len && input[i] !== '\n') i++;
+        continue;
+      }
+
+      // Block comment /* */
+      if (ch === '/' && input[i + 1] === '*') {
+        i += 2;
+        while (i < len - 1 && !(input[i] === '*' && input[i + 1] === '/')) i++;
+        if (i < len) i += 2;
+        continue;
+      }
+
+      // Structural tokens
+      if ('{}[]:,'.includes(ch)) {
+        tokens.push({ type: ch, pos: startPos });
+        i++;
+        continue;
+      }
+
+      // String (double-quoted)
+      if (ch === '"') {
+        i++; // skip opening quote
+        let str = '';
+        while (i < len) {
+          if (input[i] === '\\' && i + 1 < len) {
+            str += input[i] + input[i + 1];
+            i += 2;
+          } else if (input[i] === '"') {
+            i++; // skip closing quote
+            break;
+          } else {
+            str += input[i];
+            i++;
+          }
+        }
+        tokens.push({ type: 'STRING', value: str, pos: startPos });
+        continue;
+      }
+
+      // String (single-quoted) — non-standard but common in MongoDB shell
+      if (ch === "'") {
+        i++;
+        let str = '';
+        while (i < len) {
+          if (input[i] === '\\' && i + 1 < len) {
+            str += input[i] + input[i + 1];
+            i += 2;
+          } else if (input[i] === "'") {
+            i++;
+            break;
+          } else {
+            str += input[i];
+            i++;
+          }
+        }
+        tokens.push({ type: 'STRING', value: str, pos: startPos });
+        continue;
+      }
+
+      // Number (including negative, float, scientific notation)
+      if (ch === '-' && i + 1 < len && /[0-9]/.test(input[i + 1])) {
+        let num = '-';
+        i++;
+        while (i < len && /[0-9]/.test(input[i])) { num += input[i]; i++; }
+        if (i < len && input[i] === '.') {
+          num += '.';
+          i++;
+          while (i < len && /[0-9]/.test(input[i])) { num += input[i]; i++; }
+        }
+        if (i < len && (input[i] === 'e' || input[i] === 'E')) {
+          num += input[i]; i++;
+          if (i < len && (input[i] === '+' || input[i] === '-')) { num += input[i]; i++; }
+          while (i < len && /[0-9]/.test(input[i])) { num += input[i]; i++; }
+        }
+        tokens.push({ type: 'NUMBER', value: num, pos: startPos });
+        continue;
+      }
+
+      if (ch >= '0' && ch <= '9') {
+        let num = '';
+        while (i < len && /[0-9]/.test(input[i])) { num += input[i]; i++; }
+        if (i < len && input[i] === '.') {
+          num += '.';
+          i++;
+          while (i < len && /[0-9]/.test(input[i])) { num += input[i]; i++; }
+        }
+        if (i < len && (input[i] === 'e' || input[i] === 'E')) {
+          num += input[i]; i++;
+          if (i < len && (input[i] === '+' || input[i] === '-')) { num += input[i]; i++; }
+          while (i < len && /[0-9]/.test(input[i])) { num += input[i]; i++; }
+        }
+        tokens.push({ type: 'NUMBER', value: num, pos: startPos });
+        continue;
+      }
+
+      // Word tokens: identifiers, keywords, MongoDB types
+      if (/[a-zA-Z_$]/.test(ch)) {
+        let word = '';
+        while (i < len && /[a-zA-Z0-9_$]/.test(input[i])) { word += input[i]; i++; }
+
+        // Check for `new Type(...)` pattern
+        if (word === 'new') {
+          while (i < len && /\s/.test(input[i])) i++;
+          let typeWord = '';
+          const typeStart = i;
+          while (i < len && /[a-zA-Z_]/.test(input[i])) { typeWord += input[i]; i++; }
+          while (i < len && /\s/.test(input[i])) i++;
+          if (i < len && input[i] === '(') {
+            // Consume balanced parens
+            i++; // skip (
+            let args = '';
+            let depth = 1;
+            while (i < len && depth > 0) {
+              if (input[i] === '(') depth++;
+              else if (input[i] === ')') depth--;
+              if (depth > 0) args += input[i];
+              i++;
+            }
+            tokens.push({ type: 'MONGO', func: 'new ' + typeWord, args: args.trim(), pos: startPos });
+          } else {
+            tokens.push({ type: 'IDENT', value: word, pos: startPos });
+            i = typeStart; // backtrack
+          }
+          continue;
+        }
+
+        // MongoDB function types: ObjectId(...), ISODate(...), etc.
+        if (MONGO_FUNCTIONS.has(word)) {
+          while (i < len && /\s/.test(input[i])) i++;
+          if (i < len && input[i] === '(') {
+            i++; // skip (
+            let args = '';
+            let depth = 1;
+            while (i < len && depth > 0) {
+              if (input[i] === '(') depth++;
+              else if (input[i] === ')') depth--;
+              if (depth > 0) args += input[i];
+              i++;
+            }
+            tokens.push({ type: 'MONGO', func: word, args: args.trim(), pos: startPos });
+          } else {
+            tokens.push({ type: 'IDENT', value: word, pos: startPos });
+          }
+          continue;
+        }
+
+        // MongoDB keyword types: MinKey, MaxKey (no parens)
+        if (MONGO_KEYWORDS.has(word)) {
+          tokens.push({ type: 'MONGO', func: word, args: null, pos: startPos });
+          continue;
+        }
+
+        // Literals: true, false, null, undefined, NaN, Infinity
+        if (LITERALS.has(word)) {
+          tokens.push({ type: 'LITERAL', value: word, pos: startPos });
+          continue;
+        }
+
+        // Regular identifier (unquoted key etc.)
+        tokens.push({ type: 'IDENT', value: word, pos: startPos });
+        continue;
+      }
+
+      // Skip unknown character
+      i++;
+    }
+
+    return tokens;
+  }
+
+  // ==================== PARSER ====================
+  function parse(tokens) {
+    let pos = 0;
+
+    function peek() { return pos < tokens.length ? tokens[pos] : null; }
+    function next() {
+      if (pos >= tokens.length) throw errorAt('Unexpected end of input', null);
+      return tokens[pos++];
+    }
+
+    function errorAt(msg, token) {
+      const p = token ? token.pos : (pos < tokens.length ? tokens[pos].pos : -1);
+      const err = new Error(msg);
+      err.position = p;
+      return err;
+    }
+
+    function expect(type) {
+      const t = next();
+      if (!t || t.type !== type) {
+        throw errorAt(
+          `Expected ${type} but got ${t ? "'" + t.type + "'" : 'EOF'}`,
+          t
+        );
+      }
+      return t;
+    }
+
+    function parseValue() {
+      const t = peek();
+      if (!t) throw errorAt('Unexpected end of input', null);
+
+      switch (t.type) {
+        case '{': return parseObject();
+        case '[': return parseArray();
+        case 'STRING': next(); return { type: 'string', value: t.value };
+        case 'NUMBER': next(); return { type: 'number', value: t.value };
+        case 'LITERAL': next(); return { type: 'literal', value: t.value };
+        case 'MONGO': next(); return { type: 'mongo', func: t.func, args: t.args };
+        case 'IDENT':
+          next();
+          // Treat unquoted identifiers as strings (lenient mode)
+          return { type: 'string', value: t.value };
+        default:
+          throw errorAt(`Unexpected token '${t.type}'`, t);
+      }
+    }
+
+    function parseObject() {
+      expect('{');
+      const obj = { type: 'object', entries: [] };
+
+      let t = peek();
+      if (t && t.type === '}') { next(); return obj; }
+
+      while (true) {
+        // Parse key: can be STRING or IDENT (lenient)
+        t = peek();
+        let key;
+        if (t && (t.type === 'STRING' || t.type === 'IDENT')) {
+          key = t.value;
+          next();
+        } else {
+          throw errorAt(`Expected property key but got ${t ? "'" + t.type + "'" : 'EOF'}`, t);
+        }
+
+        // Parse colon
+        t = peek();
+        if (t && t.type === ':') {
+          next();
+        } else {
+          throw errorAt(`Expected ':' after key '${key}' but got ${t ? "'" + t.type + "'" : 'EOF'}`, t);
+        }
+
+        // Parse value
+        const value = parseValue();
+        obj.entries.push({ key, value });
+
+        // Comma or end of object
+        t = peek();
+        if (t && t.type === ',') {
+          next();
+          t = peek();
+          if (t && t.type === '}') { next(); break; } // trailing comma OK
+        } else if (t && t.type === '}') {
+          next();
+          break;
+        } else {
+          throw errorAt(`Expected ',' or '}' but got ${t ? "'" + t.type + "'" : 'EOF'}`, t);
+        }
+      }
+
+      return obj;
+    }
+
+    function parseArray() {
+      expect('[');
+      const arr = { type: 'array', items: [] };
+
+      let t = peek();
+      if (t && t.type === ']') { next(); return arr; }
+
+      while (true) {
+        arr.items.push(parseValue());
+
+        t = peek();
+        if (t && t.type === ',') {
+          next();
+          t = peek();
+          if (t && t.type === ']') { next(); break; } // trailing comma OK
+        } else if (t && t.type === ']') {
+          next();
+          break;
+        } else {
+          throw errorAt(`Expected ',' or ']' but got ${t ? "'" + t.type + "'" : 'EOF'}`, t);
+        }
+      }
+
+      return arr;
+    }
+
+    let ast;
+    try {
+      ast = parseValue();
+    } catch (e) {
+      // Try parsing as top-level array or object
+      throw e;
+    }
+
+    // Check for trailing garbage
+    if (pos < tokens.length) {
+      const leftover = tokens.slice(pos).map(t => t.type === 'STRING' ? `"${t.value}"` : t.value || t.type).join(' ');
+      throw errorAt(`Unexpected tokens after end of JSON: ${leftover}`, tokens[pos]);
+    }
+
+    return ast;
+  }
+
+  // ==================== FORMATTER ====================
+  function formatAST(node, indent, indentSize) {
+    if (indent === undefined) indent = 0;
+    if (indentSize === undefined) indentSize = 2;
+    const pad = ' '.repeat(indent);
+    const inner = ' '.repeat(indent + indentSize);
+
+    switch (node.type) {
+      case 'object': {
+        const entries = node.entries;
+        if (entries.length === 0) return pad + '{}';
+        const parts = entries.map(e => {
+          var valFormatted = formatAST(e.value, indent + indentSize, indentSize);
+          // trimStart strips the pad that formatAST prepends, then inner re-adds the correct level
+          return inner + '"' + e.key + '" : ' + valFormatted.trimStart();
+        });
+        return pad + '{\n' + parts.join(',\n') + '\n' + pad + '}';
+      }
+
+      case 'array': {
+        const items = node.items;
+        if (items.length === 0) return pad + '[]';
+        const parts = items.map(item => formatAST(item, indent + indentSize, indentSize));
+        const allSimple = items.every(it => {
+          return it.type === 'string' || it.type === 'number' || it.type === 'literal' || it.type === 'mongo' ||
+                 (it.type === 'object' && it.entries.length === 0) ||
+                 (it.type === 'array' && it.items.length === 0);
+        });
+        if (allSimple) {
+          return pad + '[ ' + parts.map(p => p.trim()).join(', ') + ' ]';
+        }
+        // Non-simple array: each part already carries its pad (via formatAST),
+        // so we join them as-is — no extra indent on the first line of each item.
+        return pad + '[\n' + parts.join(',\n') + '\n' + pad + ']';
+      }
+
+      case 'string':
+        return pad + '"' + node.value + '"';
+
+      case 'number':
+        return pad + node.value;
+
+      case 'literal':
+        return pad + node.value;
+
+      case 'mongo':
+        if (node.args !== null && node.args !== undefined) {
+          return pad + node.func + '(' + node.args + ')';
+        }
+        return pad + node.func;
+
+      default:
+        return pad + JSON.stringify(node);
+    }
+  }
+
+  function formatASTCompact(node) {
+    switch (node.type) {
+      case 'object': {
+        const entries = node.entries;
+        if (entries.length === 0) return '{}';
+        const parts = entries.map(e => '"' + e.key + '":' + formatASTCompact(e.value));
+        return '{' + parts.join(',') + '}';
+      }
+      case 'array': {
+        const items = node.items;
+        if (items.length === 0) return '[]';
+        return '[' + items.map(it => formatASTCompact(it)).join(',') + ']';
+      }
+      case 'string': return '"' + node.value + '"';
+      case 'number': return node.value;
+      case 'literal': return node.value;
+      case 'mongo':
+        if (node.args !== null && node.args !== undefined) return node.func + '(' + node.args + ')';
+        return node.func;
+      default: return JSON.stringify(node);
+    }
+  }
+
+  // ==================== SYNTAX HIGHLIGHTING ====================
+  function highlightText(text) {
+    // Escape HTML entities in raw text first
+    var html = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Step 1: All double-quoted strings (applied to raw text BEFORE any HTML tags exist)
+    html = html.replace(
+      /"((?:[^"\\]|\\.)*)"/g,
+      '<span class="hl-string">"$1"</span>'
+    );
+
+    // Step 2: Keys — override hl-string with hl-key when string is followed by colon
+    html = html.replace(
+      /<span class="hl-string">"((?:[^"\\]|\\.)*)"<\/span>(\s*:\s)/g,
+      '<span class="hl-key">"$1"</span>$2'
+    );
+
+    // Step 3: MongoDB functions (after strings, so it matches ONLY in plain-text segments)
+    html = html.replace(
+      /\b(ObjectId|ISODate|NumberLong|NumberInt|NumberDecimal|BinData|Timestamp|RegExp|UUID|Code|DBRef|new\s+Date|MinKey|MaxKey)\b/g,
+      '<span class="hl-mongo">$1</span>'
+    );
+
+    // Step 4: Numbers + literals — only inside text segments NOT inside string spans
+    var parts = html.split(/(<[^>]+>)/g);
+    var result = '';
+    var inStringSpan = 0; // depth counter for string spans (handles potential nesting)
+    for (var i = 0; i < parts.length; i++) {
+      if (i % 2 === 0) {
+        var segment = parts[i];
+        if (inStringSpan === 0) {
+          // Numbers (integers, floats, scientific notation)
+          segment = segment.replace(
+            /(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+            '<span class="hl-number">$1</span>'
+          );
+          // Literals
+          segment = segment.replace(
+            /\b(true|false|null|undefined)\b/g,
+            '<span class="hl-keyword">$1</span>'
+          );
+        }
+        result += segment;
+      } else {
+        // Track string span depth
+        if (/^<span\s+class="hl-string"/.test(parts[i]) || /^<span\s+class='hl-string'/.test(parts[i])) {
+          inStringSpan++;
+        } else if (/^<\/span>/.test(parts[i]) && inStringSpan > 0) {
+          inStringSpan--;
+        }
+        result += parts[i];
+      }
+    }
+
+    // Step 5: Brackets (safe — { } [ ] rarely appear inside HTML tags)
+    result = result.replace(/([{}[\]])/g, '<span class="hl-bracket">$1</span>');
+
+    return result;
+  }
+
+  function renderOutput(formattedText) {
+    const lines = formattedText.split('\n');
+    const htmlLines = lines.map(line => {
+      const hl = highlightText(line);
+      return '<div class="output-line"><span class="line-content">' + (hl || '&nbsp;') + '</span></div>';
+    });
+    return '<code class="output-code">' + htmlLines.join('') + '</code>';
+  }
+
+  // ==================== COMPUTE DEPTH ====================
+  function computeMaxDepth(node) {
+    if (!node) return 0;
+    switch (node.type) {
+      case 'object':
+        if (node.entries.length === 0) return 1;
+        return 1 + Math.max(...node.entries.map(e => computeMaxDepth(e.value)));
+      case 'array':
+        if (node.items.length === 0) return 1;
+        return 1 + Math.max(...node.items.map(computeMaxDepth));
+      default:
+        return 0;
+    }
+  }
+
+  // ==================== MAIN FORMAT FUNCTION ====================
+  function formatJSON(input, compact) {
+    if (!input || !input.trim()) {
+      return { error: '输入为空' };
+    }
+
+    let tokens;
+    try {
+      tokens = tokenize(input);
+    } catch (e) {
+      return { error: '词法分析失败: ' + e.message, position: e.position };
+    }
+
+    let ast;
+    try {
+      ast = parse(tokens);
+    } catch (e) {
+      return { error: e.message, position: e.position };
+    }
+
+    let formatted;
+    if (compact) {
+      formatted = formatASTCompact(ast);
+    } else {
+      formatted = formatAST(ast, 0, 2);
+    }
+
+    const lineCount = formatted.split('\n').length;
+    const charCount = formatted.length;
+    const maxDepth = computeMaxDepth(ast);
+
+    return { formatted, ast, lineCount, charCount, maxDepth };
+  }
+
+  function sortASTNode(node) {
+    if (!node) return node;
+
+    switch (node.type) {
+      case 'object':
+        return {
+          type: 'object',
+          entries: node.entries
+            .map(function(entry) {
+              return { key: entry.key, value: sortASTNode(entry.value) };
+            })
+            .sort(function(a, b) {
+              return a.key.localeCompare(b.key);
+            })
+        };
+      case 'array':
+        return {
+          type: 'array',
+          items: node.items.map(sortASTNode)
+        };
+      case 'string':
+      case 'number':
+      case 'literal':
+        return { type: node.type, value: node.value };
+      case 'mongo':
+        return { type: 'mongo', func: node.func, args: node.args };
+      default:
+        return node;
+    }
+  }
+
+  function joinFieldPath(basePath, segment) {
+    if (typeof segment === 'number') {
+      return basePath ? basePath + '[' + segment + ']' : '[' + segment + ']';
+    }
+    return basePath ? basePath + '.' + segment : segment;
+  }
+
+  function collectFieldPaths(node, basePath, paths) {
+    if (!node) return;
+
+    if (node.type === 'object') {
+      for (var i = 0; i < node.entries.length; i++) {
+        var entry = node.entries[i];
+        var entryPath = joinFieldPath(basePath, entry.key);
+        paths.push({ path: entryPath, key: entry.key });
+        collectFieldPaths(entry.value, entryPath, paths);
+      }
+      return;
+    }
+
+    if (node.type === 'array') {
+      for (var j = 0; j < node.items.length; j++) {
+        collectFieldPaths(node.items[j], joinFieldPath(basePath, j), paths);
+      }
+    }
+  }
+
+  function buildKeyLineMap(formattedText, ast) {
+    var keyLineMap = Object.create(null);
+    if (!ast) return keyLineMap;
+
+    var orderedPaths = [];
+    collectFieldPaths(ast, '', orderedPaths);
+
+    var lines = formattedText.split('\n');
+    var cursor = 0;
+
+    for (var i = 0; i < orderedPaths.length; i++) {
+      var item = orderedPaths[i];
+      var escapedKey = item.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      var keyPattern = new RegExp('"'+ escapedKey +'"\\s*:');
+
+      for (var lineIndex = cursor; lineIndex < lines.length; lineIndex++) {
+        if (keyPattern.test(lines[lineIndex])) {
+          keyLineMap[item.path] = lineIndex + 1;
+          cursor = lineIndex + 1;
+          break;
+        }
+      }
+    }
+
+    return keyLineMap;
+  }
+
+  function compareFieldDiffs(nodeA, nodeB, basePath, result) {
+    if (!nodeA && !nodeB) return;
+    if (!nodeA) {
+      if (basePath) result.rightOnly.push(basePath);
+      return;
+    }
+    if (!nodeB) {
+      if (basePath) result.leftOnly.push(basePath);
+      return;
+    }
+
+    if (nodeA.type === 'object' && nodeB.type === 'object') {
+      var mapA = Object.create(null);
+      var mapB = Object.create(null);
+      var keys = [];
+      var seen = Object.create(null);
+      var i;
+
+      for (i = 0; i < nodeA.entries.length; i++) {
+        mapA[nodeA.entries[i].key] = nodeA.entries[i].value;
+        if (!seen[nodeA.entries[i].key]) {
+          seen[nodeA.entries[i].key] = true;
+          keys.push(nodeA.entries[i].key);
+        }
+      }
+      for (i = 0; i < nodeB.entries.length; i++) {
+        mapB[nodeB.entries[i].key] = nodeB.entries[i].value;
+        if (!seen[nodeB.entries[i].key]) {
+          seen[nodeB.entries[i].key] = true;
+          keys.push(nodeB.entries[i].key);
+        }
+      }
+
+      keys.sort(function(a, b) { return a.localeCompare(b); });
+
+      for (i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        var nextPath = joinFieldPath(basePath, key);
+        if (!(key in mapB)) {
+          result.leftOnly.push(nextPath);
+        } else if (!(key in mapA)) {
+          result.rightOnly.push(nextPath);
+        } else {
+          compareFieldDiffs(mapA[key], mapB[key], nextPath, result);
+        }
+      }
+      return;
+    }
+
+    if (nodeA.type === 'array' && nodeB.type === 'array') {
+      var maxLength = Math.max(nodeA.items.length, nodeB.items.length);
+      for (var index = 0; index < maxLength; index++) {
+        compareFieldDiffs(
+          nodeA.items[index],
+          nodeB.items[index],
+          joinFieldPath(basePath, index),
+          result
+        );
+      }
+    }
+  }
+
+  function getFieldDiffSummary(astA, astB) {
+    var result = { leftOnly: [], rightOnly: [] };
+    if (!astA || !astB) return result;
+    compareFieldDiffs(astA, astB, '', result);
+    return result;
+  }
+
+  function normalizeForCompare(input) {
+    var source = input || '';
+    if (!source.trim()) {
+      return { text: '', error: null, lineCount: 0, charCount: 0, maxDepth: 0, ast: null, keyLineMap: Object.create(null) };
+    }
+
+    var result = formatJSON(source, false);
+    if (result.error) {
+      return {
+        text: source,
+        error: result.error,
+        lineCount: source.split('\n').length,
+        charCount: source.length,
+        maxDepth: undefined,
+        ast: null,
+        keyLineMap: Object.create(null)
+      };
+    }
+
+    var sortedAst = sortASTNode(result.ast);
+    var formatted = formatAST(sortedAst, 0, 2);
+    return {
+      text: formatted,
+      error: null,
+      lineCount: formatted.split('\n').length,
+      charCount: formatted.length,
+      maxDepth: computeMaxDepth(sortedAst),
+      ast: sortedAst,
+      keyLineMap: buildKeyLineMap(formatted, sortedAst)
+    };
+  }
+
+  function loadScript(src) {
+    return new Promise(function(resolve, reject) {
+      var existing = document.querySelector('script[data-src="' + src + '"]');
+      if (existing) {
+        if (existing.getAttribute('data-loaded') === '1') {
+          resolve();
+          return;
+        }
+        existing.addEventListener('load', function() { resolve(); }, { once: true });
+        existing.addEventListener('error', reject, { once: true });
+        return;
+      }
+
+      var script = document.createElement('script');
+      script.src = src;
+      script.async = true;
+      script.setAttribute('data-src', src);
+      script.onload = function() {
+        script.setAttribute('data-loaded', '1');
+        resolve();
+      };
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
+
+  let monacoLoaderPromise = null;
+  function loadMonaco() {
+    if (window.monaco && window.monaco.editor) {
+      return Promise.resolve(window.monaco);
+    }
+    if (monacoLoaderPromise) {
+      return monacoLoaderPromise;
+    }
+
+    monacoLoaderPromise = new Promise(function(resolve, reject) {
+      window.MonacoEnvironment = {
+        getWorkerUrl: function() {
+          var proxy = [
+            'self.MonacoEnvironment = { baseUrl: "' + MONACO_BASE_URL + '/" };',
+            'importScripts("' + MONACO_BASE_URL + '/vs/base/worker/workerMain.js");'
+          ].join('');
+          return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(proxy);
+        }
+      };
+
+      loadScript(MONACO_BASE_URL + '/vs/loader.min.js').then(function() {
+        window.require.config({ paths: { vs: MONACO_BASE_URL + '/vs' } });
+        window.require(['vs/editor/editor.main'], function() {
+          if (window.monaco && window.monaco.languages && window.monaco.languages.typescript) {
+            window.monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+              noSemanticValidation: true,
+              noSyntaxValidation: true
+            });
+            window.monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+              noSemanticValidation: true,
+              noSyntaxValidation: true
+            });
+          }
+          resolve(window.monaco);
+        }, reject);
+      }).catch(reject);
+    });
+
+    return monacoLoaderPromise;
+  }
+
+  // ==================== UI ====================
+  const els = {
+    input: document.getElementById('input'),
+    output: document.getElementById('output'),
+    outputTextarea: document.getElementById('outputTextarea'),
+    outputWrapper: document.getElementById('outputWrapper'),
+    errorDisplay: document.getElementById('errorDisplay'),
+    statusDot: document.getElementById('statusDot'),
+    statusText: document.getElementById('statusText'),
+    charCount: document.getElementById('charCount'),
+    lineCount: document.getElementById('lineCount'),
+    depthInfo: document.getElementById('depthInfo'),
+    toast: document.getElementById('toast'),
+    themeBtn: document.getElementById('themeBtn'),
+    formatBtn: document.getElementById('formatBtn'),
+    editBtn: document.getElementById('editBtn'),
+    collapseInputBtn: document.getElementById('collapseInputBtn'),
+    diffBtn: document.getElementById('diffBtn'),
+    diffEditorContainer: document.getElementById('diffEditorContainer'),
+    compareCenterGutter: document.getElementById('compareCenterGutter'),
+    compareCenterLinesLeft: document.getElementById('compareCenterLinesLeft'),
+    compareCenterLinesRight: document.getElementById('compareCenterLinesRight'),
+  };
+
+  let currentTheme = 'dark';
+  let lastResult = null;
+  let toastTimer = null;
+  let isEditMode = false;
+  let diffMode = false;
+  let diffDraftB = '';
+  let diffEditor = null;
+  let diffOriginalModel = null;
+  let diffModifiedModel = null;
+  let monacoResizeBound = false;
+  let centerLineRenderFrame = null;
+  let originalFieldDecorations = [];
+  let modifiedFieldDecorations = [];
+  let isOutputCollapsed = false;
+
+  function showToast(msg) {
+    els.toast.textContent = msg;
+    els.toast.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => els.toast.classList.remove('show'), 1800);
+  }
+
+  function setStatus(type, msg) {
+    els.statusDot.className = 'status-dot ' + type;
+    els.statusText.textContent = msg;
+  }
+
+  function updateCollapseButtonLabel() {
+    var btn = document.getElementById('minifyBtn');
+    if (!btn) return;
+    btn.textContent = isOutputCollapsed ? '展开' : '收起';
+    btn.title = isOutputCollapsed ? '切换为展开视图' : '切换为收起视图';
+  }
+
+  function updateStats(charCount, lineCount, depth) {
+    els.charCount.textContent = '字符: ' + (charCount || 0);
+    els.lineCount.textContent = '行数: ' + (lineCount || 0);
+    els.depthInfo.textContent = depth !== undefined ? '深度: ' + depth : '';
+  }
+
+  function showError(msg, pos) {
+    els.errorDisplay.textContent = msg;
+    els.errorDisplay.classList.add('visible');
+    setStatus('error', '格式错误');
+
+    // Highlight error position in textarea if possible
+    if (pos !== undefined && pos >= 0 && els.input === document.activeElement) {
+      els.input.setSelectionRange(pos, pos + 1);
+    }
+    // Try to scroll to error position
+    if (pos !== undefined && pos >= 0) {
+      const linesBefore = els.input.value.substring(0, pos).split('\n').length;
+      const lineHeight = 22; // approximate
+      els.input.scrollTop = Math.max(0, (linesBefore - 5) * lineHeight);
+    }
+  }
+
+  function clearError() {
+    els.errorDisplay.textContent = '';
+    els.errorDisplay.classList.remove('visible');
+  }
+
+  function updateOutputViews(formattedText) {
+    // Update both the highlighted pre and the raw textarea
+    els.output.innerHTML = renderOutput(formattedText);
+    els.outputTextarea.value = formattedText;
+    els.outputWrapper.scrollTop = 0;
+    els.outputTextarea.scrollTop = 0;
+  }
+
+  function setPlaceholder() {
+    els.output.innerHTML = '<code class="output-code"><span class="output-placeholder">格式化后的 JSON 将显示在这里</span></code>';
+    els.outputTextarea.value = '';
+    els.outputTextarea.placeholder = '格式化后的 JSON 将显示在这里';
+    clearError();
+    isOutputCollapsed = false;
+    updateCollapseButtonLabel();
+    setStatus('', '就绪');
+    updateStats(0, 0, undefined);
+    lastResult = null;
+  }
+
+  function doFormat(compact) {
+    if (diffMode) {
+      normalizeCompareModels();
+      updateDiffSummary();
+      showToast('✅ 已按字段排序并刷新对比');
+      return;
+    }
+
+    const input = els.input.value;
+    const result = formatJSON(input, compact);
+
+    if (result.error) {
+      showError(result.error, result.position);
+      els.output.innerHTML = '<code class="output-code"><span class="output-placeholder">解析失败，请检查输入</span></code>';
+      els.outputTextarea.value = '';
+      updateStats(0, 0, undefined);
+      return;
+    }
+
+    clearError();
+    isOutputCollapsed = compact;
+    updateCollapseButtonLabel();
+    lastResult = result;
+    updateOutputViews(result.formatted);
+    setStatus('success', compact ? '已收起' : '已展开');
+    updateStats(result.charCount, result.lineCount, result.maxDepth);
+  }
+
+  function liveFormat() {
+    const input = els.input.value;
+    if (!input.trim()) {
+      setPlaceholder();
+      return;
+    }
+
+    const result = formatJSON(input, false);
+    if (result.error) {
+      showError(result.error, result.position);
+      els.output.innerHTML = '<code class="output-code"><span class="output-placeholder">解析失败，请检查输入</span></code>';
+      els.outputTextarea.value = '';
+      updateStats(0, 0, undefined);
+      lastResult = null;
+      return;
+    }
+
+    clearError();
+    isOutputCollapsed = false;
+    updateCollapseButtonLabel();
+    lastResult = result;
+    updateOutputViews(result.formatted);
+    setStatus('success', '已格式化');
+    updateStats(result.charCount, result.lineCount, result.maxDepth);
+  }
+
+  // Debounced live format
+  let debounceTimer = null;
+  function debouncedLiveFormat() {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    if (diffMode) return;
+    debounceTimer = setTimeout(liveFormat, 300);
+  }
+
+  function getActiveDiffText() {
+    if (!diffEditor) return '';
+    var originalEditor = diffEditor.getOriginalEditor();
+    var modifiedEditor = diffEditor.getModifiedEditor();
+    if (originalEditor && originalEditor.hasTextFocus() && diffOriginalModel) {
+      return diffOriginalModel.getValue();
+    }
+    if (modifiedEditor && modifiedEditor.hasTextFocus() && diffModifiedModel) {
+      return diffModifiedModel.getValue();
+    }
+    if (diffModifiedModel) return diffModifiedModel.getValue();
+    if (diffOriginalModel) return diffOriginalModel.getValue();
+    return '';
+  }
+
+  function copyOutput() {
+    var text;
+    if (diffMode) {
+      text = getActiveDiffText();
+    } else if (isEditMode) {
+      text = els.outputTextarea.value;
+    } else if (lastResult && lastResult.formatted) {
+      text = lastResult.formatted;
+    }
+    if (!text || !text.trim()) {
+      showToast('没有可复制的内容');
+      return;
+    }
+    navigator.clipboard.writeText(text).then(function() {
+      showToast('✅ 已复制到剪贴板');
+    }).catch(function() {
+      showToast('❌ 复制失败');
+    });
+  }
+
+  function toggleEditMode() {
+    isEditMode = !isEditMode;
+    const panel = document.querySelector('.output-panel');
+    if (isEditMode) {
+      panel.classList.add('edit-mode');
+      els.editBtn.innerHTML = '🔒 查看';
+      els.editBtn.title = '切换为查看模式';
+      // In edit mode, copy from textarea; textarea already has the raw text
+      els.outputTextarea.focus();
+    } else {
+      panel.classList.remove('edit-mode');
+      els.editBtn.innerHTML = '✏️ 编辑';
+      els.editBtn.title = '切换为编辑模式';
+      // When switching back to view mode, format the textarea content
+      var rawText = els.outputTextarea.value;
+      if (rawText.trim()) {
+        var result = formatJSON(rawText, false);
+        if (result.error) {
+          showToast('⚠️ 内容格式有误，保持原始内容');
+          // Revert: keep edit mode
+          panel.classList.add('edit-mode');
+          isEditMode = true;
+          return;
+        }
+        isOutputCollapsed = false;
+        updateCollapseButtonLabel();
+        lastResult = result;
+        updateOutputViews(result.formatted);
+        setStatus('success', '已格式化');
+        updateStats(result.charCount, result.lineCount, result.maxDepth);
+      }
+    }
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function renderCompareLoading(message, isError) {
+    els.diffEditorContainer.innerHTML = '<div class="' + (isError ? 'compare-loading-error' : 'compare-loading') + '">' + escapeHtml(message) + '</div>';
+  }
+
+  function clearCenterLineNumbers() {
+    els.compareCenterLinesLeft.innerHTML = '';
+    els.compareCenterLinesRight.innerHTML = '';
+    els.compareCenterGutter.classList.remove('visible');
+  }
+
+  function clearFieldDecorations() {
+    if (!window.monaco || !diffEditor) return;
+    originalFieldDecorations = diffEditor.getOriginalEditor().deltaDecorations(originalFieldDecorations, []);
+    modifiedFieldDecorations = diffEditor.getModifiedEditor().deltaDecorations(modifiedFieldDecorations, []);
+  }
+
+  function applyFieldDecorations(diffSummary, metaA, metaB) {
+    if (!window.monaco || !diffEditor) return;
+
+    var monaco = window.monaco;
+    var originalEditor = diffEditor.getOriginalEditor();
+    var modifiedEditor = diffEditor.getModifiedEditor();
+    var originalDecorations = [];
+    var modifiedDecorations = [];
+    var i;
+    var line;
+
+    for (i = 0; i < diffSummary.leftOnly.length; i++) {
+      line = metaA.keyLineMap[diffSummary.leftOnly[i]];
+      if (!line) continue;
+      originalDecorations.push({
+        range: new monaco.Range(line, 1, line, 1),
+        options: {
+          isWholeLine: true,
+          className: 'compare-field-left-only'
+        }
+      });
+    }
+
+    for (i = 0; i < diffSummary.rightOnly.length; i++) {
+      line = metaB.keyLineMap[diffSummary.rightOnly[i]];
+      if (!line) continue;
+      modifiedDecorations.push({
+        range: new monaco.Range(line, 1, line, 1),
+        options: {
+          isWholeLine: true,
+          className: 'compare-field-right-only'
+        }
+      });
+    }
+
+    originalFieldDecorations = originalEditor.deltaDecorations(originalFieldDecorations, originalDecorations);
+    modifiedFieldDecorations = modifiedEditor.deltaDecorations(modifiedFieldDecorations, modifiedDecorations);
+  }
+
+  function renderCenterLineColumn(editor) {
+    if (!editor || !editor.hasModel()) return '';
+
+    var ranges = editor.getVisibleRanges();
+    if (!ranges || !ranges.length) return '';
+
+    var scrollTop = editor.getScrollTop();
+    var seen = Object.create(null);
+    var html = [];
+
+    for (var i = 0; i < ranges.length; i++) {
+      var range = ranges[i];
+      for (var line = range.startLineNumber; line <= range.endLineNumber; line++) {
+        if (seen[line]) continue;
+        seen[line] = true;
+        html.push(
+          '<div class="compare-center-line" style="top:' +
+          Math.round(editor.getTopForLineNumber(line) - scrollTop) +
+          'px">' + line + '</div>'
+        );
+      }
+    }
+
+    return html.join('');
+  }
+
+  function renderCenterLineNumbers() {
+    if (!diffMode || !diffEditor) {
+      clearCenterLineNumbers();
+      return;
+    }
+
+    var originalEditor = diffEditor.getOriginalEditor();
+    var modifiedEditor = diffEditor.getModifiedEditor();
+    els.compareCenterLinesLeft.innerHTML = renderCenterLineColumn(originalEditor);
+    els.compareCenterLinesRight.innerHTML = renderCenterLineColumn(modifiedEditor);
+    els.compareCenterGutter.classList.add('visible');
+  }
+
+  function scheduleCenterLineNumbersRender() {
+    if (centerLineRenderFrame !== null) return;
+    centerLineRenderFrame = window.requestAnimationFrame(function() {
+      centerLineRenderFrame = null;
+      renderCenterLineNumbers();
+    });
+  }
+
+  function applyMonacoTheme() {
+    if (!window.monaco || !window.monaco.editor) return;
+    window.monaco.editor.setTheme(currentTheme === 'dark' ? 'vs-dark' : 'vs');
+  }
+
+  function syncDiffStateToNormalInput() {
+    if (diffOriginalModel) {
+      els.input.value = diffOriginalModel.getValue();
+    }
+    if (diffModifiedModel) {
+      diffDraftB = diffModifiedModel.getValue();
+    }
+  }
+
+  function updateDiffSummary() {
+    if (!diffMode || !diffEditor || !diffOriginalModel || !diffModifiedModel) return;
+
+    var originalText = diffOriginalModel.getValue();
+    var modifiedText = diffModifiedModel.getValue();
+    var normalizedA = normalizeForCompare(originalText);
+    var normalizedB = normalizeForCompare(modifiedText);
+
+    if (!originalText.trim() && !modifiedText.trim()) {
+      clearFieldDecorations();
+      setStatus('', '对比就绪');
+      updateStats(0, 0, undefined);
+      return;
+    }
+
+    if (normalizedA.error || normalizedB.error) {
+      clearFieldDecorations();
+    } else {
+      applyFieldDecorations(
+        getFieldDiffSummary(normalizedA.ast, normalizedB.ast),
+        normalizedA,
+        normalizedB
+      );
+    }
+
+    var lineChanges = diffEditor.getLineChanges();
+    if (!lineChanges || lineChanges.length === 0) {
+      setStatus('success', '完全相同');
+      els.charCount.textContent = '+0';
+      els.lineCount.textContent = '-0';
+      els.depthInfo.textContent = '已按字段排序';
+      scheduleCenterLineNumbersRender();
+      return;
+    }
+
+    var additions = 0;
+    var deletions = 0;
+    for (var i = 0; i < lineChanges.length; i++) {
+      var change = lineChanges[i];
+      var originalLines = change.originalEndLineNumber === 0 ? 0 : change.originalEndLineNumber - change.originalStartLineNumber + 1;
+      var modifiedLines = change.modifiedEndLineNumber === 0 ? 0 : change.modifiedEndLineNumber - change.modifiedStartLineNumber + 1;
+      additions += modifiedLines;
+      deletions += originalLines;
+    }
+
+    setStatus('warn', '有差异');
+    els.charCount.textContent = '+' + additions;
+    els.lineCount.textContent = '-' + deletions;
+    var fieldSummary = getFieldDiffSummary(normalizedA.ast, normalizedB.ast);
+    var fieldNotes = [];
+    if (fieldSummary.leftOnly.length) fieldNotes.push('左侧缺失映射 ' + fieldSummary.leftOnly.length);
+    if (fieldSummary.rightOnly.length) fieldNotes.push('右侧新增映射 ' + fieldSummary.rightOnly.length);
+    els.depthInfo.textContent = fieldNotes.length ? fieldNotes.join(' / ') : '已按字段排序';
+    scheduleCenterLineNumbersRender();
+  }
+
+  function normalizeCompareModels() {
+    if (!diffOriginalModel || !diffModifiedModel) return;
+
+    var normalizedA = normalizeForCompare(diffOriginalModel.getValue());
+    var normalizedB = normalizeForCompare(diffModifiedModel.getValue());
+
+    if (normalizedA.text !== diffOriginalModel.getValue()) {
+      diffOriginalModel.setValue(normalizedA.text);
+    }
+    if (normalizedB.text !== diffModifiedModel.getValue()) {
+      diffModifiedModel.setValue(normalizedB.text);
+    }
+
+    syncDiffStateToNormalInput();
+
+    if (normalizedA.error || normalizedB.error) {
+      showToast('⚠️ 存在无法排序的文档，已按原文继续对比');
+    }
+  }
+
+  async function ensureDiffEditor() {
+    if (diffEditor) {
+      if (diffOriginalModel && diffOriginalModel.getValue() !== els.input.value) {
+        diffOriginalModel.setValue(els.input.value);
+      }
+      if (diffModifiedModel && diffModifiedModel.getValue() !== diffDraftB) {
+        diffModifiedModel.setValue(diffDraftB);
+      }
+      applyMonacoTheme();
+      diffEditor.layout();
+      return diffEditor;
+    }
+
+    renderCompareLoading('正在加载对比编辑器...', false);
+
+    try {
+      var monaco = await loadMonaco();
+      els.diffEditorContainer.innerHTML = '';
+
+      diffOriginalModel = monaco.editor.createModel(els.input.value || '', 'javascript');
+      diffModifiedModel = monaco.editor.createModel(diffDraftB || '', 'javascript');
+
+      diffEditor = monaco.editor.createDiffEditor(els.diffEditorContainer, {
+        automaticLayout: true,
+        renderSideBySide: true,
+        originalEditable: true,
+        readOnly: false,
+        lineNumbers: 'off',
+        lineNumbersMinChars: 0,
+        lineDecorationsWidth: 0,
+        scrollBeyondLastLine: false,
+        minimap: { enabled: false },
+        glyphMargin: false,
+        renderOverviewRuler: false,
+        diffCodeLens: false,
+        fontSize: 13,
+        lineHeight: 22,
+        roundedSelection: false,
+        wordWrap: 'off'
+      });
+
+      diffEditor.setModel({
+        original: diffOriginalModel,
+        modified: diffModifiedModel
+      });
+
+      var originalEditor = diffEditor.getOriginalEditor();
+      var modifiedEditor = diffEditor.getModifiedEditor();
+
+      diffOriginalModel.onDidChangeContent(function() {
+        els.input.value = diffOriginalModel.getValue();
+        scheduleCenterLineNumbersRender();
+      });
+      diffModifiedModel.onDidChangeContent(function() {
+        diffDraftB = diffModifiedModel.getValue();
+        scheduleCenterLineNumbersRender();
+      });
+      originalEditor.onDidScrollChange(scheduleCenterLineNumbersRender);
+      modifiedEditor.onDidScrollChange(scheduleCenterLineNumbersRender);
+      originalEditor.onDidLayoutChange(scheduleCenterLineNumbersRender);
+      modifiedEditor.onDidLayoutChange(scheduleCenterLineNumbersRender);
+      diffEditor.onDidUpdateDiff(function() {
+        updateDiffSummary();
+        scheduleCenterLineNumbersRender();
+      });
+
+      if (!monacoResizeBound) {
+        window.addEventListener('resize', function() {
+          if (diffEditor) {
+            diffEditor.layout();
+            scheduleCenterLineNumbersRender();
+          }
+        });
+        monacoResizeBound = true;
+      }
+
+      applyMonacoTheme();
+      scheduleCenterLineNumbersRender();
+      return diffEditor;
+    } catch (error) {
+      clearCenterLineNumbers();
+      clearFieldDecorations();
+      renderCompareLoading('对比编辑器加载失败，请检查网络后重试', true);
+      throw error;
+    }
+  }
+
+  async function toggleDiffMode() {
+    var editorContainer = document.querySelector('.editor-container');
+
+    if (!diffMode) {
+      diffMode = true;
+      if (isEditMode) toggleEditMode();
+      editorContainer.classList.add('diff-mode');
+      els.diffBtn.classList.add('diff-btn-active');
+      setStatus('', '正在进入对比模式');
+
+      try {
+        await ensureDiffEditor();
+        normalizeCompareModels();
+        if (diffEditor) {
+          diffEditor.layout();
+          diffEditor.getOriginalEditor().focus();
+        }
+        updateDiffSummary();
+        scheduleCenterLineNumbersRender();
+      } catch (error) {
+        diffMode = false;
+        editorContainer.classList.remove('diff-mode');
+        els.diffBtn.classList.remove('diff-btn-active');
+        clearCenterLineNumbers();
+        clearFieldDecorations();
+        setStatus('error', '对比编辑器加载失败');
+      }
+    } else {
+      diffMode = false;
+      editorContainer.classList.remove('diff-mode');
+      els.diffBtn.classList.remove('diff-btn-active');
+      clearCenterLineNumbers();
+      clearFieldDecorations();
+      syncDiffStateToNormalInput();
+      liveFormat();
+    }
+  }
+
+  async function switchToFormatPage() {
+    if (diffMode) {
+      await toggleDiffMode();
+    }
+    if (isEditMode) {
+      toggleEditMode();
+    }
+    els.input.focus();
+    setStatus(lastResult ? 'success' : '', lastResult ? '已切换到格式化模式' : '格式化模式');
+  }
+
+  function toggleInputCollapse() {
+    const panel = document.querySelector('.input-panel');
+    panel.classList.toggle('collapsed');
+    const isCollapsed = panel.classList.contains('collapsed');
+    els.collapseInputBtn.innerHTML = isCollapsed ? '▶' : '◀';
+    els.collapseInputBtn.classList.toggle('collapse-btn-collapsed', isCollapsed);
+    localStorage.setItem('mongojson-input-collapsed', isCollapsed ? '1' : '0');
+    // Re-trigger editor-container layout
+    window.dispatchEvent(new Event('resize'));
+  }
+
+  function loadSample() {
+    const sample = `{
+"_id" : ObjectId("69c364c67ab3eb212eaf507d"),
+"bundleId" : "B001407",
+"bundleName" : "游泳健身权益",
+"conditional" : {
+"rules" : [
+{
+"method" : "ConditionalRule",
+"params" : [
+{
+"refreshCycle" : {
+"type" : "M"
+},
+"limit" : 1.0
+}
+]
+}
+]
+},
+"issue" : [
+{
+"method" : "IssueRule",
+"preFilter" : {
+"cardType" : [
+"world"
+]
+},
+"params" : [
+{
+"claimNum" : "5",
+"claimCycle" : {
+"type" : "M"
+},
+"claimDimension" : {
+"dimension" : "user"
+},
+"claimLimits" : [
+{
+"groupLimit" : "1",
+"limitCycle" : {
+"type" : "M"
+}
+}
+]
+}
+]
+},
+{
+"method" : "IssueRule",
+"preFilter" : {
+"cardType" : [
+"extreme"
+]
+},
+"params" : [
+{
+"claimNum" : "8",
+"claimCycle" : {
+"type" : "M"
+},
+"claimDimension" : {
+"dimension" : "user"
+},
+"claimLimits" : [
+{
+"groupLimit" : "1",
+"limitCycle" : {
+"type" : "M"
+}
+}
+]
+}
+]
+}
+],
+"refresh" : null,
+"rulesId" : "B001407",
+"treeId" : "cmecvp",
+"usage" : null
+}`;
+    if (diffMode && diffOriginalModel) {
+      diffOriginalModel.setValue(sample);
+      normalizeCompareModels();
+      updateDiffSummary();
+      diffEditor.getOriginalEditor().focus();
+      return;
+    }
+
+    els.input.value = sample;
+    liveFormat();
+  }
+
+  function toggleTheme() {
+    currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', currentTheme);
+    els.themeBtn.textContent = currentTheme === 'dark' ? '🌙' : '☀️';
+    localStorage.setItem('mongojson-theme', currentTheme);
+    applyMonacoTheme();
+  }
+
+  function pasteFromClipboard() {
+    navigator.clipboard.readText().then(text => {
+      if (diffMode && diffEditor) {
+        var originalEditor = diffEditor.getOriginalEditor();
+        var modifiedEditor = diffEditor.getModifiedEditor();
+        if (modifiedEditor && modifiedEditor.hasTextFocus()) {
+          diffModifiedModel.setValue(text);
+        } else if (originalEditor && originalEditor.hasTextFocus()) {
+          diffOriginalModel.setValue(text);
+        } else {
+          diffOriginalModel.setValue(text);
+          diffEditor.getOriginalEditor().focus();
+        }
+        normalizeCompareModels();
+        updateDiffSummary();
+      } else {
+        els.input.value = text;
+        liveFormat();
+      }
+      showToast('✅ 已粘贴');
+    }).catch(() => {
+      showToast('❌ 无法读取剪贴板');
+    });
+  }
+
+  // ==================== EVENT BINDINGS ====================
+  function init() {
+    // Load saved theme
+    const saved = localStorage.getItem('mongojson-theme');
+    if (saved === 'light') {
+      currentTheme = 'light';
+      document.documentElement.setAttribute('data-theme', 'light');
+      els.themeBtn.textContent = '☀️';
+    }
+
+    // Restore collapsed state
+    if (localStorage.getItem('mongojson-input-collapsed') === '1') {
+      var panel = document.querySelector('.input-panel');
+      panel.classList.add('collapsed');
+      els.collapseInputBtn.innerHTML = '▶';
+      els.collapseInputBtn.classList.add('collapse-btn-collapsed');
+    }
+
+    // Input: auto-format on typing
+    els.input.addEventListener('input', debouncedLiveFormat);
+
+    // Input: format on Ctrl+Enter
+    els.input.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        doFormat(false);
+      }
+    });
+
+    // Buttons
+    document.getElementById('clearBtn').addEventListener('click', function() {
+      els.input.value = '';
+      setPlaceholder();
+      els.input.focus();
+    });
+
+    document.getElementById('pasteBtn').addEventListener('click', pasteFromClipboard);
+    document.getElementById('sampleBtn').addEventListener('click', switchToFormatPage);
+    document.getElementById('copyBtn').addEventListener('click', copyOutput);
+    document.getElementById('minifyBtn').addEventListener('click', function() { doFormat(!isOutputCollapsed); });
+    document.getElementById('themeBtn').addEventListener('click', toggleTheme);
+    els.formatBtn.addEventListener('click', function() { doFormat(false); });
+    els.editBtn.addEventListener('click', toggleEditMode);
+    els.collapseInputBtn.addEventListener('click', toggleInputCollapse);
+    els.diffBtn.addEventListener('click', toggleDiffMode);
+
+    // Global keyboard shortcuts
+    document.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+        e.preventDefault();
+        copyOutput();
+      }
+      // Ctrl+E to toggle edit mode
+      if (!diffMode && (e.ctrlKey || e.metaKey) && e.key === 'e' && document.activeElement !== els.input && document.activeElement !== els.outputTextarea) {
+        e.preventDefault();
+        toggleEditMode();
+      }
+    });
+
+    // Drag and drop
+    els.input.addEventListener('dragover', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    els.input.addEventListener('drop', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const file = e.dataTransfer.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(ev) {
+        els.input.value = ev.target.result;
+        liveFormat();
+      };
+      reader.readAsText(file);
+    });
+
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>
