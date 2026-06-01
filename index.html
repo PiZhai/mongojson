@@ -693,6 +693,25 @@ html, body {
 }
 .sql-table th.sorted-asc::after  { content: ' ▲'; font-size: 9px; }
 .sql-table th.sorted-desc::after { content: ' ▼'; font-size: 9px; }
+
+/* ========== Shell Mode Highlighting ========== */
+.hl-shell-db    { color: #d2a8ff; font-weight: 600; }
+.hl-shell-method{ color: #79c0ff; font-weight: 600; }
+.hl-shell-op    { color: #ffa657; font-weight: 500; }
+.hl-shell-str   { color: #a5d6ff; }
+.hl-shell-paren { color: #c9d1d9; font-weight: 600; }
+.hl-shell-dot   { color: #8b949e; font-weight: 600; }
+.hl-shell-comma { color: #8b949e; }
+.hl-shell-comment{ color: #6e7681; font-style: italic; }
+
+[data-theme="light"] .hl-shell-db    { color: #8250df; }
+[data-theme="light"] .hl-shell-method{ color: #0550ae; }
+[data-theme="light"] .hl-shell-op    { color: #cf222e; }
+[data-theme="light"] .hl-shell-str   { color: #0a3069; }
+[data-theme="light"] .hl-shell-paren { color: #24292f; }
+[data-theme="light"] .hl-shell-dot   { color: #656d76; }
+[data-theme="light"] .hl-shell-comma { color: #656d76; }
+[data-theme="light"] .hl-shell-comment{ color: #8c959f; }
 </style>
 </head>
 <body>
@@ -712,6 +731,7 @@ html, body {
       <button class="btn" id="sampleBtn" title="切换到格式化模式">格式化</button>
       <button class="btn" id="diffBtn">🔍 对比</button>
       <button class="btn" id="tableBtn">📊 表格</button>
+      <button class="btn" id="shellBtn">🔧 Shell</button>
     </div>
   </header>
 
@@ -1529,6 +1549,7 @@ html, body {
   let tablePage = 1;
   let tableRowsPerPage = 50;
   let tableFilterText = '';
+  let shellMode = false;
 
   function astValueToDisplay(node) {
     if (!node) return null;
@@ -1864,6 +1885,7 @@ html, body {
 
   function toggleTableMode() {
     if (diffMode) return;
+    if (shellMode) toggleShellMode();
     tableMode = !tableMode;
     var tw = document.getElementById('tableWrapper');
     var ow = document.getElementById('outputWrapper');
@@ -1963,6 +1985,161 @@ html, body {
       if (tablePage < totalPages) { tablePage++; applyTableFilter(); }
     });
     document.getElementById('tableExportBtn').addEventListener('click', exportTableCSV);
+  }
+
+  // ==================== MONGODB SHELL MODE ====================
+  var KNOWN_MONGO_METHODS = {
+    find:1,findOne:1,insertOne:1,insertMany:1,updateOne:1,updateMany:1,
+    replaceOne:1,deleteOne:1,deleteMany:1,remove:1,aggregate:1,
+    countDocuments:1,estimatedDocumentCount:1,distinct:1,
+    findOneAndUpdate:1,findOneAndDelete:1,findOneAndReplace:1,bulkWrite:1,
+    createIndex:1,dropIndex:1,getIndexes:1,watch:1,rename:1,drop:1,
+    sort:1,limit:1,skip:1,project:1,hint:1,toArray:1,explain:1,count:1,
+    pretty:1,getCollection:1
+  };
+  var KNOWN_MONGO_OPS = {
+    $set:1,$unset:1,$inc:1,$mul:1,$rename:1,$min:1,$max:1,
+    $push:1,$pull:1,$addToSet:1,$pop:1,$pullAll:1,$each:1,
+    $match:1,$project:1,$group:1,$sort:1,$limit:1,$skip:1,
+    $unwind:1,$lookup:1,$addFields:1,$replaceRoot:1,$replaceWith:1,
+    $facet:1,$bucket:1,$sortByCount:1,$count:1,$and:1,$or:1,$not:1,$nor:1,
+    $eq:1,$ne:1,$gt:1,$gte:1,$lt:1,$lte:1,$in:1,$nin:1,$exists:1,$type:1,
+    $regex:1,$mod:1,$elemMatch:1,$all:1,$size:1,$expr:1,$text:1,
+    $sum:1,$avg:1,$first:1,$last:1,$merge:1,$out:1,$sample:1,$redact:1,
+    $geoNear:1,$currentDate:1,$setOnInsert:1,$position:1,$slice:1,
+    $cond:1,$ifNull:1,$switch:1,$arrayElemAt:1,$concat:1,
+    $dateToString:1,$toLower:1,$toUpper:1,$substr:1,$trim:1
+  };
+
+  function parseShellArgs(input, startPos) {
+    var i=startPos,len=input.length,args=[],depth=0,argStart=startPos;
+    var inDQ=false,inSQ=false;
+    for(;i<len;i++){
+      var ch=input[i];
+      if(inDQ){if(ch==='\\')i++;else if(ch==='"')inDQ=false;continue;}
+      if(inSQ){if(ch==='\\')i++;else if(ch==="'")inSQ=false;continue;}
+      if(ch==='"'){inDQ=true;continue;}
+      if(ch==="'"){inSQ=true;continue;}
+      if(ch==='('||ch==='{'||ch==='[')depth++;
+      else if(ch===')'||ch==='}'||ch===']'){
+        depth--;
+        if(depth===-1&&ch===')'){
+          var last=input.slice(argStart,i).trim();
+          if(last)args.push(last);
+          return {args:args,endPos:i+1};
+        }
+      }else if(ch===','&&depth===0){
+        args.push(input.slice(argStart,i).trim());
+        argStart=i+1;
+      }
+    }
+    return {args:args,endPos:i};
+  }
+
+  function parseShellStatement(input) {
+    if(!input||!input.trim())return null;
+    var i=0,len=input.length;
+    function skipWS(){while(i<len){if(/\s/.test(input[i])){i++;continue;}if(input[i]==='/'&&input[i+1]==='/'){while(i<len&&input[i]!=='\n')i++;continue;}break;}}
+    skipWS();if(i>=len)return null;
+    if(input.slice(i,i+2)!=='db'&&input.slice(i,i+2)!=='Db'&&input.slice(i,i+2)!=='DB')return null;
+    i+=2;skipWS();if(i>=len||input[i]!=='.')return null;i++;skipWS();
+    var collection='';
+    if(input.slice(i,i+13)==='getCollection'||input.slice(i,i+13)==='GetCollection'){
+      i+=13;skipWS();if(input[i]==='('){i++;skipWS();var q=input[i];if(q==='"'||q==="'"){i++;while(i<len&&input[i]!==q){collection+=input[i];i++;}i++;}skipWS();if(input[i]===')')i++;}
+    }else{while(i<len&&/[a-zA-Z0-9_\-]/.test(input[i])){collection+=input[i];i++;}}
+    if(!collection)return null;
+    var methods=[];
+    while(i<len){skipWS();if(i>=len)break;if(input[i]!=='.')break;i++;skipWS();
+      var mName='';while(i<len&&/[a-zA-Z0-9_]/.test(input[i])){mName+=input[i];i++;}
+      skipWS();if(i<len&&input[i]==='('){i++;var pr=parseShellArgs(input,i);i=pr.endPos;methods.push({name:mName,argsRaw:pr.args});}
+      else methods.push({name:mName,argsRaw:[]});
+    }
+    return {collection:collection,methods:methods};
+  }
+
+  function highlightShellStatement(input) {
+    var html='',i=0,len=input.length;
+    function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+    while(i<len){
+      if(/\s/.test(input[i])){html+=input[i];i++;continue;}
+      if(input[i]==='/'&&input[i+1]==='/'){
+        var cmt='';while(i<len&&input[i]!=='\n'){cmt+=input[i];i++;}
+        html+='<span class="hl-shell-comment">'+esc(cmt)+'</span>';continue;
+      }
+      if(input[i]==='"'||input[i]==="'"){
+        var q=input[i],str=q;i++;
+        while(i<len&&input[i]!==q){str+=input[i];i++;}
+        if(i<len){str+=input[i];i++;}
+        html+='<span class="hl-shell-str">'+esc(str)+'</span>';continue;
+      }
+      if((input.slice(i,i+2)==='db'||input.slice(i,i+2)==='DB')&&(i+2>=len||!/[a-zA-Z0-9_]/.test(input[i+2]))){
+        html+='<span class="hl-shell-db">'+input.slice(i,i+2)+'</span>';i+=2;continue;
+      }
+      if(input[i]==='$'&&i+1<len&&/[a-zA-Z]/.test(input[i+1])){
+        var op='$';i++;while(i<len&&/[a-zA-Z0-9]/.test(input[i])){op+=input[i];i++;}
+        html+='<span class="hl-shell-op">'+esc(op)+'</span>';continue;
+      }
+      if(i>0&&input[i-1]==='.'&&/[a-zA-Z]/.test(input[i])){
+        var method='';while(i<len&&/[a-zA-Z0-9_]/.test(input[i])){method+=input[i];i++;}
+        html+='<span class="hl-shell-method">'+esc(method)+'</span>';continue;
+      }
+      if(/[a-zA-Z_]/.test(input[i])){
+        var word='',wi=i;while(wi<len&&/[a-zA-Z0-9_]/.test(input[wi])){word+=input[wi];wi++;}
+        var after=wi;while(after<len&&/\s/.test(input[after]))after++;
+        if(KNOWN_MONGO_METHODS[word]&&after<len&&input[after]==='('){html+='<span class="hl-shell-method">'+esc(word)+'</span>';i=wi;continue;}
+        html+=esc(input[i]);i++;continue;
+      }
+      if(input[i]==='('||input[i]===')'){html+='<span class="hl-shell-paren">'+input[i]+'</span>';i++;continue;}
+      if(input[i]==='.'){html+='<span class="hl-shell-dot">.</span>';i++;continue;}
+      if(input[i]===','){html+='<span class="hl-shell-comma">,</span>';i++;continue;}
+      html+=esc(input[i]);i++;
+    }
+    return html;
+  }
+
+  function formatShellStatement(input) {
+    var parsed=parseShellStatement(input);
+    if(!parsed||parsed.methods.length===0)return null;
+    var lines=[],collRef='db.getCollection("'+parsed.collection+'")';
+    function fmtArg(raw){
+      if(!raw)return raw;
+      var r=formatJSON(raw,false);
+      if(!r.error&&r.ast)return r.formatted;
+      return raw;
+    }
+    for(var m=0;m<parsed.methods.length;m++){
+      var method=parsed.methods[m];
+      var prefix=(m===0?collRef:'')+'.'+method.name+'(';
+      var args=(method.argsRaw||[]).map(fmtArg);
+      if(args.length===0){lines.push(prefix+')');}
+      else if(args.length===1&&args[0].indexOf('\n')===-1){lines.push(prefix+args[0]+')');}
+      else{
+        var body='';
+        for(var a=0;a<args.length;a++){
+          var argLines=(a===0&&args[a].indexOf('\n')===-1)?[args[a]]:args[a].split('\n');
+          var indented=argLines.map(function(ln){return'  '+ln;}).join('\n');
+          body+=indented;if(a<args.length-1)body+=',';body+='\n';
+        }
+        lines.push(prefix+'\n'+body+')');
+      }
+    }
+    return lines.join('\n');
+  }
+
+  function validateShellStatement(input) {
+    var parsed=parseShellStatement(input);
+    if(!parsed){return[{level:'err',msg:'未识别为有效的 MongoDB Shell 语句（期望 db.xxx）'}];}
+    var checks=[];
+    checks.push({level:'ok',msg:'集合: '+parsed.collection+', '+parsed.methods.length+' 个方法调用'});
+    for(var m=0;m<parsed.methods.length;m++){var mn=parsed.methods[m].name;if(!KNOWN_MONGO_METHODS[mn])checks.push({level:'warn',msg:'未知方法: .'+mn+'()'});}
+    var foundOps={},opRegex=/\$[a-zA-Z][a-zA-Z0-9]*/g,match;
+    while((match=opRegex.exec(input))!==null){foundOps[match[0]]=(foundOps[match[0]]||0)+1;}
+    var unknownOps=Object.keys(foundOps).filter(function(o){return!KNOWN_MONGO_OPS[o];});
+    if(unknownOps.length>0)checks.push({level:'warn',msg:'可能未定义的操作符: '+unknownOps.slice(0,5).join(', ')+(unknownOps.length>5?'…':'')});
+    var depth=0,inStr=false,strCh='';
+    for(var i=0;i<input.length;i++){var ch=input[i];if(inStr){if(ch==='\\')i++;else if(ch===strCh)inStr=false;continue;}if(ch==='"'||ch==="'"){inStr=true;strCh=ch;continue;}if(ch==='('||ch==='{'||ch==='[')depth++;else if(ch===')'||ch==='}'||ch===']')depth--;}
+    if(depth!==0)checks.push({level:'err',msg:'括号不匹配 (深度: '+depth+')'});
+    return checks;
   }
 
   // ==================== UI ====================
@@ -2078,6 +2255,7 @@ html, body {
       showToast('✅ 已按字段排序并刷新对比');
       return;
     }
+    if (shellMode) { doShellFormat(); return; }
 
     const input = els.input.value;
     const result = formatJSON(input, compact);
@@ -2131,10 +2309,70 @@ html, body {
   function debouncedLiveFormat() {
     if (debounceTimer) clearTimeout(debounceTimer);
     if (diffMode) return;
+    if (shellMode) { shellDebouncedFormat(); return; }
     debounceTimer = setTimeout(function() {
       liveFormat();
       if (tableMode) refreshTable();
     }, 300);
+  }
+
+  // ==================== SHELL MODE TOGGLE & FORMAT ====================
+  var shellDebounceTimer = null;
+  function shellDebouncedFormat() {
+    if (shellDebounceTimer) clearTimeout(shellDebounceTimer);
+    shellDebounceTimer = setTimeout(doShellFormat, 300);
+  }
+
+  function doShellFormat() {
+    if (!shellMode) return;
+    var input = els.input.value;
+    if (!input.trim()) { setPlaceholder(); return; }
+    var parsed = parseShellStatement(input);
+    if (!parsed) {
+      els.output.innerHTML = '<code class="output-code"><span class="output-placeholder">⚠️ 未识别为 MongoDB Shell 语句（期望 db.xxx 开头）</span></code>';
+      els.outputTextarea.value = '';
+      setStatus('warn', '非 Shell 语句');
+      updateStats(0, 0, undefined);
+      return;
+    }
+    var formatted = formatShellStatement(input);
+    var highlighted = highlightShellStatement(formatted || input);
+    els.output.innerHTML = '<pre style="margin:0;padding:16px;font-family:var(--font-mono);font-size:13px;line-height:1.65;tab-size:2;white-space:pre;"><code>' + highlighted + '</code></pre>';
+    els.outputTextarea.value = formatted || input;
+    var validation = validateShellStatement(input);
+    var validationHtml = validation.map(function(v) {
+      var icon = v.level === 'ok' ? '✅' : v.level === 'warn' ? '⚠️' : '❌';
+      return '<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:12px;">' + icon + ' ' + escapeHtml(v.msg) + '</span>';
+    }).join('');
+    if (validationHtml) {
+      els.errorDisplay.innerHTML = validationHtml;
+      els.errorDisplay.classList.add('visible');
+    } else {
+      clearError();
+    }
+    var allOk = validation.every(function(v) { return v.level === 'ok'; });
+    if (allOk) setStatus('success', 'Shell 已格式化');
+    else if (validation.some(function(v) { return v.level === 'err'; })) setStatus('error', '校验错误');
+    else setStatus('warn', '校验警告');
+    updateStats(input.length, formatted ? formatted.split('\n').length : 0, undefined);
+  }
+
+  function toggleShellMode() {
+    if (diffMode) return;
+    if (tableMode) toggleTableMode();
+    shellMode = !shellMode;
+    var shellBtn = document.getElementById('shellBtn');
+    if (shellMode) {
+      shellBtn.classList.add('diff-btn-active');
+      shellBtn.textContent = '📄 JSON';
+      doShellFormat();
+    } else {
+      shellBtn.classList.remove('diff-btn-active');
+      shellBtn.textContent = '🔧 Shell';
+      clearError();
+      setPlaceholder();
+      liveFormat();
+    }
   }
 
   function getActiveDiffText() {
@@ -2495,6 +2733,7 @@ html, body {
     if (!diffMode) {
       // Exit table mode if active
       if (tableMode) toggleTableMode();
+      if (shellMode) toggleShellMode();
 
       diffMode = true;
       if (isEditMode) toggleEditMode();
@@ -2533,6 +2772,12 @@ html, body {
   async function switchToFormatPage() {
     if (diffMode) {
       await toggleDiffMode();
+    }
+    if (shellMode) {
+      toggleShellMode();
+    }
+    if (tableMode) {
+      toggleTableMode();
     }
     if (isEditMode) {
       toggleEditMode();
@@ -2727,6 +2972,7 @@ html, body {
     els.collapseInputBtn.addEventListener('click', toggleInputCollapse);
     els.diffBtn.addEventListener('click', toggleDiffMode);
     document.getElementById('tableBtn').addEventListener('click', toggleTableMode);
+    document.getElementById('shellBtn').addEventListener('click', toggleShellMode);
 
     // Global keyboard shortcuts
     document.addEventListener('keydown', function(e) {
