@@ -514,6 +514,185 @@ html, body {
   .panel-header { padding: 6px 12px; }
   #input, #output { padding: 12px; font-size: 12px; }
 }
+
+/* ========== Mongosql Table View ========== */
+.table-wrapper {
+  display: none;
+  flex: 1;
+  overflow: auto;
+  background: var(--bg);
+  transition: background var(--transition);
+  position: relative;
+}
+.table-wrapper.active { display: flex; flex-direction: column; }
+
+/* Validation banner */
+.validation-banner {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  transition: background var(--transition), border-color var(--transition);
+}
+.val-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+}
+.val-stat.ok { background: var(--primary-bg); color: var(--success); }
+.val-stat.warn { background: var(--warning-bg); color: var(--warning); }
+.val-stat.err { background: var(--error-bg); color: var(--error); }
+.val-stat .val-icon { font-size: 11px; }
+
+/* Table container */
+.sql-table-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+}
+.sql-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sql-table thead { position: sticky; top: 0; z-index: 5; }
+.sql-table th {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  padding: 8px 14px;
+  border-bottom: 2px solid var(--border);
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+  text-align: left;
+  min-width: 80px;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+  cursor: pointer;
+  user-select: none;
+}
+.sql-table th:hover { background: var(--surface-hover); }
+.sql-table th .col-type-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 400;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.col-type-badge.t-string  { background: var(--hl-key); color: #000; }
+.col-type-badge.t-number  { background: var(--hl-number); color: #000; }
+.col-type-badge.t-date    { background: #d2a8ff; color: #000; }
+.col-type-badge.t-bool    { background: var(--hl-keyword); color: #fff; }
+.col-type-badge.t-null    { background: var(--text-muted); color: #fff; }
+.col-type-badge.t-mixed   { background: var(--warning); color: #000; }
+.col-type-badge.t-array   { background: var(--hl-mongo); color: #000; }
+.col-type-badge.t-object  { background: var(--text-secondary); color: #fff; }
+
+.sql-table td {
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+  color: var(--text);
+}
+.sql-table td.row-num {
+  color: var(--text-muted);
+  text-align: right;
+  font-size: 11px;
+  min-width: 40px;
+  width: 40px;
+  background: var(--surface);
+  position: sticky;
+  left: 0;
+  z-index: 2;
+}
+.sql-table th.col-row-num {
+  min-width: 40px;
+  width: 40px;
+  position: sticky;
+  left: 0;
+  z-index: 6;
+}
+.sql-table td.cell-null {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.sql-table td.cell-empty-arr {
+  color: var(--text-muted);
+}
+.sql-table td.cell-warn {
+  background: rgba(210, 153, 34, 0.08);
+}
+.sql-table tbody tr:hover td {
+  background: var(--surface-hover);
+}
+.sql-table tbody tr:hover td.row-num {
+  background: var(--surface-hover);
+}
+
+/* Table toolbar */
+.table-toolbar {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: background var(--transition), border-color var(--transition);
+}
+.table-toolbar .table-pagination {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.table-toolbar input[type="text"] {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+  width: 160px;
+  transition: border-color var(--transition);
+}
+.table-toolbar input[type="text"]:focus {
+  border-color: var(--border-focus);
+}
+
+/* Wide field path ellipsis in header */
+.sql-table th .col-path {
+  display: block;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sql-table th.sorted-asc::after  { content: ' ▲'; font-size: 9px; }
+.sql-table th.sorted-desc::after { content: ' ▼'; font-size: 9px; }
 </style>
 </head>
 <body>
@@ -532,6 +711,7 @@ html, body {
       <button class="btn btn-primary" id="formatBtn" title="格式化输入内容">✨ 格式化</button>
       <button class="btn" id="sampleBtn" title="切换到格式化模式">格式化</button>
       <button class="btn" id="diffBtn">🔍 对比</button>
+      <button class="btn" id="tableBtn">📊 表格</button>
     </div>
   </header>
 
@@ -568,6 +748,23 @@ html, body {
       <div class="output-wrapper" id="outputWrapper">
         <pre id="output" class="output-view"><code class="output-code"><span class="output-placeholder">格式化后的 JSON 将显示在这里</span></code></pre>
         <textarea id="outputTextarea" class="output-edit" spellcheck="false" placeholder="格式化后的 JSON 将显示在这里"></textarea>
+      </div>
+      <!-- Mongosql Table View -->
+      <div class="table-wrapper" id="tableWrapper">
+        <div class="validation-banner" id="validationBanner"></div>
+        <div class="sql-table-wrap" id="sqlTableWrap">
+          <table class="sql-table" id="sqlTable"></table>
+        </div>
+        <div class="table-toolbar" id="tableToolbar">
+          <span id="tableRowCount"></span>
+          <input type="text" id="tableFilter" placeholder="🔍 筛选字段或值..." />
+          <button class="btn" id="tableExportBtn" style="font-size:11px;padding:3px 10px;">📥 导出CSV</button>
+          <div class="table-pagination">
+            <button class="btn" id="tablePrevBtn" style="font-size:11px;padding:3px 8px;" disabled>◀</button>
+            <span id="tablePageInfo">1/1</span>
+            <button class="btn" id="tableNextBtn" style="font-size:11px;padding:3px 8px;" disabled>▶</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1324,6 +1521,171 @@ html, body {
     };
   }
 
+  // ==================== MONGOSQL TABLE VIEW ====================
+  let tableMode = false;
+  let tableData = null;
+  let tableSortCol = -1;
+  let tableSortDir = 1;
+  let tablePage = 1;
+  let tableRowsPerPage = 50;
+  let tableFilterText = '';
+
+  function astValueToDisplay(node) {
+    if (!node) return null;
+    switch (node.type) {
+      case 'string': return node.value;
+      case 'number': return node.value;
+      case 'literal':
+        if (node.value === 'null' || node.value === 'undefined') return null;
+        return node.value;
+      case 'mongo':
+        if (node.func === 'ObjectId') return 'ObjectId(' + node.args + ')';
+        if (node.func === 'ISODate') return 'ISODate(' + node.args + ')';
+        if (node.func === 'new Date') return 'Date(' + node.args + ')';
+        if (node.args != null) return node.func + '(' + node.args + ')';
+        return node.func;
+      case 'object':
+        if (node.entries.length === 0) return '{}';
+        return '{…' + node.entries.length + '}';
+      case 'array':
+        if (node.items.length === 0) return '[]';
+        return '[…' + node.items.length + ']';
+      default: return JSON.stringify(node);
+    }
+  }
+
+  function astValueToType(node) {
+    if (!node) return 'null';
+    switch (node.type) {
+      case 'string': return 'string';
+      case 'number': return 'number';
+      case 'literal':
+        if (node.value === 'true' || node.value === 'false') return 'bool';
+        if (node.value === 'null' || node.value === 'undefined') return 'null';
+        return 'string';
+      case 'mongo':
+        if (node.func === 'ObjectId') return 'oid';
+        if (node.func === 'ISODate' || node.func === 'new Date' || node.func === 'Date') return 'date';
+        return 'mongo';
+      case 'object': return 'object';
+      case 'array': return 'array';
+      default: return 'unknown';
+    }
+  }
+
+  function flattenAST(node, prefix, result) {
+    if (!node) { result[prefix] = null; return; }
+    if (node.type === 'object') {
+      if (node.entries.length === 0) { result[prefix] = node; return; }
+      for (var i = 0; i < node.entries.length; i++) {
+        var e = node.entries[i];
+        flattenAST(e.value, prefix ? prefix + '.' + e.key : e.key, result);
+      }
+    } else if (node.type === 'array') {
+      result[prefix] = node;
+      for (var j = 0; j < Math.min(node.items.length, 10); j++) {
+        flattenAST(node.items[j], prefix + '[' + j + ']', result);
+      }
+    } else {
+      result[prefix] = node;
+    }
+  }
+
+  function buildTableFromAST(ast) {
+    var docs = [];
+    if (!ast) return null;
+    if (ast.type === 'array') {
+      for (var i = 0; i < ast.items.length; i++) {
+        if (ast.items[i].type === 'object') docs.push(ast.items[i]);
+      }
+    } else if (ast.type === 'object') {
+      docs = [ast];
+    } else { return null; }
+
+    if (docs.length === 0) return null;
+
+    var allPathsSet = Object.create(null);
+    var pathOrder = [];
+    var docMaps = [];
+
+    for (var d = 0; d < docs.length; d++) {
+      var flat = Object.create(null);
+      flattenAST(docs[d], '', flat);
+      docMaps.push(flat);
+      var keys = Object.keys(flat);
+      for (var k = 0; k < keys.length; k++) {
+        if (!(keys[k] in allPathsSet)) {
+          allPathsSet[keys[k]] = true;
+          pathOrder.push(keys[k]);
+        }
+      }
+    }
+
+    pathOrder.sort(function(a, b) {
+      var dA = (a.match(/\./g) || []).length;
+      var dB = (b.match(/\./g) || []).length;
+      if (dA !== dB) return dA - dB;
+      return a.localeCompare(b);
+    });
+
+    var schema = [];
+    for (var p = 0; p < pathOrder.length; p++) {
+      var path = pathOrder[p];
+      var tCounts = Object.create(null);
+      var nulls = 0;
+      for (var r = 0; r < docMaps.length; r++) {
+        var node = docMaps[r][path];
+        if (node === undefined || node === null) { nulls++; continue; }
+        var t = astValueToType(node);
+        tCounts[t] = (tCounts[t] || 0) + 1;
+      }
+      var domType = 'null';
+      var maxC = 0;
+      var tKeys = Object.keys(tCounts);
+      for (var ti = 0; ti < tKeys.length; ti++) {
+        if (tCounts[tKeys[ti]] > maxC) { maxC = tCounts[tKeys[ti]]; domType = tKeys[ti]; }
+      }
+      schema.push({
+        path: path, dominantType: domType,
+        isMixed: tKeys.length > 1, typeCounts: tCounts,
+        nullCount: nulls, totalCount: docMaps.length,
+        nullRatio: nulls / docMaps.length
+      });
+    }
+
+    var rows = [];
+    for (var dr = 0; dr < docMaps.length; dr++) {
+      var row = [];
+      for (var sc = 0; sc < schema.length; sc++) {
+        row.push(docMaps[dr][schema[sc].path] !== undefined ? docMaps[dr][schema[sc].path] : null);
+      }
+      rows.push(row);
+    }
+
+    var validation = buildValidation(schema, docs.length);
+    return { schema: schema, rows: rows, validation: validation, docCount: docs.length };
+  }
+
+  function buildValidation(schema, docCount) {
+    var checks = [];
+    var fullyNull = schema.filter(function(s) { return s.nullCount === s.totalCount; });
+    if (fullyNull.length > 0) {
+      checks.push({ level: 'warn', msg: fullyNull.length + ' 个字段全为 null: ' + fullyNull.slice(0, 3).map(function(s){return s.path;}).join(', ') + (fullyNull.length > 3 ? '…' : '') });
+    }
+    var mixed = schema.filter(function(s) { return s.isMixed; });
+    if (mixed.length > 0) {
+      checks.push({ level: 'warn', msg: mixed.length + ' 个字段类型不一致: ' + mixed.slice(0, 3).map(function(s){var ts=Object.keys(s.typeCounts).join('/'); return s.path+'['+ts+']';}).join(', ') + (mixed.length > 3 ? '…' : '') });
+    }
+    var highNull = schema.filter(function(s) { return s.nullRatio > 0.5 && s.nullRatio < 1.0; });
+    if (highNull.length > 0) {
+      checks.push({ level: 'warn', msg: highNull.length + ' 个字段缺失率>50%: ' + highNull.slice(0, 3).map(function(s){return s.path+' ('+Math.round(s.nullRatio*100)+'%)';}).join(', ') + (highNull.length > 3 ? '…' : '') });
+    }
+    var maxDepth = 0;
+    schema.forEach(function(s) { var d = (s.path.match(/\./g) || []).length; if (d > maxDepth) maxDepth = d; });
+    checks.unshift({ level: 'ok', msg: docCount + ' 条文档, ' + schema.length + ' 个字段, 最大嵌套深度 ' + maxDepth });
+    return checks;
+  }
+
   function loadScript(src) {
     return new Promise(function(resolve, reject) {
       var existing = document.querySelector('script[data-src="' + src + '"]');
@@ -1389,6 +1751,218 @@ html, body {
     });
 
     return monacoLoaderPromise;
+  }
+
+  // ==================== MONGOSQL TABLE RENDERING ====================
+  function renderValidationBanner(validation) {
+    var banner = document.getElementById('validationBanner');
+    if (!validation || validation.length === 0) { banner.innerHTML = ''; return; }
+    banner.innerHTML = validation.map(function(c) {
+      var icon = c.level === 'ok' ? '✅' : c.level === 'warn' ? '⚠️' : '❌';
+      return '<span class="val-stat ' + c.level + '"><span class="val-icon">' + icon + '</span>' + escapeHtml(c.msg) + '</span>';
+    }).join('');
+  }
+
+  function renderTable(schema, rows, sortCol, sortDir) {
+    var tableEl = document.getElementById('sqlTable');
+    var thead = tableEl.querySelector('thead');
+    var tbody = tableEl.querySelector('tbody');
+    if (!thead) { thead = document.createElement('thead'); tableEl.appendChild(thead); }
+    if (!tbody) { tbody = document.createElement('tbody'); tableEl.appendChild(tbody); }
+
+    var headerHtml = '<tr><th class="col-row-num">#</th>';
+    for (var i = 0; i < schema.length; i++) {
+      var s = schema[i];
+      var badge = s.isMixed ? 't-mixed' : 't-' + s.dominantType;
+      var arrow = (sortCol === i) ? (sortDir === 1 ? 'sorted-asc' : 'sorted-desc') : '';
+      var dp = s.path.length > 35 ? '…' + s.path.slice(-32) : s.path;
+      headerHtml += '<th class="' + arrow + '" data-col="' + i + '" title="' + escapeHtml(s.path) + '">' +
+        '<span class="col-path">' + escapeHtml(dp) + '</span>' +
+        '<span class="col-type-badge ' + badge + '">' + (s.isMixed ? 'MIXED' : s.dominantType) + '</span></th>';
+    }
+    headerHtml += '</tr>';
+    thead.innerHTML = headerHtml;
+
+    var bodyHtml = '';
+    for (var r = 0; r < rows.length; r++) {
+      bodyHtml += '<tr><td class="row-num">' + (r + 1) + '</td>';
+      for (var c = 0; c < schema.length; c++) {
+        var cell = rows[r][c];
+        var cls = '', display = '';
+        if (cell === null || cell === undefined) { cls = 'cell-null'; display = 'NULL'; }
+        else if (cell.type === 'object') { display = '{…' + cell.entries.length + '}'; }
+        else if (cell.type === 'array') { cls = cell.items.length === 0 ? 'cell-empty-arr' : ''; display = cell.items.length === 0 ? '[]' : '[…' + cell.items.length + ']'; }
+        else { display = astValueToDisplay(cell) || ''; }
+        bodyHtml += '<td class="' + cls + '" title="' + escapeHtml(display) + '">' + escapeHtml(display) + '</td>';
+      }
+      bodyHtml += '</tr>';
+    }
+    tbody.innerHTML = bodyHtml;
+  }
+
+  function applyTableFilter() {
+    if (!tableData) return;
+    var ft = tableFilterText.toLowerCase().trim();
+    if (!ft) { renderTablePage(); return; }
+    var filtered = [], matchIndexes = [];
+    for (var r = 0; r < tableData.rows.length; r++) {
+      var match = false;
+      for (var c = 0; c < tableData.schema.length; c++) {
+        var d = astValueToDisplay(tableData.rows[r][c]);
+        if (d && d.toLowerCase().indexOf(ft) !== -1) { match = true; break; }
+      }
+      if (!match) {
+        for (var pc = 0; pc < tableData.schema.length; pc++) {
+          if (tableData.schema[pc].path.toLowerCase().indexOf(ft) !== -1) { match = true; break; }
+        }
+      }
+      if (match) { filtered.push(tableData.rows[r]); matchIndexes.push(r + 1); }
+    }
+    tablePage = Math.max(1, Math.min(tablePage, Math.ceil(filtered.length / tableRowsPerPage) || 1));
+    var totalPages = Math.ceil(filtered.length / tableRowsPerPage) || 1;
+    var start = (tablePage - 1) * tableRowsPerPage;
+    renderTable(tableData.schema, filtered.slice(start, start + tableRowsPerPage), tableSortCol, tableSortDir);
+    document.getElementById('tableRowCount').textContent = '🔍 ' + filtered.length + ' / ' + tableData.rows.length + ' 行';
+    document.getElementById('tablePageInfo').textContent = tablePage + '/' + totalPages;
+    document.getElementById('tablePrevBtn').disabled = tablePage <= 1;
+    document.getElementById('tableNextBtn').disabled = tablePage >= totalPages;
+  }
+
+  function sortTableData(colIndex) {
+    if (!tableData) return;
+    if (tableSortCol === colIndex) {
+      tableSortDir = -tableSortDir;
+    } else {
+      tableSortCol = colIndex;
+      tableSortDir = 1;
+    }
+    tableData.rows.sort(function(a, b) {
+      var va = astValueToDisplay(a[colIndex]), vb = astValueToDisplay(b[colIndex]);
+      if (va === null && vb === null) return 0;
+      if (va === null) return 1; if (vb === null) return -1;
+      var na = parseFloat(va), nb = parseFloat(vb);
+      if (!isNaN(na) && !isNaN(nb)) return (na - nb) * tableSortDir;
+      return String(va).localeCompare(String(vb)) * tableSortDir;
+    });
+    tablePage = 1;
+    applyTableFilter();
+  }
+
+  function renderTablePage() {
+    if (!tableData) return;
+    var sourceRows = tableData.rows;
+    if (tableFilterText.trim()) { applyTableFilter(); return; }
+    var totalPages = Math.ceil(sourceRows.length / tableRowsPerPage) || 1;
+    if (tablePage > totalPages) tablePage = totalPages;
+    var start = (tablePage - 1) * tableRowsPerPage;
+    renderTable(tableData.schema, sourceRows.slice(start, start + tableRowsPerPage), tableSortCol, tableSortDir);
+    document.getElementById('tableRowCount').textContent = '共 ' + sourceRows.length + ' 行 (' + tableData.schema.length + ' 列)';
+    document.getElementById('tablePageInfo').textContent = tablePage + '/' + totalPages;
+    document.getElementById('tablePrevBtn').disabled = tablePage <= 1;
+    document.getElementById('tableNextBtn').disabled = tablePage >= totalPages;
+  }
+
+  function toggleTableMode() {
+    if (diffMode) return;
+    tableMode = !tableMode;
+    var tw = document.getElementById('tableWrapper');
+    var ow = document.getElementById('outputWrapper');
+    var tblBtn = document.getElementById('tableBtn');
+
+    if (tableMode) {
+      ow.style.display = 'none';
+      tw.classList.add('active');
+      tblBtn.classList.add('diff-btn-active');
+      tblBtn.textContent = '📄 JSON';
+      refreshTable();
+    } else {
+      tw.classList.remove('active');
+      ow.style.display = '';
+      tblBtn.classList.remove('diff-btn-active');
+      tblBtn.textContent = '📊 表格';
+      setStatus(lastResult ? 'success' : '', lastResult ? '格式化模式' : '就绪');
+    }
+  }
+
+  function refreshTable() {
+    if (!tableMode) return;
+    var inputText = els.input.value;
+    if (isEditMode) inputText = els.outputTextarea.value;
+    if (!inputText.trim()) {
+      document.getElementById('validationBanner').innerHTML = '';
+      document.getElementById('sqlTable').innerHTML = '';
+      document.getElementById('tableRowCount').textContent = '';
+      setStatus('', '表格模式 — 输入为空');
+      return;
+    }
+    var result = formatJSON(inputText, false);
+    if (!result.error && result.ast) {
+      tableData = buildTableFromAST(result.ast);
+      if (tableData) {
+        tableSortCol = -1; tableSortDir = 1; tablePage = 1;
+        tableFilterText = ''; document.getElementById('tableFilter').value = '';
+        renderValidationBanner(tableData.validation);
+        renderTablePage();
+        setStatus('success', '表格模式 — ' + tableData.docCount + ' 条文档');
+        return;
+      }
+    }
+    document.getElementById('validationBanner').innerHTML = '<span class="val-stat err">⚠️ 无法构建表格（需要对象或对象数组）</span>';
+    document.getElementById('sqlTable').innerHTML = '';
+    document.getElementById('tableRowCount').textContent = '';
+    setStatus('warn', '无法构建表格');
+  }
+
+  function exportTableCSV() {
+    if (!tableData) return;
+    var csv = [];
+    csv.push(tableData.schema.map(function(s) { return '"' + s.path.replace(/"/g, '""') + '"'; }).join(','));
+    for (var r = 0; r < tableData.rows.length; r++) {
+      var row = [];
+      for (var c = 0; c < tableData.schema.length; c++) {
+        var val = astValueToDisplay(tableData.rows[r][c]);
+        row.push(val == null ? '' : '"' + String(val).replace(/"/g, '""') + '"');
+      }
+      csv.push(row.join(','));
+    }
+    var blob = new Blob(['\uFEFF' + csv.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'mongodb_export_' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    showToast('✅ CSV 已导出');
+  }
+
+  function initTableEvents() {
+    document.getElementById('sqlTable').addEventListener('click', function(e) {
+      var th = e.target.closest('th');
+      if (!th) return;
+      var ci = parseInt(th.getAttribute('data-col'), 10);
+      if (!isNaN(ci)) sortTableData(ci);
+    });
+    document.getElementById('tableFilter').addEventListener('input', function() {
+      tableFilterText = this.value; tablePage = 1; applyTableFilter();
+    });
+    document.getElementById('tablePrevBtn').addEventListener('click', function() {
+      if (tablePage > 1) { tablePage--; applyTableFilter(); }
+    });
+    document.getElementById('tableNextBtn').addEventListener('click', function() {
+      if (!tableData) return;
+      var totalRows = tableFilterText.trim() ? (function() {
+        var ft = tableFilterText.toLowerCase(), cnt = 0;
+        for (var r = 0; r < tableData.rows.length; r++) {
+          for (var c = 0; c < tableData.schema.length; c++) {
+            var d = astValueToDisplay(tableData.rows[r][c]);
+            if (d && d.toLowerCase().indexOf(ft) !== -1) { cnt++; break; }
+          }
+        }
+        return cnt;
+      })() : tableData.rows.length;
+      var totalPages = Math.ceil(totalRows / tableRowsPerPage) || 1;
+      if (tablePage < totalPages) { tablePage++; applyTableFilter(); }
+    });
+    document.getElementById('tableExportBtn').addEventListener('click', exportTableCSV);
   }
 
   // ==================== UI ====================
@@ -1549,6 +2123,7 @@ html, body {
     updateOutputViews(result.formatted);
     setStatus('success', '已格式化');
     updateStats(result.charCount, result.lineCount, result.maxDepth);
+    if (tableMode) refreshTable();
   }
 
   // Debounced live format
@@ -1556,7 +2131,10 @@ html, body {
   function debouncedLiveFormat() {
     if (debounceTimer) clearTimeout(debounceTimer);
     if (diffMode) return;
-    debounceTimer = setTimeout(liveFormat, 300);
+    debounceTimer = setTimeout(function() {
+      liveFormat();
+      if (tableMode) refreshTable();
+    }, 300);
   }
 
   function getActiveDiffText() {
@@ -1915,6 +2493,9 @@ html, body {
     var editorContainer = document.querySelector('.editor-container');
 
     if (!diffMode) {
+      // Exit table mode if active
+      if (tableMode) toggleTableMode();
+
       diffMode = true;
       if (isEditMode) toggleEditMode();
       editorContainer.classList.add('diff-mode');
@@ -2138,10 +2719,14 @@ html, body {
     document.getElementById('copyBtn').addEventListener('click', copyOutput);
     document.getElementById('minifyBtn').addEventListener('click', function() { doFormat(!isOutputCollapsed); });
     document.getElementById('themeBtn').addEventListener('click', toggleTheme);
-    els.formatBtn.addEventListener('click', function() { doFormat(false); });
+    els.formatBtn.addEventListener('click', function() {
+      doFormat(false);
+      if (tableMode) refreshTable();
+    });
     els.editBtn.addEventListener('click', toggleEditMode);
     els.collapseInputBtn.addEventListener('click', toggleInputCollapse);
     els.diffBtn.addEventListener('click', toggleDiffMode);
+    document.getElementById('tableBtn').addEventListener('click', toggleTableMode);
 
     // Global keyboard shortcuts
     document.addEventListener('keydown', function(e) {
@@ -2175,6 +2760,8 @@ html, body {
       reader.readAsText(file);
     });
 
+    // Initialize table events
+    initTableEvents();
   }
 
   if (document.readyState === 'loading') {
