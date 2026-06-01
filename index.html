@@ -2323,9 +2323,9 @@ html, body {
     shellDebounceTimer = setTimeout(doShellFormat, 300);
   }
 
-  function doShellFormat() {
+  function doShellFormat(sourceText) {
     if (!shellMode) return;
-    var input = els.input.value;
+    var input = sourceText || els.input.value;
     if (!input.trim()) { setPlaceholder(); return; }
     var parsed = parseShellStatement(input);
     if (!parsed) {
@@ -2426,6 +2426,12 @@ html, body {
       // When switching back to view mode, format the textarea content
       var rawText = els.outputTextarea.value;
       if (rawText.trim()) {
+        // Shell mode: format edited text as Shell statement
+        if (shellMode) {
+          doShellFormat(rawText);
+          els.input.value = rawText;
+          return;
+        }
         var result = formatJSON(rawText, false);
         if (result.error) {
           showToast('⚠️ 内容格式有误，保持原始内容');
