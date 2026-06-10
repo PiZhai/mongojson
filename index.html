@@ -2399,6 +2399,10 @@ html, body {
     } else if (lastResult && lastResult.formatted) {
       text = lastResult.formatted;
     }
+    // Fallback: use textarea content (Shell mode stores formatted text there but doesn't set lastResult)
+    if ((!text || !text.trim()) && els.outputTextarea && els.outputTextarea.value.trim()) {
+      text = els.outputTextarea.value;
+    }
     if (!text || !text.trim()) {
       showToast('没有可复制的内容');
       return;
