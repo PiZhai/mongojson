@@ -346,6 +346,36 @@ html, body {
   background: var(--primary-bg) !important;
 }
 
+/* Mode selector dropdown */
+#modeSelector {
+  padding: 4px 28px 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0h10L5 6z' fill='%23888'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  min-width: 120px;
+  outline: none;
+}
+#modeSelector:hover {
+  background: var(--surface-hover);
+  border-color: var(--text-secondary);
+}
+#modeSelector:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-bg);
+}
+
 /* Output */
 .output-wrapper {
   flex: 1;
@@ -728,10 +758,12 @@ html, body {
     <div class="header-actions">
       <button class="btn btn-icon" id="themeBtn" title="切换主题" aria-label="切换主题">🌙</button>
       <button class="btn btn-primary" id="formatBtn" title="格式化输入内容">✨ 格式化</button>
-      <button class="btn" id="sampleBtn" title="切换到格式化模式">格式化</button>
-      <button class="btn" id="diffBtn">🔍 对比</button>
-      <button class="btn" id="tableBtn">📊 表格</button>
-      <button class="btn" id="shellBtn">🔧 Shell</button>
+      <select id="modeSelector" title="切换功能模式">
+        <option value="json">JSON 格式化</option>
+        <option value="diff">🔍 对比</option>
+        <option value="table">📊 表格</option>
+        <option value="shell">🔧 Shell</option>
+      </select>
     </div>
   </header>
 
@@ -1889,21 +1921,17 @@ html, body {
     tableMode = !tableMode;
     var tw = document.getElementById('tableWrapper');
     var ow = document.getElementById('outputWrapper');
-    var tblBtn = document.getElementById('tableBtn');
 
     if (tableMode) {
       ow.style.display = 'none';
       tw.classList.add('active');
-      tblBtn.classList.add('diff-btn-active');
-      tblBtn.textContent = '📄 JSON';
       refreshTable();
     } else {
       tw.classList.remove('active');
       ow.style.display = '';
-      tblBtn.classList.remove('diff-btn-active');
-      tblBtn.textContent = '📊 表格';
       setStatus(lastResult ? 'success' : '', lastResult ? '格式化模式' : '就绪');
     }
+    updateModeSelector();
   }
 
   function refreshTable() {
@@ -2159,7 +2187,7 @@ html, body {
     formatBtn: document.getElementById('formatBtn'),
     editBtn: document.getElementById('editBtn'),
     collapseInputBtn: document.getElementById('collapseInputBtn'),
-    diffBtn: document.getElementById('diffBtn'),
+    modeSelector: document.getElementById('modeSelector'),
     diffEditorContainer: document.getElementById('diffEditorContainer'),
     compareCenterGutter: document.getElementById('compareCenterGutter'),
     compareCenterLinesLeft: document.getElementById('compareCenterLinesLeft'),
@@ -2361,17 +2389,39 @@ html, body {
     if (diffMode) return;
     if (tableMode) toggleTableMode();
     shellMode = !shellMode;
-    var shellBtn = document.getElementById('shellBtn');
     if (shellMode) {
-      shellBtn.classList.add('diff-btn-active');
-      shellBtn.textContent = '📄 JSON';
       doShellFormat();
     } else {
-      shellBtn.classList.remove('diff-btn-active');
-      shellBtn.textContent = '🔧 Shell';
       clearError();
       setPlaceholder();
       liveFormat();
+    }
+    updateModeSelector();
+  }
+
+  function updateModeSelector() {
+    if (!els.modeSelector) return;
+    if (diffMode) {
+      els.modeSelector.value = 'diff';
+    } else if (tableMode) {
+      els.modeSelector.value = 'table';
+    } else if (shellMode) {
+      els.modeSelector.value = 'shell';
+    } else {
+      els.modeSelector.value = 'json';
+    }
+  }
+
+  function onModeSelect() {
+    var value = els.modeSelector.value;
+    if (value === 'json') {
+      switchToFormatPage();
+    } else if (value === 'diff' && !diffMode) {
+      toggleDiffMode();
+    } else if (value === 'table' && !tableMode) {
+      toggleTableMode();
+    } else if (value === 'shell' && !shellMode) {
+      toggleShellMode();
     }
   }
 
@@ -2748,7 +2798,7 @@ html, body {
       diffMode = true;
       if (isEditMode) toggleEditMode();
       editorContainer.classList.add('diff-mode');
-      els.diffBtn.classList.add('diff-btn-active');
+      updateModeSelector();
       setStatus('', '正在进入对比模式');
 
       try {
@@ -2763,7 +2813,7 @@ html, body {
       } catch (error) {
         diffMode = false;
         editorContainer.classList.remove('diff-mode');
-        els.diffBtn.classList.remove('diff-btn-active');
+        updateModeSelector();
         clearCenterLineNumbers();
         clearFieldDecorations();
         setStatus('error', '对比编辑器加载失败');
@@ -2771,7 +2821,7 @@ html, body {
     } else {
       diffMode = false;
       editorContainer.classList.remove('diff-mode');
-      els.diffBtn.classList.remove('diff-btn-active');
+      updateModeSelector();
       clearCenterLineNumbers();
       clearFieldDecorations();
       syncDiffStateToNormalInput();
@@ -2970,7 +3020,7 @@ html, body {
     });
 
     document.getElementById('pasteBtn').addEventListener('click', pasteFromClipboard);
-    document.getElementById('sampleBtn').addEventListener('click', switchToFormatPage);
+    els.modeSelector.addEventListener('change', onModeSelect);
     document.getElementById('copyBtn').addEventListener('click', copyOutput);
     document.getElementById('minifyBtn').addEventListener('click', function() { doFormat(!isOutputCollapsed); });
     document.getElementById('themeBtn').addEventListener('click', toggleTheme);
@@ -2980,9 +3030,6 @@ html, body {
     });
     els.editBtn.addEventListener('click', toggleEditMode);
     els.collapseInputBtn.addEventListener('click', toggleInputCollapse);
-    els.diffBtn.addEventListener('click', toggleDiffMode);
-    document.getElementById('tableBtn').addEventListener('click', toggleTableMode);
-    document.getElementById('shellBtn').addEventListener('click', toggleShellMode);
 
     // Global keyboard shortcuts
     document.addEventListener('keydown', function(e) {
