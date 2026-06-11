@@ -764,6 +764,8 @@ html, body {
         <option value="table">📊 表格</option>
         <option value="shell">🔧 Shell</option>
       </select>
+      <button class="btn" id="escapeBtn" title="将 JSON 转为转义字符串">🔒 转义</button>
+      <button class="btn" id="unescapeBtn" title="将转义字符串还原为 JSON">🔓 还原</button>
     </div>
   </header>
 
@@ -2425,6 +2427,101 @@ html, body {
     }
   }
 
+  // ==================== JSON ESCAPE / UNESCAPE ====================
+
+  function escapeJson() {
+    var input = els.input.value;
+    if (!input.trim()) {
+      showToast('⚠️ 输入为空');
+      return;
+    }
+    var trimmed = input.trim();
+    // Check if input is already an escaped JSON string
+    if ((trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+      try {
+        var testInner = JSON.parse(trimmed);
+        if (typeof testInner === 'string') {
+          showToast('⚠️ 输入已是转义字符串，将先还原再转义');
+          trimmed = testInner;
+        }
+      } catch (e) { /* not an escaped string, continue */ }
+    }
+    // Try to get valid JSON text (handles MongoDB extended types via formatJSON)
+    var jsonText = trimmed;
+    if (trimmed) {
+      try {
+        JSON.parse(trimmed);  // standard JSON → fine as-is
+      } catch (e) {
+        // MongoDB extended JSON → use formatJSON to normalize
+        var result = formatJSON(trimmed, false);
+        if (!result.error) {
+          jsonText = result.formatted;
+        } else {
+          showToast('❌ 无法解析为有效 JSON');
+          return;
+        }
+      }
+    }
+    // Parse the JSON text
+    var parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (e) {
+      showToast('❌ 无法解析为有效 JSON');
+      return;
+    }
+    // Convert to compact JSON string, then escape it
+    var compact = JSON.stringify(parsed);
+    var escaped = JSON.stringify(compact);
+    // Display the escaped string directly (not via formatJSON which would unescape it)
+    els.output.innerHTML = '<pre style="margin:0;padding:16px;font-family:var(--font-mono);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-all;overflow-wrap:break-word;"><code>' + escapeHtml(escaped) + '</code></pre>';
+    els.outputTextarea.value = escaped;
+    lastResult = { formatted: escaped, charCount: escaped.length, lineCount: 1, maxDepth: 0 };
+    setStatus('success', '已转义');
+    updateStats(escaped.length, 1, undefined);
+  }
+
+  function unescapeJson() {
+    var input = els.input.value;
+    if (!input.trim()) {
+      showToast('⚠️ 输入为空');
+      return;
+    }
+    var trimmed = input.trim();
+    var inner;
+    // Step 1: Try to parse the whole input as a JSON string
+    try {
+      inner = JSON.parse(trimmed);
+    } catch (e) {
+      inner = undefined;
+    }
+    // Step 2: If not a string result, try removing outer quotes manually
+    if (typeof inner !== 'string') {
+      if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+        try {
+          inner = JSON.parse(trimmed.slice(1, -1));
+        } catch (e2) {
+          inner = trimmed.slice(1, -1);
+        }
+      }
+    }
+    // If we still don't have a string, the input isn't an escaped JSON
+    if (typeof inner !== 'string') {
+      showToast('❌ 输入不是转义后的 JSON 字符串');
+      return;
+    }
+    // Step 3: Format and display (formatJSON handles MongoDB extended types)
+    var result = formatJSON(inner, false);
+    if (result.error) {
+      showToast('❌ 转义内容无法解析为有效 JSON');
+      return;
+    }
+    lastResult = result;
+    updateOutputViews(result.formatted);
+    setStatus('success', '已还原');
+    updateStats(result.charCount, result.lineCount, result.maxDepth);
+  }
+
   function getActiveDiffText() {
     if (!diffEditor) return '';
     var originalEditor = diffEditor.getOriginalEditor();
@@ -3021,6 +3118,8 @@ html, body {
 
     document.getElementById('pasteBtn').addEventListener('click', pasteFromClipboard);
     els.modeSelector.addEventListener('change', onModeSelect);
+    document.getElementById('escapeBtn').addEventListener('click', escapeJson);
+    document.getElementById('unescapeBtn').addEventListener('click', unescapeJson);
     document.getElementById('copyBtn').addEventListener('click', copyOutput);
     document.getElementById('minifyBtn').addEventListener('click', function() { doFormat(!isOutputCollapsed); });
     document.getElementById('themeBtn').addEventListener('click', toggleTheme);
