@@ -835,11 +835,10 @@ html, body {
   <div class="editor-container" id="escapePanel" style="display:none;">
     <div class="panel input-panel" style="flex:1;">
       <div class="panel-header">
-        <span id="escapeModeLabel">🔒 转义 JSON</span>
+        <span>INPUT</span>
         <div style="display:flex;gap:6px;">
-          <button class="btn btn-primary" id="escapeDoBtn">🔄 转换</button>
-          <button class="btn" id="escapeCopyBtn">📋 复制</button>
-          <button class="btn" id="escapeBackBtn">↩ 返回</button>
+          <button class="btn" id="escapeClearBtn" title="清除输入">清除</button>
+          <button class="btn" id="escapePasteBtn">📋 粘贴</button>
         </div>
       </div>
       <div class="input-area">
@@ -851,6 +850,11 @@ html, body {
     <div class="panel output-panel">
       <div class="panel-header">
         <span>OUTPUT</span>
+        <div style="display:flex;gap:6px;">
+          <button class="btn" id="escapeBackBtn">↩ 返回</button>
+          <button class="btn btn-primary" id="escapeDoBtn">🔄 转换</button>
+          <button class="btn" id="escapeCopyBtn">📋 复制</button>
+        </div>
       </div>
       <div class="output-wrapper" style="flex:1;overflow:auto;">
         <pre id="escapeOutput" class="output-view"><code class="output-code"><span class="output-placeholder">转换结果将显示在这里</span></code></pre>
@@ -3212,6 +3216,19 @@ html, body {
     document.getElementById('escapeDoBtn').addEventListener('click', doEscapeConvert);
     document.getElementById('escapeCopyBtn').addEventListener('click', escapeCopyResult);
     document.getElementById('escapeBackBtn').addEventListener('click', escapeBackToMain);
+    document.getElementById('escapeClearBtn').addEventListener('click', function() {
+      document.getElementById('escapeInput').value = '';
+      setEscapePlaceholder();
+      document.getElementById('escapeInput').focus();
+    });
+    document.getElementById('escapePasteBtn').addEventListener('click', function() {
+      navigator.clipboard.readText().then(function(text) {
+        if (text) {
+          document.getElementById('escapeInput').value = text;
+          setStatus('success', '已粘贴');
+        }
+      }).catch(function() { showToast('❌ 无法读取剪贴板'); });
+    });
     document.getElementById('copyBtn').addEventListener('click', copyOutput);
     document.getElementById('minifyBtn').addEventListener('click', function() { doFormat(!isOutputCollapsed); });
     document.getElementById('themeBtn').addEventListener('click', toggleTheme);
