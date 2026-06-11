@@ -853,7 +853,7 @@ html, body {
         <span>OUTPUT</span>
         <div style="display:flex;gap:6px;">
           <button class="btn" id="escapeBackBtn">↩ 返回</button>
-          <button class="btn btn-primary" id="escapeDoBtn">🔄 转换</button>
+          <button class="btn" id="escapeEditBtn">✏️ 编辑</button>
           <button class="btn" id="escapeCopyBtn">📋 复制</button>
         </div>
       </div>
@@ -2471,6 +2471,7 @@ html, body {
   // ==================== ESCAPE / UNESCAPE MODULE ====================
 
   var escapeMode = null; // 'escape' | 'unescape' | null
+  var escapeEditMode = false;
 
   function showEscapePanel(show, mode) {
     var mainEditor = document.querySelector('.editor-container:not(#escapePanel)');
@@ -2478,25 +2479,63 @@ html, body {
     if (!mainEditor || !escPanel) return;
     if (show) {
       escapeMode = mode || 'escape';
+      escapeEditMode = false;
       mainEditor.style.display = 'none';
       escPanel.style.display = '';
       var lbl = document.getElementById('escapeModeLabel');
-      var doBtn = document.getElementById('escapeDoBtn');
       if (escapeMode === 'escape') {
         if (lbl) lbl.textContent = '🔒 转义 JSON';
-        if (doBtn) doBtn.textContent = '🔒 转义';
-        document.getElementById('escapeInput').placeholder = '粘贴普通 JSON，点击转换输出转义字符串…';
+        document.getElementById('escapeInput').placeholder = '粘贴普通 JSON，自动输出转义字符串…';
       } else {
         if (lbl) lbl.textContent = '🔓 还原 JSON';
-        if (doBtn) doBtn.textContent = '🔓 还原';
-        document.getElementById('escapeInput').placeholder = '粘贴转义后的 JSON 字符串，点击转换输出可读 JSON…';
+        document.getElementById('escapeInput').placeholder = '粘贴转义后的 JSON 字符串，自动输出可读 JSON…';
       }
       setEscapePlaceholder();
+      var escOutPanel = document.getElementById('escapePanel').querySelector('.output-panel');
+      if (escOutPanel) escOutPanel.classList.remove('edit-mode');
+      var editBtn = document.getElementById('escapeEditBtn');
+      if (editBtn) editBtn.innerHTML = '✏️ 编辑';
       document.getElementById('escapeInput').focus();
     } else {
       escapeMode = null;
+      escapeEditMode = false;
       mainEditor.style.display = '';
       escPanel.style.display = 'none';
+    }
+  }
+
+  var escapeDebounceTimer = null;
+  function escapeAutoConvert() {
+    if (!escapeMode) return;
+    var input = document.getElementById('escapeInput').value;
+    if (!input.trim()) { setEscapePlaceholder(); return; }
+    if (escapeMode === 'escape') {
+      escapeConvert(input);
+    } else {
+      unescapeConvert(input);
+    }
+  }
+
+  function toggleEscapeEditMode() {
+    escapeEditMode = !escapeEditMode;
+    var panel = document.getElementById('escapePanel').querySelector('.output-panel');
+    var editBtn = document.getElementById('escapeEditBtn');
+    if (escapeEditMode) {
+      if (panel) panel.classList.add('edit-mode');
+      if (editBtn) editBtn.innerHTML = '🔒 查看';
+      document.getElementById('escapeOutputTextarea').focus();
+    } else {
+      if (panel) panel.classList.remove('edit-mode');
+      if (editBtn) editBtn.innerHTML = '✏️ 编辑';
+      // Re-format edited content
+      var rawText = document.getElementById('escapeOutputTextarea').value;
+      if (rawText.trim()) {
+        if (escapeMode === 'escape') {
+          escapeConvert(rawText);
+        } else {
+          unescapeConvert(rawText);
+        }
+      }
     }
   }
 
@@ -3214,9 +3253,9 @@ html, body {
 
     document.getElementById('pasteBtn').addEventListener('click', pasteFromClipboard);
     els.modeSelector.addEventListener('change', onModeSelect);
-    document.getElementById('escapeDoBtn').addEventListener('click', doEscapeConvert);
-    document.getElementById('escapeCopyBtn').addEventListener('click', escapeCopyResult);
     document.getElementById('escapeBackBtn').addEventListener('click', escapeBackToMain);
+    document.getElementById('escapeEditBtn').addEventListener('click', toggleEscapeEditMode);
+    document.getElementById('escapeCopyBtn').addEventListener('click', escapeCopyResult);
     document.getElementById('escapeClearBtn').addEventListener('click', function() {
       document.getElementById('escapeInput').value = '';
       setEscapePlaceholder();
@@ -3226,9 +3265,16 @@ html, body {
       navigator.clipboard.readText().then(function(text) {
         if (text) {
           document.getElementById('escapeInput').value = text;
+          escapeAutoConvert();
           setStatus('success', '已粘贴');
         }
       }).catch(function() { showToast('❌ 无法读取剪贴板'); });
+    });
+    // Auto-convert on escape input change (debounced 300ms)
+    var escapeDebounceTimer = null;
+    document.getElementById('escapeInput').addEventListener('input', function() {
+      if (escapeDebounceTimer) clearTimeout(escapeDebounceTimer);
+      escapeDebounceTimer = setTimeout(escapeAutoConvert, 300);
     });
     document.getElementById('copyBtn').addEventListener('click', copyOutput);
     document.getElementById('minifyBtn').addEventListener('click', function() { doFormat(!isOutputCollapsed); });
