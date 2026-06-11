@@ -760,12 +760,12 @@ html, body {
       <button class="btn btn-primary" id="formatBtn" title="格式化输入内容">✨ 格式化</button>
       <select id="modeSelector" title="切换功能模式">
         <option value="json">JSON 格式化</option>
+        <option value="escape">🔒 转义 JSON</option>
+        <option value="unescape">🔓 还原 JSON</option>
         <option value="diff">🔍 对比</option>
         <option value="table">📊 表格</option>
         <option value="shell">🔧 Shell</option>
       </select>
-      <button class="btn" id="escapeBtn" title="将 JSON 转为转义字符串">🔒 转义</button>
-      <button class="btn" id="unescapeBtn" title="将转义字符串还原为 JSON">🔓 还原</button>
     </div>
   </header>
 
@@ -2418,6 +2418,12 @@ html, body {
     var value = els.modeSelector.value;
     if (value === 'json') {
       switchToFormatPage();
+    } else if (value === 'escape') {
+      escapeJson();
+      els.modeSelector.value = 'json';
+    } else if (value === 'unescape') {
+      unescapeJson();
+      els.modeSelector.value = 'json';
     } else if (value === 'diff' && !diffMode) {
       toggleDiffMode();
     } else if (value === 'table' && !tableMode) {
@@ -3118,8 +3124,6 @@ html, body {
 
     document.getElementById('pasteBtn').addEventListener('click', pasteFromClipboard);
     els.modeSelector.addEventListener('change', onModeSelect);
-    document.getElementById('escapeBtn').addEventListener('click', escapeJson);
-    document.getElementById('unescapeBtn').addEventListener('click', unescapeJson);
     document.getElementById('copyBtn').addEventListener('click', copyOutput);
     document.getElementById('minifyBtn').addEventListener('click', function() { doFormat(!isOutputCollapsed); });
     document.getElementById('themeBtn').addEventListener('click', toggleTheme);
