@@ -2546,20 +2546,6 @@ html, body {
     if (ta) ta.value = '';
   }
 
-  function doEscapeConvert() {
-    if (!escapeMode) return;
-    var input = document.getElementById('escapeInput').value;
-    if (!input.trim()) {
-      showToast('⚠️ 输入为空');
-      return;
-    }
-    if (escapeMode === 'escape') {
-      escapeConvert(input);
-    } else {
-      unescapeConvert(input);
-    }
-  }
-
   function escapeConvert(rawInput) {
     var trimmed = rawInput.trim();
     // Check if input is already an escaped JSON string
