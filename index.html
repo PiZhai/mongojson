@@ -831,6 +831,34 @@ html, body {
     </div>
   </div>
 
+  <!-- Escape/Unescape Panel -->
+  <div class="editor-container" id="escapePanel" style="display:none;">
+    <div class="panel input-panel" style="flex:1;">
+      <div class="panel-header">
+        <span id="escapeModeLabel">🔒 转义 JSON</span>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-primary" id="escapeDoBtn">🔄 转换</button>
+          <button class="btn" id="escapeCopyBtn">📋 复制</button>
+          <button class="btn" id="escapeBackBtn">↩ 返回</button>
+        </div>
+      </div>
+      <div class="input-area">
+        <textarea id="escapeInput" placeholder="在此输入或粘贴…" spellcheck="false"></textarea>
+      </div>
+      <div class="error-display" id="escapeError"></div>
+    </div>
+    <div class="panel-divider"></div>
+    <div class="panel output-panel">
+      <div class="panel-header">
+        <span>OUTPUT</span>
+      </div>
+      <div class="output-wrapper" style="flex:1;overflow:auto;">
+        <pre id="escapeOutput" class="output-view"><code class="output-code"><span class="output-placeholder">转换结果将显示在这里</span></code></pre>
+        <textarea id="escapeOutputTextarea" class="output-edit" spellcheck="false" readonly placeholder="转换结果将显示在这里"></textarea>
+      </div>
+    </div>
+  </div>
+
   <!-- Status Bar -->
   <footer class="status-bar">
     <div class="status-left">
@@ -2417,31 +2445,79 @@ html, body {
   function onModeSelect() {
     var value = els.modeSelector.value;
     if (value === 'json') {
+      showEscapePanel(false);
       switchToFormatPage();
     } else if (value === 'escape') {
-      escapeJson();
-      els.modeSelector.value = 'json';
+      showEscapePanel(true, 'escape');
     } else if (value === 'unescape') {
-      unescapeJson();
-      els.modeSelector.value = 'json';
+      showEscapePanel(true, 'unescape');
     } else if (value === 'diff' && !diffMode) {
+      showEscapePanel(false);
       toggleDiffMode();
     } else if (value === 'table' && !tableMode) {
+      showEscapePanel(false);
       toggleTableMode();
     } else if (value === 'shell' && !shellMode) {
+      showEscapePanel(false);
       toggleShellMode();
     }
   }
 
-  // ==================== JSON ESCAPE / UNESCAPE ====================
+  // ==================== ESCAPE / UNESCAPE MODULE ====================
 
-  function escapeJson() {
-    var input = els.input.value;
+  var escapeMode = null; // 'escape' | 'unescape' | null
+
+  function showEscapePanel(show, mode) {
+    var mainEditor = document.querySelector('.editor-container:not(#escapePanel)');
+    var escPanel = document.getElementById('escapePanel');
+    if (!mainEditor || !escPanel) return;
+    if (show) {
+      escapeMode = mode || 'escape';
+      mainEditor.style.display = 'none';
+      escPanel.style.display = '';
+      var lbl = document.getElementById('escapeModeLabel');
+      var doBtn = document.getElementById('escapeDoBtn');
+      if (escapeMode === 'escape') {
+        if (lbl) lbl.textContent = '🔒 转义 JSON';
+        if (doBtn) doBtn.textContent = '🔒 转义';
+        document.getElementById('escapeInput').placeholder = '粘贴普通 JSON，点击转换输出转义字符串…';
+      } else {
+        if (lbl) lbl.textContent = '🔓 还原 JSON';
+        if (doBtn) doBtn.textContent = '🔓 还原';
+        document.getElementById('escapeInput').placeholder = '粘贴转义后的 JSON 字符串，点击转换输出可读 JSON…';
+      }
+      setEscapePlaceholder();
+      document.getElementById('escapeInput').focus();
+    } else {
+      escapeMode = null;
+      mainEditor.style.display = '';
+      escPanel.style.display = 'none';
+    }
+  }
+
+  function setEscapePlaceholder() {
+    var out = document.getElementById('escapeOutput');
+    var ta = document.getElementById('escapeOutputTextarea');
+    if (out) out.innerHTML = '<code class="output-code"><span class="output-placeholder">转换结果将显示在这里</span></code>';
+    if (ta) ta.value = '';
+  }
+
+  function doEscapeConvert() {
+    if (!escapeMode) return;
+    var input = document.getElementById('escapeInput').value;
     if (!input.trim()) {
       showToast('⚠️ 输入为空');
       return;
     }
-    var trimmed = input.trim();
+    if (escapeMode === 'escape') {
+      escapeConvert(input);
+    } else {
+      unescapeConvert(input);
+    }
+  }
+
+  function escapeConvert(rawInput) {
+    var trimmed = rawInput.trim();
     // Check if input is already an escaped JSON string
     if ((trimmed.startsWith('"') && trimmed.endsWith('"'))) {
       try {
@@ -2450,25 +2526,21 @@ html, body {
           showToast('⚠️ 输入已是转义字符串，将先还原再转义');
           trimmed = testInner;
         }
-      } catch (e) { /* not an escaped string, continue */ }
+      } catch (e) { /* not an escaped string */ }
     }
     // Try to get valid JSON text (handles MongoDB extended types via formatJSON)
     var jsonText = trimmed;
-    if (trimmed) {
-      try {
-        JSON.parse(trimmed);  // standard JSON → fine as-is
-      } catch (e) {
-        // MongoDB extended JSON → use formatJSON to normalize
-        var result = formatJSON(trimmed, false);
-        if (!result.error) {
-          jsonText = result.formatted;
-        } else {
-          showToast('❌ 无法解析为有效 JSON');
-          return;
-        }
+    try {
+      JSON.parse(trimmed);
+    } catch (e) {
+      var result = formatJSON(trimmed, false);
+      if (!result.error) {
+        jsonText = result.formatted;
+      } else {
+        showToast('❌ 无法解析为有效 JSON');
+        return;
       }
     }
-    // Parse the JSON text
     var parsed;
     try {
       parsed = JSON.parse(jsonText);
@@ -2476,32 +2548,25 @@ html, body {
       showToast('❌ 无法解析为有效 JSON');
       return;
     }
-    // Convert to compact JSON string, then escape it
     var compact = JSON.stringify(parsed);
     var escaped = JSON.stringify(compact);
-    // Display the escaped string directly (not via formatJSON which would unescape it)
-    els.output.innerHTML = '<pre style="margin:0;padding:16px;font-family:var(--font-mono);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-all;overflow-wrap:break-word;"><code>' + escapeHtml(escaped) + '</code></pre>';
-    els.outputTextarea.value = escaped;
-    lastResult = { formatted: escaped, charCount: escaped.length, lineCount: 1, maxDepth: 0 };
+    // Display
+    var out = document.getElementById('escapeOutput');
+    var ta = document.getElementById('escapeOutputTextarea');
+    if (out) out.innerHTML = '<pre style="margin:0;padding:16px;font-family:var(--font-mono);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-all;overflow-wrap:break-word;"><code>' + escapeHtml(escaped) + '</code></pre>';
+    if (ta) ta.value = escaped;
     setStatus('success', '已转义');
     updateStats(escaped.length, 1, undefined);
   }
 
-  function unescapeJson() {
-    var input = els.input.value;
-    if (!input.trim()) {
-      showToast('⚠️ 输入为空');
-      return;
-    }
-    var trimmed = input.trim();
+  function unescapeConvert(rawInput) {
+    var trimmed = rawInput.trim();
     var inner;
-    // Step 1: Try to parse the whole input as a JSON string
     try {
       inner = JSON.parse(trimmed);
     } catch (e) {
       inner = undefined;
     }
-    // Step 2: If not a string result, try removing outer quotes manually
     if (typeof inner !== 'string') {
       if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
         try {
@@ -2511,21 +2576,41 @@ html, body {
         }
       }
     }
-    // If we still don't have a string, the input isn't an escaped JSON
     if (typeof inner !== 'string') {
       showToast('❌ 输入不是转义后的 JSON 字符串');
       return;
     }
-    // Step 3: Format and display (formatJSON handles MongoDB extended types)
     var result = formatJSON(inner, false);
     if (result.error) {
       showToast('❌ 转义内容无法解析为有效 JSON');
       return;
     }
-    lastResult = result;
-    updateOutputViews(result.formatted);
+    var out = document.getElementById('escapeOutput');
+    var ta = document.getElementById('escapeOutputTextarea');
+    if (out) out.innerHTML = '<pre style="margin:0;padding:16px;font-family:var(--font-mono);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-all;overflow-wrap:break-word;"><code>' + escapeHtml(result.formatted) + '</code></pre>';
+    if (ta) ta.value = result.formatted;
     setStatus('success', '已还原');
     updateStats(result.charCount, result.lineCount, result.maxDepth);
+    lastResult = result;
+  }
+
+  function escapeCopyResult() {
+    var ta = document.getElementById('escapeOutputTextarea');
+    var text = ta ? ta.value : '';
+    if (!text || !text.trim()) {
+      showToast('没有可复制的内容');
+      return;
+    }
+    navigator.clipboard.writeText(text).then(function() {
+      showToast('✅ 已复制到剪贴板');
+    }).catch(function() {
+      showToast('❌ 复制失败');
+    });
+  }
+
+  function escapeBackToMain() {
+    showEscapePanel(false);
+    els.modeSelector.value = 'json';
   }
 
   function getActiveDiffText() {
@@ -3124,6 +3209,9 @@ html, body {
 
     document.getElementById('pasteBtn').addEventListener('click', pasteFromClipboard);
     els.modeSelector.addEventListener('change', onModeSelect);
+    document.getElementById('escapeDoBtn').addEventListener('click', doEscapeConvert);
+    document.getElementById('escapeCopyBtn').addEventListener('click', escapeCopyResult);
+    document.getElementById('escapeBackBtn').addEventListener('click', escapeBackToMain);
     document.getElementById('copyBtn').addEventListener('click', copyOutput);
     document.getElementById('minifyBtn').addEventListener('click', function() { doFormat(!isOutputCollapsed); });
     document.getElementById('themeBtn').addEventListener('click', toggleTheme);
