@@ -245,15 +245,11 @@ docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-co
 
 ```bash
 curl -I http://127.0.0.1
-curl http://127.0.0.1/api/healthz
-curl http://127.0.0.1/api/readyz
+curl http://127.0.0.1/healthz
+curl http://127.0.0.1/readyz
 ```
 
-如果 Nginx 仍按当前仓库配置转发，则也可测试：
-
-```bash
-curl http://127.0.0.1/api/healthz
-```
+建议以 Nginx 暴露的 `/healthz` 和 `/readyz` 作为首选检查入口。
 
 ### 11.3 页面访问
 

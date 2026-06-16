@@ -2,7 +2,8 @@ FROM node:24-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install
 
 COPY . .
 RUN npm run build

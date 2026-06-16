@@ -65,7 +65,7 @@ docker compose up --build
 服务：
 
 - `http://localhost` -> Nginx
-- `http://localhost:8080/healthz` -> Nginx 转发后的 Go backend
+- `http://localhost/healthz` -> Nginx 转发后的 Go backend
 
 Compose 运行包含：
 
@@ -78,6 +78,7 @@ Compose 运行包含：
 
 云服务器部署方案见：
 
+- [docs/cloud-deployment-full.md](/Users/administrator/Documents/mongojson/docs/cloud-deployment-full.md)
 - [docs/deploy-centos-stream-10.md](/Users/administrator/Documents/mongojson/docs/deploy-centos-stream-10.md)
 - [docs/deploy-runbook.md](/Users/administrator/Documents/mongojson/docs/deploy-runbook.md)
 

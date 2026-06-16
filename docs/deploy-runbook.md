@@ -55,8 +55,8 @@ chmod +x /opt/personal-tooling/app/deploy/deploy-prod.sh
 cd /opt/personal-tooling/app
 docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml ps
 curl -I http://127.0.0.1
-curl http://127.0.0.1/api/healthz
-curl http://127.0.0.1/api/readyz
+curl http://127.0.0.1/healthz
+curl http://127.0.0.1/readyz
 ```
 
 预期：
@@ -65,7 +65,7 @@ curl http://127.0.0.1/api/readyz
 - `backend` up
 - `frontend` up
 - `nginx` up
-- `/api/healthz` 返回 `ok`
+- `/healthz` 返回 `{"status":"ok"}`
 
 ## G. 页面验收
 
@@ -127,4 +127,3 @@ docker stats
 df -h
 docker system df
 ```
-

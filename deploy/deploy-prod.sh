@@ -19,6 +19,6 @@ if [[ ! -f /opt/personal-tooling/env/.htpasswd ]]; then
 fi
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull || true
+docker builder prune -f >/dev/null 2>&1 || true
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
-
