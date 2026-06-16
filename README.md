@@ -1,79 +1,104 @@
-# MongoDB JSON Formatter
+# Personal Tooling Platform
 
-一个纯前端的 `MongoDB JSON` 格式化与对比工具，适合处理包含 `ObjectId`、`ISODate`、`NumberInt`、`NumberLong` 等 Mongo shell 风格数据的内容。
+一个浏览器访问的个人工具平台，首期聚焦：
 
-## 功能特性
+- 标准 JSON 格式化、压缩、校验
+- MongoDB JSON 格式化、对比、表格化、Shell 语句整理、字符串转义/还原
+- 数据可视化
 
-- `MongoDB JSON` 格式化与高亮展示
-- 普通模式下的 `input -> output` 格式化流程
-- 输出内容复制、编辑、收起/展开
-- 深色 / 浅色主题切换
-- 对比模式下左右双栏编辑
-- 对比模式中间行号显示
-- 对比前字段排序，减少仅因字段顺序不同造成的干扰
-- 字段级差异高亮，能直观看到新增字段和缺失字段
-- **📊 Mongosql 表格视图**：将 MongoDB 文档展平为 SQL 风格表格
-  - 嵌套字段以点号路径展示（如 `benefit.benefitName`）
-  - 字段类型推断与类型徽章（string / number / date / bool / oid / mixed）
-  - 结构校验报告：全 null 列、类型不一致、缺失率>50% 等
-  - 列排序（点击表头）、全文搜索筛选、分页浏览
-  - 一键导出 CSV（BOM 头，兼容 Excel）
-- **🔧 Shell 语句格式化**：对 MongoDB Shell 命令（如 `db.collection.updateOne(...)`）进行智能格式化
-  - 语法高亮：`db`、方法名、`$` 操作符、字符串、注释
-  - 自动缩进 JSON 参数
-  - 结构校验：未知方法名、未定义操作符、括号匹配检查
-
-## 快速开始
-
-直接打开 `index.html` 即可使用。
-
-如果希望通过本地服务访问，可以执行：
-
-```bash
-python3 -m http.server 8000
-```
-
-然后在浏览器打开：
-
-```text
-http://localhost:8000/
-```
-
-## 使用说明
-
-### 普通格式化模式
-
-- 在左侧 `INPUT` 输入或粘贴 MongoDB JSON
-- 点击顶部 `✨ 格式化` 执行格式化
-- 右侧 `OUTPUT` 展示格式化结果
-- 点击顶部 `格式化` 按钮可切回普通格式化页面
-
-### 对比模式
-
-- 点击顶部 `🔍 对比` 进入对比模式
-- 左右两侧都可直接编辑
-- 点击顶部 `✨ 格式化` 会先按字段排序，再刷新差异结果
-- 中间显示同步滚动的双列行号
-- 缺失字段与新增字段会在正文中高亮显示
-
-## 技术说明
-
-- 单文件实现：`index.html`
-- 使用原生 HTML、CSS、JavaScript
-- 对比编辑器基于 Monaco Diff Editor
-- Monaco 资源通过 CDN 加载
-
-## 文件结构
+## 项目结构
 
 ```text
 .
-├── index.html
-└── README.md
+├── backend
+├── deploy
+├── docs
+├── frontend
+├── docker-compose.yml
+└── index.html
 ```
 
-## 适用场景
+> `index.html` 保留为旧版单文件原型，新的正式项目实现位于 `frontend/` 与 `backend/`。
 
-- 查看 Mongo shell 风格对象
-- 对比两份 MongoDB 文档差异
-- 排查字段新增、缺失、顺序变化
+## 本地开发
 
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+默认开发地址：`http://127.0.0.1:4174`
+
+开发态已配置代理：
+
+- `/healthz` -> `http://127.0.0.1:18080/healthz`
+- `/readyz` -> `http://127.0.0.1:18080/readyz`
+- `/api` -> `http://127.0.0.1:18080`
+
+### Backend
+
+```bash
+cd backend
+cp .env.example .env
+go run ./cmd/server
+```
+
+默认本地监听：`http://127.0.0.1:18080`
+
+默认依赖本地 PostgreSQL：
+
+- Host: `localhost`
+- Port: `5432`
+- DB: `mongojson`
+- User: `postgres`
+- Password: `postgres`
+
+## Docker Compose
+
+```bash
+docker compose up --build
+```
+
+服务：
+
+- `http://localhost` -> Nginx
+- `http://localhost:8080/healthz` -> Nginx 转发后的 Go backend
+
+Compose 运行包含：
+
+- `postgres`
+- `backend`
+- `frontend`
+- `nginx`
+
+## 生产部署
+
+云服务器部署方案见：
+
+- [docs/deploy-centos-stream-10.md](/Users/administrator/Documents/mongojson/docs/deploy-centos-stream-10.md)
+- [docs/deploy-runbook.md](/Users/administrator/Documents/mongojson/docs/deploy-runbook.md)
+
+生产环境样板：
+
+- `deploy/docker-compose.prod.yml`
+- `deploy/nginx.prod.conf`
+- `deploy/.env.prod.example`
+- `deploy/deploy-prod.sh`
+- `deploy/backup-postgres.sh`
+
+## 当前实现说明
+
+- 前端已完成工作台壳、路由、核心工具页骨架
+- 旧版 JSON / MongoDB JSON 关键逻辑已迁移为 TypeScript 模块
+- 后端已完成 PostgreSQL、文件上传、任务创建、预设管理、短期留存框架
+- 文档转换方向保留在项目规划中，但当前构建未启用相关前后端能力
+
+## 当前边界
+
+- 首期仍是单体 Go API + 内置 worker，不拆独立队列服务
+- 文件落盘存储，数据库只保存元信息和过期时间
+- 访问控制预期由 Nginx 层承担，应用层暂不实现账号体系
+- 文档转换、更多个人电脑组件接入，作为后续阶段能力继续追加

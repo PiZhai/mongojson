@@ -226,7 +226,8 @@ html, body {
   min-height: 0;
 }
 
-#input {
+#input,
+#escapeInput {
   flex: 1;
   width: 100%;
   padding: 16px;
@@ -242,9 +243,11 @@ html, body {
   transition: background var(--transition), color var(--transition);
 }
 
-#input::placeholder { color: var(--text-muted); }
+#input::placeholder,
+#escapeInput::placeholder { color: var(--text-muted); }
 
-#input:focus { box-shadow: inset 0 0 0 1px var(--border-focus); }
+#input:focus,
+#escapeInput:focus { box-shadow: inset 0 0 0 1px var(--border-focus); }
 
 /* Compare mode */
 .monaco-diff-container {
@@ -385,7 +388,7 @@ html, body {
   position: relative;
 }
 
-#output {
+.output-view {
   margin: 0;
   padding: 16px;
   font-family: var(--font-mono);
@@ -394,6 +397,12 @@ html, body {
   tab-size: 2;
   white-space: pre;
   min-height: 100%;
+}
+
+.output-view.wrap-output {
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: break-word;
 }
 
 /* Editable textarea (hidden in view mode) */
@@ -542,7 +551,7 @@ html, body {
   .panel { flex: none; height: 50%; }
   .header { padding: 10px 12px; }
   .panel-header { padding: 6px 12px; }
-  #input, #output { padding: 12px; font-size: 12px; }
+  #input, #escapeInput, .output-view { padding: 12px; font-size: 12px; }
 }
 
 /* ========== Mongosql Table View ========== */
@@ -857,7 +866,7 @@ html, body {
           <button class="btn" id="escapeCopyBtn">📋 复制</button>
         </div>
       </div>
-      <div class="output-wrapper" style="flex:1;overflow:auto;">
+      <div class="output-wrapper" id="escapeOutputWrapper">
         <pre id="escapeOutput" class="output-view"><code class="output-code"><span class="output-placeholder">转换结果将显示在这里</span></code></pre>
         <textarea id="escapeOutputTextarea" class="output-edit" spellcheck="false" readonly placeholder="转换结果将显示在这里"></textarea>
       </div>
@@ -1369,6 +1378,14 @@ html, body {
     const htmlLines = lines.map(line => {
       const hl = highlightText(line);
       return '<div class="output-line"><span class="line-content">' + (hl || '&nbsp;') + '</span></div>';
+    });
+    return '<code class="output-code">' + htmlLines.join('') + '</code>';
+  }
+
+  function renderPlainOutput(text) {
+    const lines = text.split('\n');
+    const htmlLines = lines.map(line => {
+      return '<div class="output-line"><span class="line-content">' + (escapeHtml(line) || '&nbsp;') + '</span></div>';
     });
     return '<code class="output-code">' + htmlLines.join('') + '</code>';
   }
@@ -1951,20 +1968,18 @@ html, body {
   }
 
   function toggleTableMode() {
-    if (diffMode) return;
-    if (shellMode) toggleShellMode();
-    tableMode = !tableMode;
     var tw = document.getElementById('tableWrapper');
     var ow = document.getElementById('outputWrapper');
 
-    if (tableMode) {
+    if (!tableMode) {
+      exitDiffMode();
+      exitShellMode();
+      tableMode = true;
       ow.style.display = 'none';
       tw.classList.add('active');
       refreshTable();
     } else {
-      tw.classList.remove('active');
-      ow.style.display = '';
-      setStatus(lastResult ? 'success' : '', lastResult ? '格式化模式' : '就绪');
+      exitTableMode();
     }
     updateModeSelector();
   }
@@ -2421,15 +2436,13 @@ html, body {
   }
 
   function toggleShellMode() {
-    if (diffMode) return;
-    if (tableMode) toggleTableMode();
-    shellMode = !shellMode;
-    if (shellMode) {
+    if (!shellMode) {
+      exitDiffMode();
+      exitTableMode({ status: false });
+      shellMode = true;
       doShellFormat();
     } else {
-      clearError();
-      setPlaceholder();
-      liveFormat();
+      exitShellMode();
     }
     updateModeSelector();
   }
@@ -2445,6 +2458,44 @@ html, body {
     } else {
       els.modeSelector.value = 'json';
     }
+  }
+
+  function getMainEditorContainer() {
+    return document.querySelector('.editor-container:not(#escapePanel)');
+  }
+
+  function exitDiffMode(options) {
+    if (!diffMode) return;
+    var shouldFormat = !options || options.format !== false;
+    var editorContainer = getMainEditorContainer();
+    diffMode = false;
+    if (editorContainer) editorContainer.classList.remove('diff-mode');
+    clearCenterLineNumbers();
+    clearFieldDecorations();
+    syncDiffStateToNormalInput();
+    if (shouldFormat) liveFormat();
+  }
+
+  function exitTableMode(options) {
+    if (!tableMode) return;
+    var shouldSetStatus = !options || options.status !== false;
+    tableMode = false;
+    var tw = document.getElementById('tableWrapper');
+    var ow = document.getElementById('outputWrapper');
+    if (tw) tw.classList.remove('active');
+    if (ow) ow.style.display = '';
+    if (shouldSetStatus) {
+      setStatus(lastResult ? 'success' : '', lastResult ? '格式化模式' : '就绪');
+    }
+  }
+
+  function exitShellMode(options) {
+    if (!shellMode) return;
+    var shouldFormat = !options || options.format !== false;
+    shellMode = false;
+    clearError();
+    setPlaceholder();
+    if (shouldFormat) liveFormat();
   }
 
   function onModeSelect() {
@@ -2478,6 +2529,10 @@ html, body {
     var escPanel = document.getElementById('escapePanel');
     if (!mainEditor || !escPanel) return;
     if (show) {
+      exitDiffMode();
+      exitTableMode({ status: false });
+      exitShellMode();
+      if (isEditMode) toggleEditMode();
       escapeMode = mode || 'escape';
       escapeEditMode = false;
       mainEditor.style.display = 'none';
@@ -2542,7 +2597,10 @@ html, body {
   function setEscapePlaceholder() {
     var out = document.getElementById('escapeOutput');
     var ta = document.getElementById('escapeOutputTextarea');
-    if (out) out.innerHTML = '<code class="output-code"><span class="output-placeholder">转换结果将显示在这里</span></code>';
+    if (out) {
+      out.classList.remove('wrap-output');
+      out.innerHTML = '<code class="output-code"><span class="output-placeholder">转换结果将显示在这里</span></code>';
+    }
     if (ta) ta.value = '';
   }
 
@@ -2583,7 +2641,10 @@ html, body {
     // Display
     var out = document.getElementById('escapeOutput');
     var ta = document.getElementById('escapeOutputTextarea');
-    if (out) out.innerHTML = '<pre style="margin:0;padding:16px;font-family:var(--font-mono);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-all;overflow-wrap:break-word;"><code>' + escapeHtml(escaped) + '</code></pre>';
+    if (out) {
+      out.classList.add('wrap-output');
+      out.innerHTML = renderPlainOutput(escaped);
+    }
     if (ta) ta.value = escaped;
     setStatus('success', '已转义');
     updateStats(escaped.length, 1, undefined);
@@ -2617,7 +2678,10 @@ html, body {
     }
     var out = document.getElementById('escapeOutput');
     var ta = document.getElementById('escapeOutputTextarea');
-    if (out) out.innerHTML = '<pre style="margin:0;padding:16px;font-family:var(--font-mono);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-all;overflow-wrap:break-word;"><code>' + escapeHtml(result.formatted) + '</code></pre>';
+    if (out) {
+      out.classList.remove('wrap-output');
+      out.innerHTML = renderOutput(result.formatted);
+    }
     if (ta) ta.value = result.formatted;
     setStatus('success', '已还原');
     updateStats(result.charCount, result.lineCount, result.maxDepth);
@@ -3006,16 +3070,15 @@ html, body {
   }
 
   async function toggleDiffMode() {
-    var editorContainer = document.querySelector('.editor-container');
+    var editorContainer = getMainEditorContainer();
 
     if (!diffMode) {
-      // Exit table mode if active
-      if (tableMode) toggleTableMode();
-      if (shellMode) toggleShellMode();
+      exitTableMode({ status: false });
+      exitShellMode();
 
       diffMode = true;
       if (isEditMode) toggleEditMode();
-      editorContainer.classList.add('diff-mode');
+      if (editorContainer) editorContainer.classList.add('diff-mode');
       updateModeSelector();
       setStatus('', '正在进入对比模式');
 
@@ -3030,36 +3093,26 @@ html, body {
         scheduleCenterLineNumbersRender();
       } catch (error) {
         diffMode = false;
-        editorContainer.classList.remove('diff-mode');
+        if (editorContainer) editorContainer.classList.remove('diff-mode');
         updateModeSelector();
         clearCenterLineNumbers();
         clearFieldDecorations();
         setStatus('error', '对比编辑器加载失败');
       }
     } else {
-      diffMode = false;
-      editorContainer.classList.remove('diff-mode');
+      exitDiffMode();
       updateModeSelector();
-      clearCenterLineNumbers();
-      clearFieldDecorations();
-      syncDiffStateToNormalInput();
-      liveFormat();
     }
   }
 
   async function switchToFormatPage() {
-    if (diffMode) {
-      await toggleDiffMode();
-    }
-    if (shellMode) {
-      toggleShellMode();
-    }
-    if (tableMode) {
-      toggleTableMode();
-    }
+    exitDiffMode();
+    exitShellMode();
+    exitTableMode({ status: false });
     if (isEditMode) {
       toggleEditMode();
     }
+    updateModeSelector();
     els.input.focus();
     setStatus(lastResult ? 'success' : '', lastResult ? '已切换到格式化模式' : '格式化模式');
   }

@@ -1,1 +1,14 @@
 .DS_Store
+.idea/
+.codex/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Backend
+backend/.env
+backend/data/
+
+# Local runtime
+*.log

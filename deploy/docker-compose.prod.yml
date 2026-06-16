@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mongojson
+      POSTGRES_USER: tooling_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tooling_app -d mongojson"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - /opt/personal-tooling/data/postgres:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_URL: postgres://tooling_app:${POSTGRES_PASSWORD}@postgres:5432/mongojson?sslmode=disable
+      STORAGE_DIR: /app/data
+      FILE_RETENTION_HOURS: 24
+    volumes:
+      - /opt/personal-tooling/data/backend:/app/data
+
+  frontend:
+    build:
+      context: ../frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  nginx:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - /opt/personal-tooling/env/.htpasswd:/etc/nginx/conf.d/.htpasswd:ro
+
