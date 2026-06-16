@@ -82,13 +82,27 @@ Compose 运行包含：
 - [docs/deploy-centos-stream-10.md](/Users/administrator/Documents/mongojson/docs/deploy-centos-stream-10.md)
 - [docs/deploy-runbook.md](/Users/administrator/Documents/mongojson/docs/deploy-runbook.md)
 
-生产环境样板：
+生产环境样板与脚本：
 
 - `deploy/docker-compose.prod.yml`
 - `deploy/nginx.prod.conf`
 - `deploy/.env.prod.example`
 - `deploy/deploy-prod.sh`
+- `deploy/deploy-init.sh`
+- `deploy/deploy-release.sh`
+- `deploy/deploy-frontend.sh`
+- `deploy/deploy-backend.sh`
+- `deploy/deploy-restart.sh`
+- `deploy/deploy-status.sh`
+- `deploy/docker-prune.sh`
 - `deploy/backup-postgres.sh`
+
+推荐阅读顺序：
+
+1. [docs/deploy-centos-stream-10.md](/Users/administrator/Documents/mongojson/docs/deploy-centos-stream-10.md)  
+   首次部署，从空机器到服务上线。
+2. [docs/deploy-runbook.md](/Users/administrator/Documents/mongojson/docs/deploy-runbook.md)  
+   日常发版、仅重启、前后端分开发布。
 
 ## 当前实现说明
 
