@@ -595,6 +595,43 @@ a {
   overflow: hidden;
 }
 
+.input-health-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 12px 8px;
+  border-top: 1px solid rgba(36, 50, 73, 0.72);
+  background: rgba(10, 16, 25, 0.72);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.input-health-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.88;
+}
+
+.input-health-text {
+  min-width: 0;
+}
+
+.input-health-hint-ok {
+  color: rgba(148, 230, 181, 0.92);
+}
+
+.input-health-hint-warn {
+  color: rgba(245, 195, 91, 0.94);
+}
+
+.input-health-hint-error {
+  color: rgba(248, 139, 139, 0.96);
+}
+
 .output-box {
   overflow: auto;
   padding: 16px;

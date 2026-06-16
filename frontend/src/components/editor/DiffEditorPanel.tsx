@@ -1,6 +1,7 @@
 import { DiffEditor } from '@monaco-editor/react'
 import { useEffect, useRef } from 'react'
 import type * as Monaco from 'monaco-editor'
+import { ensureMongoLanguage, MONGO_LANGUAGE_ID } from '../../lib/editor/mongoLanguage'
 
 type DiffEditorPanelProps = {
   original: string
@@ -34,13 +35,22 @@ export function DiffEditorPanel({
   return (
     <div className="editor-shell">
       <DiffEditor
+        beforeMount={(monaco) => {
+          ensureMongoLanguage(monaco)
+        }}
         height="520px"
-        language="json"
+        language={MONGO_LANGUAGE_ID}
         modified={modified}
-        onMount={(editor) => {
+        onMount={(editor, monaco) => {
           editorRef.current = editor
           const originalEditor = editor.getOriginalEditor()
           const modifiedEditor = editor.getModifiedEditor()
+          if (originalEditor.getModel()) {
+            monaco.editor.setModelMarkers(originalEditor.getModel()!, MONGO_LANGUAGE_ID, [])
+          }
+          if (modifiedEditor.getModel()) {
+            monaco.editor.setModelMarkers(modifiedEditor.getModel()!, MONGO_LANGUAGE_ID, [])
+          }
           originalEditor.onDidChangeModelContent(() => onOriginalChange(originalEditor.getValue()))
           modifiedEditor.onDidChangeModelContent(() => onModifiedChange(modifiedEditor.getValue()))
         }}
@@ -55,7 +65,7 @@ export function DiffEditorPanel({
           wordWrap: 'on',
         }}
         original={original}
-        theme="vs-dark"
+        theme="mongodb-vs-dark"
       />
     </div>
   )

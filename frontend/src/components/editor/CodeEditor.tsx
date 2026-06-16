@@ -1,6 +1,7 @@
 import Editor from '@monaco-editor/react'
 import { useEffect, useRef } from 'react'
 import type * as Monaco from 'monaco-editor'
+import { ensureMongoLanguage, MONGO_LANGUAGE_ID } from '../../lib/editor/mongoLanguage'
 
 type CodeEditorProps = {
   value: string
@@ -33,10 +34,18 @@ export function CodeEditor({
   return (
     <div className="editor-host">
       <Editor
+        beforeMount={(monaco) => {
+          if (language === MONGO_LANGUAGE_ID) {
+            ensureMongoLanguage(monaco)
+          }
+        }}
         height={height}
         language={language}
-        onMount={(editor) => {
+        onMount={(editor, monaco) => {
           editorRef.current = editor
+          if (language === MONGO_LANGUAGE_ID && editor.getModel()) {
+            monaco.editor.setModelMarkers(editor.getModel()!, MONGO_LANGUAGE_ID, [])
+          }
         }}
         onChange={(next) => onChange?.(next ?? '')}
         options={{
@@ -51,7 +60,7 @@ export function CodeEditor({
           fontFamily:
             "'JetBrains Mono', 'SFMono-Regular', 'SF Mono', Menlo, Consolas, monospace",
         }}
-        theme="vs-dark"
+        theme={language === MONGO_LANGUAGE_ID ? 'mongodb-vs-dark' : 'vs-dark'}
         value={value}
       />
     </div>

@@ -12,7 +12,9 @@ import {
   unescapeJsonString,
   validateShellStatement,
 } from '../../lib/tooling/jsonFormatter'
+import { MONGO_LANGUAGE_ID } from '../../lib/editor/mongoLanguage'
 import type { DiffSummary, ShellValidation, TableData, ToolStatus } from '../../types/tooling'
+import { InputHealthHint } from '../common/InputHealthHint'
 import { Panel } from '../common/Panel'
 import { StatusBanner } from '../common/StatusBanner'
 import { CodeEditor } from '../editor/CodeEditor'
@@ -72,6 +74,21 @@ function isMongoMode(value: string | null): value is MongoMode {
   return value === 'format' || value === 'diff' || value === 'table' || value === 'shell' || value === 'escape' || value === 'unescape'
 }
 
+function formatParseMessage(message: string, source: string, position?: number) {
+  if (position == null || position < 0) {
+    return `${source}${message}`
+  }
+
+  const prefix = source ? `${source}` : ''
+  return `${prefix}${message}（位置 ${position + 1}）`
+}
+
+function mapHintTone(kind: ToolStatus['kind']): 'ok' | 'warn' | 'error' {
+  if (kind === 'error') return 'error'
+  if (kind === 'warning') return 'warn'
+  return 'ok'
+}
+
 export function MongoJsonWorkspace() {
   const [searchParams, setSearchParams] = useSearchParams()
   const rawMode = searchParams.get('mode')
@@ -106,6 +123,19 @@ export function MongoJsonWorkspace() {
   const normalizedDiffLeft = useMemo(() => normalizeForCompare(diffLeft), [diffLeft])
   const normalizedDiffRight = useMemo(() => normalizeForCompare(diffRight), [diffRight])
   const parsedShell = useMemo(() => parseShellStatement(shellInput), [shellInput])
+  const formatInputCheck = useMemo(() => formatJson(input, false), [input])
+  const tableInputCheck = useMemo(() => formatJson(input, false), [input])
+  const escapeInputCheck = useMemo(() => formatJson(escapeInput, false), [escapeInput])
+  const shellInputCheck = useMemo(() => {
+    const parsed = parseShellStatement(shellInput)
+    const validations = validateShellStatement(shellInput)
+    return {
+      parsed,
+      validations,
+      hasError: validations.some((item) => item.level === 'err'),
+      hasWarn: validations.some((item) => item.level === 'warn'),
+    }
+  }, [shellInput])
 
   const diffSummary = useMemo<DiffSummary>(() => {
     return getFieldDiffSummary(normalizedDiffLeft.ast, normalizedDiffRight.ast)
@@ -270,6 +300,133 @@ export function MongoJsonWorkspace() {
       helper: '在输入、输出和状态栏之间快速往返，完成 Extended JSON 的标准化处理。',
     }
   }, [activeModeLabel, diffFocus, mode, parsedShell, selectedRow, shellFocus, tableData, tablePreview.filteredSchema.length, tablePreview.selectedCells, tableQuery, tableTypeFilter])
+
+  const liveStatus = useMemo((): ToolStatus => {
+    if (mode === 'format') {
+      if ('error' in formatInputCheck) {
+        return {
+          kind: 'error',
+          message: formatParseMessage(formatInputCheck.error, '输入解析失败：', formatInputCheck.position),
+        }
+      }
+      return { kind: 'success', message: '输入已通过 MongoDB JSON 解析，可执行格式化。' }
+    }
+
+    if (mode === 'table') {
+      if ('error' in tableInputCheck) {
+        return {
+          kind: 'error',
+          message: formatParseMessage(tableInputCheck.error, '输入解析失败：', tableInputCheck.position),
+        }
+      }
+      return { kind: 'success', message: '输入已通过 MongoDB JSON 解析，可构建表格。' }
+    }
+
+    if (mode === 'shell') {
+      if (!shellInput.trim()) {
+        return { kind: 'idle', message: '等待输入 MongoDB Shell 语句。' }
+      }
+      if (!shellInputCheck.parsed) {
+        return { kind: 'warning', message: '当前输入还不是可识别的 MongoDB Shell 语句。' }
+      }
+      if (shellInputCheck.hasError) {
+        return { kind: 'error', message: shellInputCheck.validations.find((item) => item.level === 'err')?.msg ?? 'Shell 语句存在错误。' }
+      }
+      if (shellInputCheck.hasWarn) {
+        return { kind: 'warning', message: shellInputCheck.validations.find((item) => item.level === 'warn')?.msg ?? 'Shell 语句有警告，请检查。' }
+      }
+      return { kind: 'success', message: 'Shell 输入结构有效，可执行格式化。' }
+    }
+
+    if (mode === 'escape' || mode === 'unescape') {
+      if (!escapeInput.trim()) {
+        return { kind: 'idle', message: '等待输入 MongoDB JSON 文本。' }
+      }
+      if (mode === 'escape') {
+        if ('error' in escapeInputCheck) {
+          return {
+            kind: 'error',
+            message: formatParseMessage(escapeInputCheck.error, '输入解析失败：', escapeInputCheck.position),
+          }
+        }
+        return { kind: 'success', message: '输入已通过 MongoDB JSON 解析，可执行转义。' }
+      }
+
+      try {
+        const unescaped = unescapeJsonString(escapeInput)
+        if (unescaped.error) {
+          return { kind: 'error', message: `输入还原失败：${unescaped.error}` }
+        }
+        const parsed = formatJson(unescaped.output ?? '', false)
+        if ('error' in parsed) {
+          return {
+            kind: 'warning',
+            message: formatParseMessage(parsed.error, '字符串可还原，但还原后的 MongoDB JSON 无法解析：', parsed.position),
+          }
+        }
+        return { kind: 'success', message: '输入可还原且还原后的 MongoDB JSON 结构有效。' }
+      } catch {
+        return { kind: 'error', message: '当前输入不是可还原的字符串内容。' }
+      }
+    }
+
+    return status
+  }, [escapeInput, escapeInputCheck, formatInputCheck, mode, shellInput, shellInputCheck, status, tableInputCheck])
+
+  const inputHint = useMemo(() => {
+    if (liveStatus.kind === 'idle') {
+      return null
+    }
+
+    if (mode === 'format') {
+      return {
+        tone: mapHintTone(liveStatus.kind),
+        text:
+          liveStatus.kind === 'error'
+            ? liveStatus.message
+            : '校验通过，可执行格式化。',
+      }
+    }
+
+    if (mode === 'table') {
+      return {
+        tone: mapHintTone(liveStatus.kind),
+        text:
+          liveStatus.kind === 'error'
+            ? liveStatus.message
+            : '校验通过，可继续构建表格。',
+      }
+    }
+
+    if (mode === 'shell') {
+      return {
+        tone: mapHintTone(liveStatus.kind),
+        text:
+          liveStatus.kind === 'success'
+            ? '结构已识别，可执行 Shell 格式化。'
+            : liveStatus.message,
+      }
+    }
+
+    if (mode === 'escape') {
+      return {
+        tone: mapHintTone(liveStatus.kind),
+        text: liveStatus.kind === 'error' ? liveStatus.message : '校验通过，可执行转义。',
+      }
+    }
+
+    if (mode === 'unescape') {
+      return {
+        tone: mapHintTone(liveStatus.kind),
+        text:
+          liveStatus.kind === 'success'
+            ? '输入可还原，且还原后的 MongoDB JSON 结构有效。'
+            : liveStatus.message,
+      }
+    }
+
+    return null
+  }, [liveStatus, mode])
 
   const setMode = (nextMode: MongoMode) => {
     const nextParams = new URLSearchParams(searchParams)
@@ -502,7 +659,8 @@ export function MongoJsonWorkspace() {
                   </button>
                 </div>
               </div>
-              <CodeEditor language="javascript" onChange={setInput} value={input} />
+              <CodeEditor language={MONGO_LANGUAGE_ID} onChange={setInput} value={input} />
+              {inputHint ? <InputHealthHint text={inputHint.text} tone={inputHint.tone} /> : null}
             </div>
             <ResultPane
               actions={
@@ -514,7 +672,7 @@ export function MongoJsonWorkspace() {
                   {copied === 'format-output' ? '已复制' : '复制结果'}
                 </button>
               }
-              language="javascript"
+              language={MONGO_LANGUAGE_ID}
               placeholder="执行格式化后，结果会出现在这里。"
               title="Output"
               value={output}
@@ -522,7 +680,7 @@ export function MongoJsonWorkspace() {
           </div>
           <StatusBanner
             right={`字符 ${stats.chars} · 行数 ${stats.lines} · 深度 ${stats.depth}`}
-            status={status}
+            status={liveStatus.kind === 'error' || liveStatus.kind === 'warning' ? liveStatus : status.kind === 'success' ? status : liveStatus}
           />
         </Panel>
       ) : null}
@@ -666,7 +824,8 @@ export function MongoJsonWorkspace() {
                   </button>
                 </div>
               </div>
-              <CodeEditor language="javascript" onChange={setInput} value={input} />
+              <CodeEditor language={MONGO_LANGUAGE_ID} onChange={setInput} value={input} />
+              {inputHint ? <InputHealthHint text={inputHint.text} tone={inputHint.tone} /> : null}
             </div>
             <div className="editor-pane">
               <div className="editor-pane-header">
@@ -749,7 +908,7 @@ export function MongoJsonWorkspace() {
           </div>
           <StatusBanner
             right={tableData ? `字段 ${tablePreview.filteredSchema.length}/${tableData.schema.length} · 文档 ${tableData.docCount}` : '等待构建'}
-            status={status}
+            status={liveStatus.kind === 'error' || liveStatus.kind === 'warning' ? liveStatus : tableData ? status : liveStatus}
           />
           {tableOverview ? (
             <div className="summary-strip">
@@ -870,7 +1029,8 @@ export function MongoJsonWorkspace() {
                 </button>
               </div>
             </div>
-            <CodeEditor focusLine={shellFocus?.line ?? null} language="javascript" onChange={setShellInput} value={shellInput} />
+            <CodeEditor focusLine={shellFocus?.line ?? null} language={MONGO_LANGUAGE_ID} onChange={setShellInput} value={shellInput} />
+            {inputHint ? <InputHealthHint text={inputHint.text} tone={inputHint.tone} /> : null}
           </div>
           <ResultPane
             actions={
@@ -882,7 +1042,7 @@ export function MongoJsonWorkspace() {
                 {copied === 'shell-output' ? '已复制' : '复制结果'}
               </button>
             }
-            language="javascript"
+            language={MONGO_LANGUAGE_ID}
             placeholder="执行 Shell 格式化后，结果会出现在这里。"
             title="Formatted"
             value={shellOutput}
@@ -1023,7 +1183,7 @@ export function MongoJsonWorkspace() {
             </article>
           )}
         </div>
-        <StatusBanner status={status} />
+        <StatusBanner status={liveStatus.kind === 'error' || liveStatus.kind === 'warning' ? liveStatus : status.kind === 'success' ? status : liveStatus} />
       </Panel>
       ) : null}
 
@@ -1048,7 +1208,8 @@ export function MongoJsonWorkspace() {
                   </button>
                 </div>
               </div>
-              <CodeEditor language="javascript" onChange={setEscapeInput} value={escapeInput} />
+              <CodeEditor language={MONGO_LANGUAGE_ID} onChange={setEscapeInput} value={escapeInput} />
+              {inputHint ? <InputHealthHint text={inputHint.text} tone={inputHint.tone} /> : null}
             </div>
             <ResultPane
               actions={
@@ -1060,13 +1221,13 @@ export function MongoJsonWorkspace() {
                   {copied === 'escape-output' ? '已复制' : '复制结果'}
                 </button>
               }
-              language="javascript"
+              language={MONGO_LANGUAGE_ID}
               placeholder="执行后会显示转换结果。"
               title="Output"
               value={escapeOutput}
             />
           </div>
-          <StatusBanner status={status} />
+          <StatusBanner status={liveStatus.kind === 'error' || liveStatus.kind === 'warning' ? liveStatus : status.kind === 'success' ? status : liveStatus} />
         </Panel>
       ) : null}
     </div>
