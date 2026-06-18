@@ -557,6 +557,13 @@ function formatAstCompact(node: JsonNode): string {
   }
 }
 
+function compareFieldKeys(a: string, b: string) {
+  return a.localeCompare(b, 'en', {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
+
 function computeMaxDepth(node: JsonNode | null): number {
   if (!node) return 0
   switch (node.type) {
@@ -603,7 +610,7 @@ function sortAstNode(node: JsonNode): JsonNode {
         type: 'object',
         entries: node.entries
           .map((entry) => ({ key: entry.key, value: sortAstNode(entry.value) }))
-          .sort((a, b) => a.key.localeCompare(b.key)),
+          .sort((a, b) => compareFieldKeys(a.key, b.key)),
       }
     case 'array':
       return {
@@ -693,7 +700,7 @@ function compareFieldDiffs(nodeA: JsonNode | undefined, nodeB: JsonNode | undefi
     })
 
     Array.from(keys)
-      .sort((a, b) => a.localeCompare(b))
+      .sort(compareFieldKeys)
       .forEach((key) => {
         const path = joinFieldPath(basePath, key)
         if (!(key in mapB)) {
