@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -75,6 +76,7 @@ func NewServer() (*Server, error) {
 		FileService:   fileService,
 		JobService:    jobService,
 		PresetService: presetService,
+		Readiness:     readinessChecker(cfg, db, worker),
 	})
 
 	return &Server{
@@ -84,6 +86,74 @@ func NewServer() (*Server, error) {
 		jobWorker: worker,
 		cleanup:   cleanup,
 	}, nil
+}
+
+func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker) func(context.Context) (map[string]string, error) {
+	return func(ctx context.Context) (map[string]string, error) {
+		checks := map[string]string{}
+		var failures []string
+
+		if err := db.Ping(ctx); err != nil {
+			checks["database"] = "error: " + err.Error()
+			failures = append(failures, "database")
+		} else {
+			checks["database"] = "ok"
+		}
+
+		if err := checkStorage(cfg.StorageDir); err != nil {
+			checks["storage"] = "error: " + err.Error()
+			failures = append(failures, "storage")
+		} else {
+			checks["storage"] = "ok"
+		}
+
+		if worker.IsRunning() {
+			checks["worker"] = "ok"
+		} else {
+			checks["worker"] = "error: not running"
+			failures = append(failures, "worker")
+		}
+
+		if len(failures) > 0 {
+			return checks, fmt.Errorf("readiness checks failed: %s", strings.Join(failures, ", "))
+		}
+		return checks, nil
+	}
+}
+
+func checkStorage(root string) error {
+	if root == "" {
+		return fmt.Errorf("storage dir is empty")
+	}
+
+	for _, dir := range []string{root, filepath.Join(root, "uploads"), filepath.Join(root, "outputs")} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", dir, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", dir)
+		}
+	}
+
+	file, err := os.CreateTemp(root, ".readyz-*")
+	if err != nil {
+		return fmt.Errorf("create readiness probe file: %w", err)
+	}
+	name := file.Name()
+	if _, err := file.Write([]byte("ok")); err != nil {
+		_ = file.Close()
+		_ = os.Remove(name)
+		return fmt.Errorf("write readiness probe file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("close readiness probe file: %w", err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove readiness probe file: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) Shutdown(ctx context.Context) {

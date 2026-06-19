@@ -29,6 +29,13 @@ func (db *DB) Close() {
 	}
 }
 
+func (db *DB) Ping(ctx context.Context) error {
+	if db == nil || db.Pool == nil {
+		return fmt.Errorf("database pool is not initialized")
+	}
+	return db.Pool.Ping(ctx)
+}
+
 func (db *DB) Migrate(ctx context.Context) error {
 	statements := []string{
 		`create extension if not exists "pgcrypto";`,

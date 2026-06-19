@@ -2,6 +2,7 @@ package filemeta
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -48,7 +49,7 @@ func (s *Service) SaveUpload(ctx context.Context, file multipart.File, header *m
 		values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	`, record.ID, record.OriginalName, record.StoredName, record.StoragePath, record.MIMEType, record.SizeBytes, record.Category, record.ExpiresAt, record.CreatedAt)
 	if err != nil {
-		return domain.FileRecord{}, err
+		return domain.FileRecord{}, withStoredFileCleanupError("insert uploaded file metadata", err, s.store.Delete(storagePath))
 	}
 
 	return record, nil
@@ -78,9 +79,19 @@ func (s *Service) SaveGenerated(ctx context.Context, originalName string, mimeTy
 		values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	`, record.ID, record.OriginalName, record.StoredName, record.StoragePath, record.MIMEType, record.SizeBytes, record.Category, record.ExpiresAt, record.CreatedAt)
 	if err != nil {
-		return domain.FileRecord{}, err
+		return domain.FileRecord{}, withStoredFileCleanupError("insert generated file metadata", err, s.store.Delete(storagePath))
 	}
 	return record, nil
+}
+
+func withStoredFileCleanupError(operation string, operationErr error, cleanupErr error) error {
+	if cleanupErr != nil {
+		return errors.Join(
+			fmt.Errorf("%s: %w", operation, operationErr),
+			fmt.Errorf("remove orphaned file after metadata failure: %w", cleanupErr),
+		)
+	}
+	return fmt.Errorf("%s: %w", operation, operationErr)
 }
 
 func (s *Service) GetByID(ctx context.Context, id string) (domain.FileRecord, error) {

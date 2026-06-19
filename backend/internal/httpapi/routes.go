@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -18,6 +19,7 @@ type Dependencies struct {
 	FileService   *filemeta.Service
 	JobService    *jobs.Service
 	PresetService *presets.Service
+	Readiness     func(context.Context) (map[string]string, error)
 }
 
 func RegisterRoutes(router chi.Router, deps Dependencies) {

@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"log"
 	"time"
 )
 
@@ -27,7 +28,9 @@ func (c *CleanupLoop) Start(parent context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = c.service.Expire(ctx)
+				if err := c.service.Expire(ctx); err != nil {
+					log.Printf("expire old tool files and jobs: %v", err)
+				}
 			}
 		}
 	}()

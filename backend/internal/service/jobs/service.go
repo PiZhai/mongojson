@@ -3,8 +3,8 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,12 +15,16 @@ import (
 	"mongojson/backend/internal/platform/storage"
 )
 
+var (
+	ErrQueueFull          = errors.New("job queue is full")
+	ErrProcessingDisabled = errors.New("job processing is disabled in this build")
+)
+
 type Service struct {
 	db        *database.DB
 	store     *storage.LocalStore
 	retention time.Duration
 	queue     chan string
-	mu        sync.Mutex
 }
 
 func NewService(db *database.DB, store *storage.LocalStore, retention time.Duration) *Service {
@@ -36,8 +40,17 @@ func (s *Service) Queue() <-chan string {
 	return s.queue
 }
 
-func (s *Service) Enqueue(id string) {
-	s.queue <- id
+func (s *Service) TryEnqueue(id string) bool {
+	select {
+	case s.queue <- id:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) SupportsToolType(_ string) bool {
+	return false
 }
 
 func (s *Service) Create(ctx context.Context, toolType string, inputFileID *string, params map[string]any) (domain.JobRecord, error) {
@@ -61,7 +74,13 @@ func (s *Service) Create(ctx context.Context, toolType string, inputFileID *stri
 		return domain.JobRecord{}, fmt.Errorf("insert job: %w", err)
 	}
 
-	s.Enqueue(record.ID)
+	if !s.TryEnqueue(record.ID) {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = s.db.Pool.Exec(cleanupCtx, `delete from tool_jobs where id = $1`, record.ID)
+		return domain.JobRecord{}, ErrQueueFull
+	}
+
 	return record, nil
 }
 
@@ -181,5 +200,5 @@ func (s *Service) runProcessor(ctx context.Context, cfg config.Config, job domai
 		return nil, "", "", fmt.Errorf("get input file: %w", err)
 	}
 
-	return nil, "", "", fmt.Errorf("document conversion is temporarily disabled in this build")
+	return nil, "", "", ErrProcessingDisabled
 }

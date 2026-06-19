@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"mongojson/backend/internal/config"
 )
@@ -12,6 +13,7 @@ type Worker struct {
 	config  config.Config
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+	running atomic.Bool
 }
 
 func NewWorker(service *Service, cfg config.Config) *Worker {
@@ -21,9 +23,13 @@ func NewWorker(service *Service, cfg config.Config) *Worker {
 func (w *Worker) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	w.cancel = cancel
+	w.running.Store(true)
 	w.wg.Add(1)
 	go func() {
-		defer w.wg.Done()
+		defer func() {
+			w.running.Store(false)
+			w.wg.Done()
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -33,6 +39,10 @@ func (w *Worker) Start(parent context.Context) {
 			}
 		}
 	}()
+}
+
+func (w *Worker) IsRunning() bool {
+	return w != nil && w.running.Load()
 }
 
 func (w *Worker) Stop() {

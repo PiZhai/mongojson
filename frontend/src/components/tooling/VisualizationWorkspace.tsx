@@ -1,5 +1,4 @@
-import * as echarts from 'echarts'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { getPresets, savePreset } from '../../lib/api/client'
 import { summarizeRows, tableDataToRows } from '../../lib/tooling/charting'
 import { buildTableFromAst, formatJson } from '../../lib/tooling/jsonFormatter'
@@ -15,9 +14,12 @@ const visualizationSample = `[
   { "month": "Apr", "orders": 63, "revenue": 1822 }
 ]`
 
+function formatChartValue(value: number) {
+  if (Math.abs(value) >= 1000) return value.toLocaleString()
+  return String(value)
+}
+
 export function VisualizationWorkspace() {
-  const chartRef = useRef<HTMLDivElement | null>(null)
-  const chartInstanceRef = useRef<echarts.ECharts | null>(null)
   const [input, setInput] = useState(visualizationSample)
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '输入 JSON 后生成图表。' })
   const [rows, setRows] = useState<ChartSeriesRow[]>([])
@@ -27,6 +29,43 @@ export function VisualizationWorkspace() {
   const [presets, setPresets] = useState<Array<{ id: string; name: string; payload: Record<string, unknown> }>>([])
 
   const summary = useMemo(() => summarizeRows(rows), [rows])
+  const chartData = useMemo(() => {
+    const values = rows.map((row) => {
+      const value = Number(row[yKey] ?? 0)
+      return Number.isFinite(value) ? value : 0
+    })
+    const max = Math.max(...values, 0)
+    const scaleMax = max > 0 ? max : 1
+    const width = 720
+    const height = 300
+    const left = 48
+    const right = 24
+    const top = 24
+    const bottom = 48
+    const plotWidth = width - left - right
+    const plotHeight = height - top - bottom
+    const step = values.length > 0 ? plotWidth / values.length : plotWidth
+    const barWidth = Math.max(12, Math.min(46, step * 0.58))
+    const points = values.map((value, index) => {
+      const x = left + step * index + step / 2
+      const y = top + plotHeight - (value / scaleMax) * plotHeight
+      return { x, y, value, label: String(rows[index]?.[xKey] ?? '') }
+    })
+
+    return {
+      axisMaxLabel: formatChartValue(max),
+      barWidth,
+      bottom,
+      height,
+      left,
+      linePath: points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' '),
+      plotHeight,
+      step,
+      top,
+      width,
+      points,
+    }
+  }, [rows, xKey, yKey])
 
   const visualizeContext = rows.length > 0
     ? {
@@ -39,16 +78,6 @@ export function VisualizationWorkspace() {
       }
 
   useEffect(() => {
-    if (!chartRef.current) return
-    const chart = echarts.init(chartRef.current)
-    chartInstanceRef.current = chart
-    return () => {
-      chart.dispose()
-      chartInstanceRef.current = null
-    }
-  }, [])
-
-  useEffect(() => {
     void (async () => {
       try {
         const response = await getPresets('visualize')
@@ -58,38 +87,6 @@ export function VisualizationWorkspace() {
       }
     })()
   }, [])
-
-  useEffect(() => {
-    if (!chartInstanceRef.current || rows.length === 0 || !xKey || !yKey) return
-    chartInstanceRef.current.setOption({
-      animationDuration: 250,
-      backgroundColor: 'transparent',
-      grid: { left: 48, right: 24, top: 36, bottom: 42 },
-      tooltip: { trigger: 'axis' },
-      xAxis: {
-        type: 'category',
-        data: rows.map((row) => String(row[xKey] ?? '')),
-        axisLabel: { color: '#94a3b8' },
-        axisLine: { lineStyle: { color: '#35506f' } },
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: { color: '#94a3b8' },
-        splitLine: { lineStyle: { color: '#243249' } },
-      },
-      series: [
-        {
-          type: chartType,
-          data: rows.map((row) => Number(row[yKey] ?? 0)),
-          itemStyle: {
-            color: '#22c55e',
-            borderRadius: [4, 4, 0, 0],
-          },
-          smooth: chartType === 'line',
-        },
-      ],
-    })
-  }, [rows, xKey, yKey, chartType])
 
   const run = () => {
     const result = formatJson(input, false)
@@ -122,7 +119,7 @@ export function VisualizationWorkspace() {
           </p>
           <div className="page-hero-meta">
             <span className="meta-chip">JSON to Chart</span>
-            <span className="meta-chip">ECharts</span>
+            <span className="meta-chip">轻量图表</span>
             <span className="meta-chip">Preset Ready</span>
           </div>
         </div>
@@ -277,7 +274,51 @@ export function VisualizationWorkspace() {
                   <h3 className="panel-title">预览</h3>
                 </div>
               </div>
-              <div className="chart-host" ref={chartRef} />
+              <div className="chart-host">
+                {rows.length > 0 && xKey && yKey ? (
+                  <svg aria-label={`${xKey} 到 ${yKey} 的${chartType === 'line' ? '折线图' : '柱状图'}`} className="chart-svg" role="img" viewBox={`0 0 ${chartData.width} ${chartData.height}`}>
+                    <line className="chart-axis" x1={chartData.left} x2={chartData.width - 24} y1={chartData.top + chartData.plotHeight} y2={chartData.top + chartData.plotHeight} />
+                    <line className="chart-axis" x1={chartData.left} x2={chartData.left} y1={chartData.top} y2={chartData.top + chartData.plotHeight} />
+                    <text className="chart-axis-label" x={chartData.left - 8} y={chartData.top + 8}>
+                      {chartData.axisMaxLabel}
+                    </text>
+                    {chartType === 'line' ? (
+                      <>
+                        <path className="chart-line" d={chartData.linePath} />
+                        {chartData.points.map((point) => (
+                          <circle className="chart-point" cx={point.x} cy={point.y} key={`${point.label}-${point.x}`} r="4">
+                            <title>{`${point.label}: ${formatChartValue(point.value)}`}</title>
+                          </circle>
+                        ))}
+                      </>
+                    ) : (
+                      chartData.points.map((point) => (
+                        <rect
+                          className="chart-bar"
+                          height={chartData.top + chartData.plotHeight - point.y}
+                          key={`${point.label}-${point.x}`}
+                          rx="4"
+                          width={chartData.barWidth}
+                          x={point.x - chartData.barWidth / 2}
+                          y={point.y}
+                        >
+                          <title>{`${point.label}: ${formatChartValue(point.value)}`}</title>
+                        </rect>
+                      ))
+                    )}
+                    {chartData.points.map((point, index) => (
+                      <text className="chart-label" key={`${point.label}-${index}`} textAnchor="middle" x={point.x} y={chartData.height - 18}>
+                        {point.label}
+                      </text>
+                    ))}
+                  </svg>
+                ) : (
+                  <div className="inline-empty-state">
+                    <p className="inline-empty-state-title">等待图表数据</p>
+                    <p className="inline-empty-state-text">生成图表后，这里会展示柱状图或折线图预览。</p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -294,7 +335,7 @@ export function VisualizationWorkspace() {
         </article>
         <article className="info-card">
           <p className="info-card-title">图表引擎</p>
-          <p className="info-card-text">使用 ECharts，后续可以扩展折线图、饼图和多序列聚合视图。</p>
+          <p className="info-card-text">当前使用轻量内置 SVG 图表，后续如需复杂交互可再接入专业图表引擎。</p>
         </article>
         <article className="info-card">
           <p className="info-card-title">预设能力</p>

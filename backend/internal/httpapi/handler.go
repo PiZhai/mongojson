@@ -14,24 +14,57 @@ import (
 	"github.com/google/uuid"
 
 	"mongojson/backend/internal/domain"
+	"mongojson/backend/internal/service/jobs"
 )
 
 type Handler struct {
 	deps Dependencies
 }
 
+const maxUploadBytes = 64 << 20
+
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) readyz(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Readiness == nil {
+		httpError(w, http.StatusServiceUnavailable, "readiness checker is not configured")
+		return
+	}
+
+	ctx, cancel := withTimeout(r.Context())
+	defer cancel()
+
+	checks, err := h.deps.Readiness(ctx)
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "not_ready",
+			"checks": checks,
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status": "ready",
+		"checks": checks,
+	})
 }
 
 func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "upload body exceeds 64 MiB")
+			return
+		}
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
 	}
 
 	file, header, err := r.FormFile("file")
@@ -80,10 +113,8 @@ func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "tool_type is required")
 		return
 	}
-	switch body.ToolType {
-	case "json", "mongodb_json", "visualize":
-	default:
-		httpError(w, http.StatusBadRequest, "tool_type is not enabled in this build")
+	if !h.deps.JobService.SupportsToolType(body.ToolType) {
+		httpError(w, http.StatusServiceUnavailable, "asynchronous job processing is disabled for this tool in this build")
 		return
 	}
 
@@ -98,6 +129,14 @@ func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.deps.JobService.Create(r.Context(), body.ToolType, inputFileID, body.Params)
 	if err != nil {
+		if errors.Is(err, jobs.ErrQueueFull) {
+			httpError(w, http.StatusServiceUnavailable, "job queue is full; try again later")
+			return
+		}
+		if errors.Is(err, jobs.ErrProcessingDisabled) {
+			httpError(w, http.StatusServiceUnavailable, "asynchronous job processing is disabled in this build")
+			return
+		}
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -145,7 +184,7 @@ func (h *Handler) createPreset(w http.ResponseWriter, r *http.Request) {
 }
 
 func withTimeout(parent context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, 30*time.Second)
+	return context.WithTimeout(parent, 3*time.Second)
 }
 
 func notFound(err error) bool {

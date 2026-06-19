@@ -28,6 +28,16 @@ export type JsonFormatError = {
 
 export type JsonFormatResponse = JsonFormatResult | JsonFormatError
 
+export type FormatMeta = {
+  text: string
+  error: string | null
+  lineCount: number
+  charCount: number
+  maxDepth?: number
+  ast: JsonNode | null
+  keyLineMap: Record<string, number>
+}
+
 export type TableSchemaColumn = {
   path: string
   dominantType: string
@@ -48,6 +58,29 @@ export type TableData = {
   rows: Array<Array<JsonNode | null>>
   validation: TableValidation[]
   docCount: number
+}
+
+export type ShellArg = {
+  text: string
+  start: number
+  end: number
+}
+
+export type ShellMethod = {
+  name: string
+  nameStart: number
+  nameEnd: number
+  openParen: number
+  closeParen: number
+  argsRaw: ShellArg[]
+}
+
+export type ShellStatement = {
+  collection: string
+  collectionStart: number
+  collectionEnd: number
+  methods: ShellMethod[]
+  operators: Array<{ name: string; pos: number }>
 }
 
 export type ShellValidation = {
