@@ -68,13 +68,21 @@ export function MongoJsonWorkspace() {
 
       {mode === 'diff' ? (
         <DiffMode
+          arrayMatchKey={workspace.arrayMatchKey}
+          copied={workspace.copied}
+          copyText={workspace.copyText}
           diffFocus={workspace.diffFocus}
+          diffIgnoreInput={workspace.diffIgnoreInput}
           diffOverview={workspace.diffOverview}
           diffSummary={workspace.diffSummary}
+          formattedJsonPatch={workspace.formattedJsonPatch}
           jumpToDiffPath={workspace.jumpToDiffPath}
           normalizedDiffLeft={workspace.normalizedDiffLeft}
           normalizedDiffRight={workspace.normalizedDiffRight}
+          semanticDiff={workspace.semanticDiff}
+          setArrayMatchKey={workspace.setArrayMatchKey}
           setDiffFocus={workspace.setDiffFocus}
+          setDiffIgnoreInput={workspace.setDiffIgnoreInput}
           setDiffLeft={workspace.setDiffLeft}
           setDiffRight={workspace.setDiffRight}
         />
@@ -87,8 +95,12 @@ export function MongoJsonWorkspace() {
           input={workspace.input}
           inputHint={workspace.inputHint}
           liveStatus={workspace.liveStatus}
+          generatedSchema={workspace.generatedSchema}
+          generatedSchemaTarget={workspace.generatedSchemaTarget}
           runTable={workspace.runTable}
+          schemaProfile={workspace.schemaProfile}
           selectedRow={workspace.selectedRow}
+          setGeneratedSchemaTarget={workspace.setGeneratedSchemaTarget}
           setInput={workspace.setInput}
           setSelectedRow={workspace.setSelectedRow}
           setTableQuery={workspace.setTableQuery}
@@ -110,6 +122,7 @@ export function MongoJsonWorkspace() {
           inputHint={workspace.inputHint}
           jumpToShellOffset={workspace.jumpToShellOffset}
           liveStatus={workspace.liveStatus}
+          mongoInspection={workspace.mongoInspection}
           parsedShell={workspace.parsedShell}
           runShell={workspace.runShell}
           setShellFocus={workspace.setShellFocus}

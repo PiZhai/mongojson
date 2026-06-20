@@ -94,6 +94,117 @@ export type DiffSummary = {
   changed: string[]
 }
 
+export type InspectInputKind =
+  | 'standard-json'
+  | 'mongo-json'
+  | 'escaped-json-string'
+  | 'mongo-shell'
+  | 'curl'
+  | 'log-json-fragment'
+  | 'ndjson'
+  | 'unknown'
+
+export type InspectSuggestedActionId = 'format' | 'unescape' | 'diff' | 'table' | 'shell' | 'extract'
+
+export type InspectSuggestedAction = {
+  id: InspectSuggestedActionId
+  label: string
+  description: string
+  targetPath?: string
+}
+
+export type InspectIssue = {
+  level: 'info' | 'warn' | 'error'
+  message: string
+}
+
+export type InspectResult = {
+  kind: InspectInputKind
+  confidence: number
+  extractedText: string
+  issues: InspectIssue[]
+  suggestedActions: InspectSuggestedAction[]
+}
+
+export type SemanticDiffOptions = {
+  ignorePaths?: string[]
+  arrayMatchKey?: string
+}
+
+export type SemanticDiffChange = {
+  path: string
+  leftType?: string
+  rightType?: string
+  leftValue?: string
+  rightValue?: string
+  message: string
+}
+
+export type JsonPatchOperation =
+  | { op: 'add'; path: string; value: unknown }
+  | { op: 'remove'; path: string }
+  | { op: 'replace'; path: string; value: unknown }
+
+export type SemanticDiffResult = {
+  added: SemanticDiffChange[]
+  removed: SemanticDiffChange[]
+  typeChanged: SemanticDiffChange[]
+  valueChanged: SemanticDiffChange[]
+  patch: JsonPatchOperation[]
+}
+
+export type SchemaProfileField = {
+  path: string
+  dominantType: string
+  optional: boolean
+  nullRatio: number
+  presenceRatio: number
+  isMixed: boolean
+  typeCounts: Record<string, number>
+  examples: string[]
+  risks: string[]
+}
+
+export type SchemaProfile = {
+  docCount: number
+  fieldCount: number
+  nullableFieldCount: number
+  mixedFieldCount: number
+  riskFieldCount: number
+  fields: SchemaProfileField[]
+}
+
+export type GeneratedSchemaTarget = 'typescript' | 'zod' | 'go'
+
+export type GeneratedSchema = {
+  target: GeneratedSchemaTarget
+  code: string
+}
+
+export type MongoQueryRisk = {
+  level: 'info' | 'warn' | 'danger'
+  code: string
+  message: string
+  method?: string
+}
+
+export type PipelineStageSummary = {
+  index: number
+  operator: string
+  title: string
+  description: string
+  fieldHints: string[]
+  risks: string[]
+  raw: string
+}
+
+export type PipelineInspectionResult = {
+  collection: string
+  methodChain: string[]
+  risks: MongoQueryRisk[]
+  stages: PipelineStageSummary[]
+}
+
 export type ChartSeriesRow = Record<string, string | number | null>
 
 export type JobStatus = 'pending' | 'running' | 'success' | 'failed' | 'expired'

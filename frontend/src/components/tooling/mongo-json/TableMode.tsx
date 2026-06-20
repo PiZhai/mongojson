@@ -1,5 +1,5 @@
 import { MONGO_LANGUAGE_ID } from '../../../lib/editor/mongoLanguage'
-import type { TableData, ToolStatus } from '../../../types/tooling'
+import type { GeneratedSchema, GeneratedSchemaTarget, SchemaProfile, TableData, ToolStatus } from '../../../types/tooling'
 import { InputHealthHint } from '../../common/InputHealthHint'
 import { Panel } from '../../common/Panel'
 import { StatusBanner } from '../../common/StatusBanner'
@@ -18,8 +18,12 @@ type TableModeProps = {
   input: string
   inputHint: InputHint | null
   liveStatus: ToolStatus
+  generatedSchema: GeneratedSchema | null
+  generatedSchemaTarget: GeneratedSchemaTarget
   runTable: () => void
+  schemaProfile: SchemaProfile | null
   selectedRow: number
+  setGeneratedSchemaTarget: (target: GeneratedSchemaTarget) => void
   setInput: (value: string) => void
   setSelectedRow: (updater: (value: number) => number) => void
   setTableQuery: (value: string) => void
@@ -39,8 +43,12 @@ export function TableMode({
   input,
   inputHint,
   liveStatus,
+  generatedSchema,
+  generatedSchemaTarget,
   runTable,
+  schemaProfile,
   selectedRow,
+  setGeneratedSchemaTarget,
   setInput,
   setSelectedRow,
   setTableQuery,
@@ -156,6 +164,85 @@ export function TableMode({
               <span className="summary-tile-helper">{item.helper}</span>
             </article>
           ))}
+        </div>
+      ) : null}
+      {schemaProfile ? (
+        <div className="workspace-grid">
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-header-copy">
+                <div className="panel-eyebrow">Schema Profile</div>
+                <h3 className="panel-title">Schema 体检</h3>
+              </div>
+            </div>
+            <div className="summary-strip summary-strip-compact">
+              <article className="summary-tile summary-tile-left">
+                <span className="summary-tile-label">字段</span>
+                <strong className="summary-tile-value">{schemaProfile.fieldCount}</strong>
+                <span className="summary-tile-helper">{schemaProfile.docCount} 条文档</span>
+              </article>
+              <article className="summary-tile summary-tile-right">
+                <span className="summary-tile-label">可缺失</span>
+                <strong className="summary-tile-value">{schemaProfile.nullableFieldCount}</strong>
+                <span className="summary-tile-helper">存在 null 或缺失</span>
+              </article>
+              <article className="summary-tile summary-tile-changed">
+                <span className="summary-tile-label">风险字段</span>
+                <strong className="summary-tile-value">{schemaProfile.riskFieldCount}</strong>
+                <span className="summary-tile-helper">{schemaProfile.mixedFieldCount} 个 mixed</span>
+              </article>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>字段</th>
+                    <th>出现率</th>
+                    <th>示例</th>
+                    <th>风险</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {schemaProfile.fields.slice(0, 32).map((field) => (
+                    <tr className={field.risks.length > 0 ? 'row-highlight' : ''} key={field.path}>
+                      <td>
+                        <code>{field.path}</code>
+                      </td>
+                      <td>{Math.round(field.presenceRatio * 100)}%</td>
+                      <td>
+                        <code>{field.examples.join(' | ') || 'NULL'}</code>
+                      </td>
+                      <td>{field.risks.join('、') || '稳定'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-header-copy">
+                <div className="panel-eyebrow">Generate</div>
+                <h3 className="panel-title">结构生成</h3>
+              </div>
+              <div className="toolbar">
+                <select className="select select-sm" onChange={(event) => setGeneratedSchemaTarget(event.target.value as GeneratedSchemaTarget)} value={generatedSchemaTarget}>
+                  <option value="typescript">TypeScript</option>
+                  <option value="zod">Zod</option>
+                  <option value="go">Go</option>
+                </select>
+                <button
+                  className="button button-ghost button-sm"
+                  onClick={() => generatedSchema ? copyText(generatedSchema.code, `schema-${generatedSchema.target}`, '已复制结构代码。') : undefined}
+                  type="button"
+                >
+                  {copied === `schema-${generatedSchema?.target}` ? '已复制' : '复制'}
+                </button>
+              </div>
+            </div>
+            <pre className="code-preview">{generatedSchema?.code ?? '构建表格后生成结构代码。'}</pre>
+          </div>
         </div>
       ) : null}
       {tableData ? (

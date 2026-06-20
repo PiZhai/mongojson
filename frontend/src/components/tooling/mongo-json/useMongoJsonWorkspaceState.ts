@@ -11,6 +11,10 @@ import {
   unescapeJsonString,
   validateShellStatement,
 } from '../../../lib/tooling/jsonFormatter'
+import { inspectMongoQuery } from '../../../lib/tooling/mongoInspector'
+import { buildSchemaProfile, generateSchema } from '../../../lib/tooling/schemaProfile'
+import { formatJsonPatch, getSemanticDiff } from '../../../lib/tooling/semanticDiff'
+import { readWorkspaceTransfer } from '../../../lib/tooling/workspaceTransfer'
 import type { DiffSummary, ShellValidation, TableData, ToolStatus } from '../../../types/tooling'
 import { diffSampleRight, mongoSample, shellSample } from './samples'
 import type { DiffFocus, InputHint, MongoMode, ShellFocus, SummaryTile, TableTypeFilter } from './types'
@@ -18,18 +22,22 @@ import { formatParseMessage, mapHintTone, modeLabels } from './modeMeta'
 import { useCopyFeedback } from './useCopyFeedback'
 
 export function useMongoJsonWorkspaceState(mode: MongoMode) {
-  const [input, setInput] = useState(mongoSample)
+  const transfer = useMemo(() => readWorkspaceTransfer('mongodb-json', mode), [mode])
+  const [input, setInput] = useState(() => (transfer && (mode === 'format' || mode === 'table') ? transfer.input : mongoSample))
   const [output, setOutput] = useState('')
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '等待执行 MongoDB JSON 工具操作。' })
   const [stats, setStats] = useState({ chars: 0, lines: 0, depth: 0 })
-  const [diffLeft, setDiffLeft] = useState(mongoSample)
+  const [diffLeft, setDiffLeft] = useState(() => (transfer && mode === 'diff' ? transfer.input : mongoSample))
   const [diffRight, setDiffRight] = useState(diffSampleRight)
   const [tableData, setTableData] = useState<TableData | null>(null)
-  const [escapeInput, setEscapeInput] = useState(mongoSample)
+  const [escapeInput, setEscapeInput] = useState(() => (transfer && (mode === 'escape' || mode === 'unescape') ? transfer.input : mongoSample))
   const [escapeOutput, setEscapeOutput] = useState('')
-  const [shellInput, setShellInput] = useState(shellSample)
+  const [shellInput, setShellInput] = useState(() => (transfer && mode === 'shell' ? transfer.input : shellSample))
   const [shellOutput, setShellOutput] = useState('')
   const [shellChecks, setShellChecks] = useState<ShellValidation[]>([])
+  const [generatedSchemaTarget, setGeneratedSchemaTarget] = useState<'typescript' | 'zod' | 'go'>('typescript')
+  const [diffIgnoreInput, setDiffIgnoreInput] = useState('_id, updatedAt')
+  const [arrayMatchKey, setArrayMatchKey] = useState('id')
   const [selectedRow, setSelectedRow] = useState(0)
   const [tableQuery, setTableQuery] = useState('')
   const [tableTypeFilter, setTableTypeFilter] = useState<TableTypeFilter>('all')
@@ -58,6 +66,24 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
   const diffSummary = useMemo<DiffSummary>(() => {
     return getFieldDiffSummary(normalizedDiffLeft.ast, normalizedDiffRight.ast)
   }, [normalizedDiffLeft.ast, normalizedDiffRight.ast])
+  const semanticDiff = useMemo(() => {
+    const ignorePaths = diffIgnoreInput
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+    return getSemanticDiff(normalizedDiffLeft.ast, normalizedDiffRight.ast, { ignorePaths, arrayMatchKey: arrayMatchKey.trim() })
+  }, [arrayMatchKey, diffIgnoreInput, normalizedDiffLeft.ast, normalizedDiffRight.ast])
+  const schemaProfile = useMemo(() => {
+    if (!tableData) return null
+    const result = formatJson(input, false)
+    return 'error' in result ? null : buildSchemaProfile(result.ast)
+  }, [input, tableData])
+  const generatedSchema = useMemo(() => {
+    if (!schemaProfile) return null
+    return generateSchema(schemaProfile, generatedSchemaTarget)
+  }, [generatedSchemaTarget, schemaProfile])
+  const mongoInspection = useMemo(() => inspectMongoQuery(shellInput), [shellInput])
+  const formattedJsonPatch = useMemo(() => formatJsonPatch(semanticDiff.patch), [semanticDiff.patch])
 
   const tablePreview = useMemo(() => {
     if (!tableData) {
@@ -416,14 +442,19 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
 
   return {
     activeModeLabel,
+    arrayMatchKey,
     contextTrail,
     copied,
     copyText,
     diffFocus,
+    diffIgnoreInput,
     diffOverview,
     diffSummary,
     escapeInput,
     escapeOutput,
+    formattedJsonPatch,
+    generatedSchema,
+    generatedSchemaTarget,
     input,
     inputHint,
     jumpToDiffPath,
@@ -434,6 +465,7 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
     output,
     parsedShell,
     primaryDiffPath,
+    mongoInspection,
     runEscape,
     runFormat,
     runShell,
@@ -442,9 +474,12 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
     setDiffFocus,
     setDiffLeft,
     setDiffRight,
+    setDiffIgnoreInput,
     setEscapeInput,
+    setGeneratedSchemaTarget,
     setInput,
     setSelectedRow,
+    setArrayMatchKey,
     setShellFocus,
     setShellInput,
     setTableQuery,
@@ -454,6 +489,8 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
     shellInput,
     shellOutput,
     shellOverview,
+    schemaProfile,
+    semanticDiff,
     stats,
     status,
     tableData,

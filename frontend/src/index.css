@@ -524,6 +524,13 @@ a {
   padding: 0 12px;
 }
 
+.select-sm {
+  min-height: 34px;
+  width: auto;
+  min-width: 132px;
+  font-size: 12px;
+}
+
 .field-textarea {
   min-height: 120px;
   padding: 12px;
@@ -665,6 +672,22 @@ a {
   color: inherit;
 }
 
+.code-preview {
+  min-height: 220px;
+  max-height: 420px;
+  margin: 0;
+  overflow: auto;
+  padding: 14px;
+  border-top: 1px solid var(--border);
+  background: var(--editor-bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .empty-state {
   display: flex;
   align-items: center;
@@ -696,6 +719,11 @@ a {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   background: rgba(10, 16, 25, 0.42);
+}
+
+.summary-strip-compact {
+  padding: 12px;
+  border-top: none;
 }
 
 .summary-tile {

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { formatJson } from '../../lib/tooling/jsonFormatter'
+import { readWorkspaceTransfer } from '../../lib/tooling/workspaceTransfer'
 import type { ToolStatus } from '../../types/tooling'
 import { Panel } from '../common/Panel'
 import { StatusBanner } from '../common/StatusBanner'
@@ -20,7 +21,7 @@ const sampleJson = `{
 }`
 
 export function JsonWorkspace() {
-  const [input, setInput] = useState(sampleJson)
+  const [input, setInput] = useState(() => readWorkspaceTransfer('json')?.input ?? sampleJson)
   const [output, setOutput] = useState('')
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '等待执行格式化或校验。' })
   const [showTree, setShowTree] = useState(false)

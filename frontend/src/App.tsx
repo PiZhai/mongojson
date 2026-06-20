@@ -4,6 +4,9 @@ import './App.css'
 import { AppShell } from './components/layout/AppShell'
 
 const JsonToolPage = lazy(() => import('./pages/JsonToolPage').then((module) => ({ default: module.JsonToolPage })))
+const InspectToolPage = lazy(() =>
+  import('./pages/InspectToolPage').then((module) => ({ default: module.InspectToolPage })),
+)
 const MongoJsonToolPage = lazy(() =>
   import('./pages/MongoJsonToolPage').then((module) => ({ default: module.MongoJsonToolPage })),
 )
@@ -28,7 +31,8 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<AppShell />}>
-          <Route index element={<Navigate to="/tools/json" replace />} />
+          <Route index element={<Navigate to="/tools/inspect" replace />} />
+          <Route path="tools/inspect" element={withSuspense(<InspectToolPage />)} />
           <Route path="tools/json" element={withSuspense(<JsonToolPage />)} />
           <Route path="tools/mongodb-json" element={withSuspense(<MongoJsonToolPage />)} />
           <Route path="tools/visualize" element={withSuspense(<VisualizeToolPage />)} />

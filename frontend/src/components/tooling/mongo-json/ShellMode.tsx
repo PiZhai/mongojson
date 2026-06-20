@@ -1,5 +1,5 @@
 import { MONGO_LANGUAGE_ID } from '../../../lib/editor/mongoLanguage'
-import type { ShellStatement, ShellValidation, ToolStatus } from '../../../types/tooling'
+import type { PipelineInspectionResult, ShellStatement, ShellValidation, ToolStatus } from '../../../types/tooling'
 import { InputHealthHint } from '../../common/InputHealthHint'
 import { Panel } from '../../common/Panel'
 import { StatusBanner } from '../../common/StatusBanner'
@@ -12,6 +12,7 @@ type ShellModeProps = {
   inputHint: InputHint | null
   jumpToShellOffset: (offset: number, label: string, kind: ShellFocus['kind']) => void
   liveStatus: ToolStatus
+  mongoInspection: PipelineInspectionResult | null
   parsedShell: ShellStatement | null
   runShell: () => void
   setShellFocus: (focus: ShellFocus | null) => void
@@ -30,6 +31,7 @@ export function ShellMode({
   inputHint,
   jumpToShellOffset,
   liveStatus,
+  mongoInspection,
   parsedShell,
   runShell,
   setShellFocus,
@@ -183,6 +185,59 @@ export function ShellMode({
             </div>
             <div className="table-caption">
               已识别 {parsedShell.methods.length} 个方法调用和 {parsedShell.operators.length} 个操作符，可从摘要直接跳到输入区。
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {mongoInspection ? (
+        <div className="workspace-grid">
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-header-copy">
+                <div className="panel-eyebrow">Risk</div>
+                <h3 className="panel-title">查询风险检查</h3>
+              </div>
+            </div>
+            <div className="stack panel-body-compact">
+              {mongoInspection.risks.length > 0 ? (
+                mongoInspection.risks.map((risk, index) => (
+                  <article className="info-card" key={`${risk.code}-${index}`}>
+                    <p className="info-card-title">{risk.level.toUpperCase()} · {risk.code}</p>
+                    <p className="info-card-text">{risk.message}</p>
+                  </article>
+                ))
+              ) : (
+                <article className="info-card">
+                  <p className="info-card-title">OK</p>
+                  <p className="info-card-text">未命中首批高风险规则，仍建议结合 explain 和索引确认实际执行计划。</p>
+                </article>
+              )}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-header-copy">
+                <div className="panel-eyebrow">Pipeline</div>
+                <h3 className="panel-title">Aggregation Inspector</h3>
+              </div>
+            </div>
+            <div className="stack panel-body-compact">
+              {mongoInspection.stages.length > 0 ? (
+                mongoInspection.stages.map((stage) => (
+                  <article className="info-card" key={`${stage.index}-${stage.operator}`}>
+                    <p className="info-card-title">{stage.title}</p>
+                    <p className="info-card-text">{stage.description}</p>
+                    <p className="info-card-text">字段线索：{stage.fieldHints.join(', ') || '未提取到字段名'}</p>
+                    {stage.risks.length > 0 ? <p className="info-card-text">风险：{stage.risks.join('；')}</p> : null}
+                  </article>
+                ))
+              ) : (
+                <article className="info-card">
+                  <p className="info-card-title">未检测到 Pipeline</p>
+                  <p className="info-card-text">输入 aggregate([...]) 后，这里会按 stage 拆解说明。</p>
+                </article>
+              )}
             </div>
           </div>
         </div>

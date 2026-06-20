@@ -5,13 +5,19 @@ type NavItem = {
   to: string
   title: string
   description: string
-  icon: 'json' | 'mongo' | 'visualize'
+  icon: 'inspect' | 'json' | 'mongo' | 'visualize'
 }
 
 const navGroups: Array<{ label: string; items: NavItem[] }> = [
   {
     label: '数据工具',
     items: [
+      {
+        to: '/tools/inspect',
+        title: '智能诊断',
+        description: '识别粘贴内容并推荐下一步',
+        icon: 'inspect',
+      },
       {
         to: '/tools/json',
         title: 'JSON 工具',
@@ -39,6 +45,10 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
 ]
 
 const pageMeta: Record<string, { title: string; subtitle: string }> = {
+  '/tools/inspect': {
+    title: '智能诊断',
+    subtitle: '先识别粘贴内容的真实形态，再把干净片段送到合适的 JSON、Mongo 或可视化工具。',
+  },
   '/tools/json': {
     title: 'JSON 工具',
     subtitle: '处理标准 JSON 的格式化、压缩、校验与结构浏览，适合作为所有数据工作的起点。',
@@ -65,6 +75,17 @@ function BrandMark() {
 }
 
 function NavIcon({ icon }: Pick<NavItem, 'icon'>) {
+  if (icon === 'inspect') {
+    return (
+      <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">
+        <path d="M5 5h14v5H5z" />
+        <path d="M5 14h6v5H5z" />
+        <path d="M15 14h4v5h-4z" />
+        <path d="M8 7.5h8M7 16.5h2M16.5 16.5h1" />
+      </svg>
+    )
+  }
+
   if (icon === 'json') {
     return (
       <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">

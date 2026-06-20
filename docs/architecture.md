@@ -20,6 +20,7 @@ docs/       架构和实现说明
 ## Modules
 
 - JSON Tool
+- Inspect Tool
 - MongoDB JSON Tool
 - Visualization Tool
 
@@ -31,7 +32,7 @@ docs/       架构和实现说明
 
 ## Runtime Flow
 
-当前构建以浏览器端工具为主，后端提供文件、预设、健康检查和任务底座能力。异步 job 处理器尚未启用，因此 `POST /api/jobs` 会对未启用工具返回 `503`，避免 API 声明与实际能力不一致。
+当前构建以浏览器端工具为主，前端提供智能粘贴识别、JSON/MongoDB JSON 诊断、语义 Diff、Schema 体检、Shell 风险检查和可视化预览。后端提供文件、预设、健康检查和任务底座能力。异步 job 处理器尚未启用，因此 `POST /api/jobs` 会对未启用工具返回 `503`，避免 API 声明与实际能力不一致。
 
 后续接入真实异步处理器后的目标流程：
 
