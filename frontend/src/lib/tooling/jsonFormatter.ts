@@ -1032,6 +1032,7 @@ export function parseShellStatement(input: string): ShellStatement | null {
   skipWhitespace()
 
   let collection = ''
+  let collectionStart = i
   if (/^getCollection/i.test(input.slice(i, i + 13))) {
     i += 13
     skipWhitespace()
@@ -1041,6 +1042,7 @@ export function parseShellStatement(input: string): ShellStatement | null {
       const quote = input[i]
       if (quote === '"' || quote === "'") {
         i += 1
+        collectionStart = i
         while (i < input.length && input[i] !== quote) {
           collection += input[i]
           i += 1
@@ -1051,6 +1053,7 @@ export function parseShellStatement(input: string): ShellStatement | null {
       if (input[i] === ')') i += 1
     }
   } else {
+    collectionStart = i
     while (/[a-zA-Z0-9_-]/.test(input[i] ?? '')) {
       collection += input[i]
       i += 1
