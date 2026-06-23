@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import './App.css'
 import { AppShell } from './components/layout/AppShell'
 import { JsonToolPage } from './pages/JsonToolPage'
+import { MemoDocsPage } from './pages/MemoDocsPage'
 import { MongoJsonToolPage } from './pages/MongoJsonToolPage'
 import { VisualizeToolPage } from './pages/VisualizeToolPage'
 
@@ -14,6 +15,7 @@ function App() {
           <Route path="tools/json" element={<JsonToolPage />} />
           <Route path="tools/mongodb-json" element={<MongoJsonToolPage />} />
           <Route path="tools/visualize" element={<VisualizeToolPage />} />
+          <Route path="tools/memo-docs" element={<MemoDocsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

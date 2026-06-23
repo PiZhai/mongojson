@@ -430,18 +430,16 @@ function parse(tokens: Token[]): JsonNode {
 
     while (true) {
       const token = peek()
-      let key = ''
       if (token?.type === 'STRING' || token?.type === 'IDENT') {
-        key = token.value
+        const key = token.value
         next()
+        if (peek()?.type === ':') next()
+        else throw errorAt(`Expected ':' after key '${key}'`, peek())
+
+        entries.push({ key, value: parseValue() })
       } else {
         throw errorAt(`Expected property key but got ${token ? `'${token.type}'` : 'EOF'}`, token)
       }
-
-      if (peek()?.type === ':') next()
-      else throw errorAt(`Expected ':' after key '${key}'`, peek())
-
-      entries.push({ key, value: parseValue() })
 
       const tail = peek()
       if (tail?.type === ',') {
@@ -1034,9 +1032,7 @@ export function parseShellStatement(input: string): ShellStatement | null {
   skipWhitespace()
 
   let collection = ''
-  let collectionStart = i
   if (/^getCollection/i.test(input.slice(i, i + 13))) {
-    collectionStart = i
     i += 13
     skipWhitespace()
     if (input[i] === '(') {
@@ -1045,7 +1041,6 @@ export function parseShellStatement(input: string): ShellStatement | null {
       const quote = input[i]
       if (quote === '"' || quote === "'") {
         i += 1
-        collectionStart = i
         while (i < input.length && input[i] !== quote) {
           collection += input[i]
           i += 1
@@ -1056,7 +1051,6 @@ export function parseShellStatement(input: string): ShellStatement | null {
       if (input[i] === ')') i += 1
     }
   } else {
-    collectionStart = i
     while (/[a-zA-Z0-9_-]/.test(input[i] ?? '')) {
       collection += input[i]
       i += 1

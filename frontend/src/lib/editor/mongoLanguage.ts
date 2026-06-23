@@ -71,7 +71,7 @@ export function ensureMongoLanguage(monaco: typeof Monaco) {
         [/[{}[\]()]/, '@brackets'],
         [/,/, 'delimiter.comma'],
         [/:/, 'delimiter.colon'],
-        [/\b-?(0|[1-9]\d*)(\.\d+)?([eE][\-+]?\d+)?\b/, 'number'],
+        [/\b-?(0|[1-9]\d*)(\.\d+)?([eE][-+]?\d+)?\b/, 'number'],
         [/\b(true|false|null|undefined|NaN|Infinity)\b/, 'keyword'],
         [/\b[A-Za-z_][\w$]*\b/, {
           cases: {

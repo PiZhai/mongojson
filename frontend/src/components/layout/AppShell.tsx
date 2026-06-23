@@ -5,7 +5,7 @@ type NavItem = {
   to: string
   title: string
   description: string
-  icon: 'json' | 'mongo' | 'visualize'
+  icon: 'json' | 'mongo' | 'visualize' | 'memo'
 }
 
 const navGroups: Array<{ label: string; items: NavItem[] }> = [
@@ -34,7 +34,14 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
   },
   {
     label: '文档能力',
-    items: [],
+    items: [
+      {
+        to: '/tools/memo-docs',
+        title: '在线备忘录',
+        description: '文档、任务、回顾与本地快照',
+        icon: 'memo',
+      },
+    ],
   },
 ]
 
@@ -50,6 +57,10 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
   '/tools/visualize': {
     title: '数据可视化',
     subtitle: '把 JSON 或表格结构映射成图表视图，快速判断分布、趋势和重点字段。',
+  },
+  '/tools/memo-docs': {
+    title: '在线备忘录文档',
+    subtitle: '把随手记录升级为可检索、可回顾、可导出的轻量文档工作区。',
   },
 }
 
@@ -82,6 +93,16 @@ function NavIcon({ icon }: Pick<NavItem, 'icon'>) {
         <ellipse cx="12" cy="7" rx="5.5" ry="2.5" />
         <path d="M6.5 7v8c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5V7" />
         <path d="M12 5v14" />
+      </svg>
+    )
+  }
+
+  if (icon === 'memo') {
+    return (
+      <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">
+        <path d="M7 4.5h8.2L19 8.3V19.5H7z" />
+        <path d="M15 4.5v4h4" />
+        <path d="M10 12h6M10 15h6M10 18h3.5" />
       </svg>
     )
   }
