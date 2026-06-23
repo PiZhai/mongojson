@@ -69,6 +69,15 @@ func (db *DB) Migrate(ctx context.Context) error {
 			created_at timestamptz not null default now(),
 			updated_at timestamptz not null default now()
 		);`,
+		`create table if not exists tool_memos (
+			id uuid primary key,
+			slug text not null unique,
+			title text not null,
+			content_html text not null,
+			content_text text not null,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`,
 		`create index if not exists idx_tool_jobs_status on tool_jobs(status);`,
 		`create index if not exists idx_tool_files_expires_at on tool_files(expires_at);`,
 	}

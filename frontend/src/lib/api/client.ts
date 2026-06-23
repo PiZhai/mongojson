@@ -1,4 +1,4 @@
-import type { FileSummary, JobSummary, PresetRecord } from '../../types/tooling'
+import type { FileSummary, JobSummary, MemoRecord, PresetRecord } from '../../types/tooling'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
@@ -59,4 +59,24 @@ export async function savePreset(payload: {
 
 export function getFileDownloadUrl(id: string) {
   return `${API_BASE}/files/${id}/download`
+}
+
+export async function getMemo(slug = 'inbox') {
+  const query = slug ? `?slug=${encodeURIComponent(slug)}` : ''
+  return request<{ memo: MemoRecord }>(`${API_BASE}/memo${query}`)
+}
+
+export async function saveMemo(payload: {
+  slug?: string
+  title: string
+  content_html: string
+  content_text: string
+}) {
+  return request<{ memo: MemoRecord }>(`${API_BASE}/memo`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
 }

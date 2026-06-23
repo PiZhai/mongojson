@@ -1,105 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { getFileDownloadUrl, getMemo, saveMemo, uploadFile } from '../../lib/api/client'
+import type { FileSummary, MemoRecord, ToolStatus } from '../../types/tooling'
 import { Panel } from '../common/Panel'
 import { StatusBanner } from '../common/StatusBanner'
-import type { ToolStatus } from '../../types/tooling'
 
-type MemoStatus = 'draft' | 'active' | 'review'
+const MEMO_SLUG = 'inbox'
 
-type MemoDoc = {
-  id: string
-  title: string
-  body: string
-  tags: string[]
-  status: MemoStatus
-  pinned: boolean
-  updatedAt: string
-  snapshots: Array<{ id: string; label: string; body: string; createdAt: string }>
-}
-
-const STORAGE_KEY = 'personal-tooling-memo-docs'
-
-const sampleDocs: MemoDoc[] = [
-  {
-    id: 'memo-product-roadmap',
-    title: '在线备忘录产品草图',
-    body: `# 在线备忘录产品草图
-
-- [ ] 做一个像 Apple Notes 一样低摩擦的入口
-- [x] 保留 Notion 风格的标签、状态和可组织性
-- [ ] 引入 Google Docs 的版本感，但先用本地快照落地
-
-核心想法：备忘录不只是写下来，还要帮助用户在回顾时重新找到上下文。`,
-    tags: ['产品', '灵感', 'MVP'],
-    status: 'active',
-    pinned: true,
-    updatedAt: new Date().toISOString(),
-    snapshots: [],
-  },
-  {
-    id: 'memo-weekly-review',
-    title: '周回顾模板',
-    body: `# 周回顾
-
-## 本周推进
-- 
-
-## 下周优先级
-- [ ] 
-
-## 决策记录
-- 
-`,
-    tags: ['模板', '复盘'],
-    status: 'draft',
-    pinned: false,
-    updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
-    snapshots: [],
-  },
-]
-
-const statusCopy: Record<MemoStatus, string> = {
-  draft: '草稿',
-  active: '进行中',
-  review: '待回顾',
-}
-
-function createId() {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID()
-  }
-
-  return `memo-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function loadDocs() {
-  if (typeof window === 'undefined') return sampleDocs
-
-  const stored = window.localStorage.getItem(STORAGE_KEY)
-  if (!stored) return sampleDocs
-
-  try {
-    const parsed = JSON.parse(stored) as MemoDoc[]
-    return parsed.length > 0 ? parsed : sampleDocs
-  } catch {
-    return sampleDocs
-  }
-}
-
-function extractTasks(body: string) {
-  return body
-    .split('\n')
-    .map((line) => line.match(/^\s*-\s+\[( |x)\]\s+(.+)/i))
-    .filter((match): match is RegExpMatchArray => Boolean(match))
-    .map((match) => ({
-      done: match[1].toLowerCase() === 'x',
-      text: match[2].trim(),
-    }))
-}
-
-function estimateReadingMinutes(body: string) {
-  const wordLikeCount = body.trim().split(/\s+/).filter(Boolean).length
-  const chineseCount = (body.match(/[\u4e00-\u9fa5]/g) ?? []).length
-  return Math.max(1, Math.ceil(Math.max(wordLikeCount, chineseCount / 2) / 220))
+function stripHtml(html: string) {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  return (doc.body.textContent ?? '').replace(/\u00a0/g, ' ').trim()
 }
 
 function formatDate(value: string) {
@@ -111,314 +20,269 @@ function formatDate(value: string) {
   }).format(new Date(value))
 }
 
+function safeInsertHtml(html: string) {
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return false
+  const range = selection.getRangeAt(0)
+  range.deleteContents()
+  const fragment = range.createContextualFragment(html)
+  const lastNode = fragment.lastChild
+  range.insertNode(fragment)
+  if (lastNode) {
+    range.setStartAfter(lastNode)
+    range.setEndAfter(lastNode)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+  return true
+}
+
 export function MemoDocsWorkspace() {
-  const [docs, setDocs] = useState<MemoDoc[]>(loadDocs)
-  const [activeId, setActiveId] = useState(() => docs[0]?.id ?? '')
-  const [query, setQuery] = useState('')
-  const [tagFilter, setTagFilter] = useState('全部')
-  const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '备忘录会自动保存到当前浏览器。' })
+  const editorRef = useRef<HTMLDivElement | null>(null)
+  const saveTimerRef = useRef<number | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [memo, setMemo] = useState<MemoRecord | null>(null)
+  const [title, setTitle] = useState('')
+  const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
+  const [isSaving, setIsSaving] = useState(false)
+  const [lastSavedAt, setLastSavedAt] = useState('')
+  const [attachments, setAttachments] = useState<FileSummary[]>([])
+
+  const contentHtml = memo?.content_html ?? ''
+  const contentText = useMemo(() => stripHtml(contentHtml), [contentHtml])
+
+  const syncEditorContent = (html: string) => {
+    if (editorRef.current && editorRef.current.innerHTML !== html) {
+      editorRef.current.innerHTML = html
+    }
+  }
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(docs))
-  }, [docs])
+    void (async () => {
+      try {
+        const response = await getMemo(MEMO_SLUG)
+        setMemo(response.memo)
+        setTitle(response.memo.title)
+        syncEditorContent(response.memo.content_html)
+        setStatus({ kind: 'success', message: '随手记已从云端加载。' })
+        setLastSavedAt(response.memo.updated_at)
+      } catch (error) {
+        setStatus({ kind: 'error', message: error instanceof Error ? error.message : '加载随手记失败。' })
+      }
+    })()
+  }, [])
 
-  const activeDoc = docs.find((doc) => doc.id === activeId) ?? docs[0]
-  const activeTasks = useMemo(() => extractTasks(activeDoc?.body ?? ''), [activeDoc?.body])
-  const allTags = useMemo(() => ['全部', ...Array.from(new Set(docs.flatMap((doc) => doc.tags))).sort()], [docs])
-
-  const filteredDocs = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase()
-    return docs
-      .filter((doc) => {
-        const matchesQuery =
-          !normalizedQuery ||
-          `${doc.title}\n${doc.body}\n${doc.tags.join(' ')}`.toLowerCase().includes(normalizedQuery)
-        const matchesTag = tagFilter === '全部' || doc.tags.includes(tagFilter)
-        return matchesQuery && matchesTag
-      })
-      .sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt))
-  }, [docs, query, tagFilter])
-
-  const insight = useMemo(() => {
-    if (!activeDoc) return '选择或新建一篇备忘录后，这里会生成回顾提示。'
-    const openTasks = activeTasks.filter((task) => !task.done).length
-    const tags = activeDoc.tags.length > 0 ? activeDoc.tags.join('、') : '未归类'
-    return `这篇文档属于 ${tags}，预计 ${estimateReadingMinutes(activeDoc.body)} 分钟读完，当前还有 ${openTasks} 个未完成事项。`
-  }, [activeDoc, activeTasks])
-
-  const updateActiveDoc = (patch: Partial<MemoDoc>) => {
-    if (!activeDoc) return
-    setDocs((currentDocs) =>
-      currentDocs.map((doc) =>
-        doc.id === activeDoc.id ? { ...doc, ...patch, updatedAt: new Date().toISOString() } : doc,
-      ),
-    )
-  }
-
-  const createDoc = () => {
-    const nextDoc: MemoDoc = {
-      id: createId(),
-      title: '未命名备忘录',
-      body: '# 未命名备忘录\n\n- [ ] 写下第一件要记住的事\n',
-      tags: ['收集箱'],
-      status: 'draft',
-      pinned: false,
-      updatedAt: new Date().toISOString(),
-      snapshots: [],
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current)
+      }
     }
-    setDocs((currentDocs) => [nextDoc, ...currentDocs])
-    setActiveId(nextDoc.id)
-    setStatus({ kind: 'success', message: '已创建新的备忘录。' })
-  }
+  }, [])
 
-  const addSnapshot = () => {
-    if (!activeDoc) return
-    const snapshot = {
-      id: createId(),
-      label: `快照 ${activeDoc.snapshots.length + 1}`,
-      body: activeDoc.body,
-      createdAt: new Date().toISOString(),
+  const scheduleSave = (nextTitle?: string, nextHtml?: string) => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current)
     }
-    updateActiveDoc({ snapshots: [snapshot, ...activeDoc.snapshots].slice(0, 8) })
-    setStatus({ kind: 'success', message: '已保存当前正文快照。' })
+    const pendingTitle = nextTitle ?? title
+    const pendingHtml = nextHtml ?? editorRef.current?.innerHTML ?? ''
+    saveTimerRef.current = window.setTimeout(async () => {
+      setIsSaving(true)
+      try {
+        const response = await saveMemo({
+          slug: MEMO_SLUG,
+          title: pendingTitle || '随手记',
+          content_html: pendingHtml,
+          content_text: stripHtml(pendingHtml),
+        })
+        setMemo(response.memo)
+        setLastSavedAt(response.memo.updated_at)
+        setStatus({ kind: 'success', message: '已自动保存。' })
+      } catch (error) {
+        setStatus({ kind: 'error', message: error instanceof Error ? error.message : '保存失败。' })
+      } finally {
+        setIsSaving(false)
+      }
+    }, 700)
   }
 
-  const exportMarkdown = async () => {
-    if (!activeDoc) return
-    const content = `---
-title: ${activeDoc.title}
-tags: ${activeDoc.tags.join(', ')}
-status: ${statusCopy[activeDoc.status]}
-updated: ${activeDoc.updatedAt}
----
-
-${activeDoc.body}
-`
-    await navigator.clipboard.writeText(content)
-    setStatus({ kind: 'success', message: '已复制 Markdown 导出内容。' })
+  const handleTitleChange = (value: string) => {
+    setTitle(value)
+    setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
+    scheduleSave(value)
   }
 
-  const deleteDoc = () => {
-    if (!activeDoc || docs.length === 1) {
-      setStatus({ kind: 'error', message: '至少保留一篇备忘录。' })
-      return
+  const handleEditorInput = () => {
+    const html = editorRef.current?.innerHTML ?? ''
+    setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
+    scheduleSave(undefined, html)
+  }
+
+  const applyCommand = (command: 'bold' | 'italic' | 'underline' | 'insertOrderedList' | 'insertUnorderedList' | 'formatBlock') => {
+    editorRef.current?.focus()
+    if (command === 'formatBlock') {
+      document.execCommand(command, false, 'blockquote')
+    } else {
+      document.execCommand(command)
     }
-    const nextDocs = docs.filter((doc) => doc.id !== activeDoc.id)
-    setDocs(nextDocs)
-    setActiveId(nextDocs[0]?.id ?? '')
-    setStatus({ kind: 'success', message: '已删除当前备忘录。' })
+    handleEditorInput()
   }
 
-  const tagValue = activeDoc?.tags.join(', ') ?? ''
+  const insertImageUrl = (url: string, alt: string) => {
+    editorRef.current?.focus()
+    safeInsertHtml(`<figure><img src="${url}" alt="${alt}" /><figcaption>${alt}</figcaption></figure><p></p>`)
+    handleEditorInput()
+  }
+
+  const handleUpload = async (file: File) => {
+    setStatus({ kind: 'idle', message: '图片上传中。' })
+    const response = await uploadFile(file)
+    setAttachments((current) => [response.file, ...current])
+    insertImageUrl(getFileDownloadUrl(response.file.id), file.name)
+    setStatus({ kind: 'success', message: '图片已插入并保存到云端。' })
+  }
+
+  const memoStats = useMemo(() => {
+    const text = contentText
+    const images = (contentHtml.match(/<img\b/gi) ?? []).length
+    const words = text ? text.split(/\s+/).filter(Boolean).length : 0
+    return {
+      words,
+      images,
+      readingMinutes: Math.max(1, Math.ceil(Math.max(words, text.length / 2) / 220)),
+    }
+  }, [contentHtml, contentText])
 
   return (
     <div className="page-shell memo-docs-shell">
-      <div className="page-hero memo-hero">
+      <div className="page-hero memo-hero memo-hero-cloud">
         <div className="page-hero-main">
-          <h2 className="page-hero-title">把备忘录做成一个会回看的文档系统</h2>
+          <h2 className="page-hero-title">随手记</h2>
           <p className="page-hero-copy">
-            参考 Apple Notes 的快速记录、Notion 的组织方式、Google Docs 的版本意识，先以浏览器本地存储实现一套可直接使用的在线备忘录。
+            一个随时打开就能写的云端笔记区。支持标题、富文本、图片、自动保存，以及在任意网络下继续看到同一份内容。
           </p>
           <div className="page-hero-meta">
-            <span className="meta-chip">本地自动保存</span>
-            <span className="meta-chip">任务抽取</span>
-            <span className="meta-chip">快照版本</span>
-            <span className="meta-chip">Markdown 导出</span>
+            <span className="meta-chip">自动保存到云端</span>
+            <span className="meta-chip">图片上传</span>
+            <span className="meta-chip">富文本编辑</span>
+            <span className="meta-chip">跨设备同步</span>
           </div>
         </div>
         <div className="page-hero-side">
           <div className="hero-stat-grid">
             <article className="hero-stat">
-              <span className="hero-stat-label">文档数</span>
-              <strong className="hero-stat-value">{docs.length}</strong>
+              <span className="hero-stat-label">字数</span>
+              <strong className="hero-stat-value">{memoStats.words}</strong>
             </article>
             <article className="hero-stat">
-              <span className="hero-stat-label">未完成任务</span>
-              <strong className="hero-stat-value">{docs.flatMap((doc) => extractTasks(doc.body)).filter((task) => !task.done).length}</strong>
+              <span className="hero-stat-label">图片</span>
+              <strong className="hero-stat-value">{memoStats.images}</strong>
             </article>
             <article className="hero-stat hero-stat-wide">
-              <span className="hero-stat-label">设计方向</span>
-              <strong className="hero-stat-value">轻量文档、知识收集箱、个人任务回顾合并到一个工作台</strong>
+              <span className="hero-stat-label">当前状态</span>
+              <strong className="hero-stat-value">{isSaving ? '保存中' : lastSavedAt ? `已更新 ${formatDate(lastSavedAt)}` : '准备就绪'}</strong>
             </article>
           </div>
         </div>
       </div>
 
-      <section className="memo-command-bar" aria-label="备忘录操作">
-        <label className="memo-search-label" htmlFor="memo-search">
-          搜索文档
-          <input
-            className="field-input"
-            id="memo-search"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索标题、正文或标签"
-            value={query}
-          />
-        </label>
-        <div className="memo-tag-filter" aria-label="标签筛选">
-          {allTags.map((tag) => (
-            <button
-              className={`filter-chip${tagFilter === tag ? ' filter-chip-active' : ''}`}
-              key={tag}
-              onClick={() => setTagFilter(tag)}
-              type="button"
-            >
-              {tag}
+      <Panel
+        actions={
+          <>
+            <button className="button button-ghost" onClick={() => applyCommand('bold')} type="button">
+              粗体
             </button>
-          ))}
-        </div>
-        <button className="button button-primary" onClick={createDoc} type="button">
-          新建
-        </button>
-      </section>
-
-      <div className="memo-workspace-grid">
-        <aside className="memo-doc-list" aria-label="备忘录列表">
-          {filteredDocs.map((doc) => (
-            <button
-              className={`memo-doc-item${doc.id === activeDoc?.id ? ' memo-doc-item-active' : ''}`}
-              key={doc.id}
-              onClick={() => setActiveId(doc.id)}
-              type="button"
-            >
-              <span className="memo-doc-item-title">{doc.pinned ? '置顶 · ' : ''}{doc.title}</span>
-              <span className="memo-doc-item-meta">{statusCopy[doc.status]} · {formatDate(doc.updatedAt)}</span>
-              <span className="memo-doc-tags">{doc.tags.map((tag) => <span key={tag}>{tag}</span>)}</span>
+            <button className="button button-ghost" onClick={() => applyCommand('italic')} type="button">
+              斜体
             </button>
-          ))}
-        </aside>
-
-        <Panel
-          actions={
-            <>
-              <button className="button button-ghost" onClick={addSnapshot} type="button">
-                保存快照
-              </button>
-              <button className="button" onClick={exportMarkdown} type="button">
-                导出 Markdown
-              </button>
-              <button className="button button-danger" onClick={deleteDoc} type="button">
-                删除
-              </button>
-            </>
-          }
-          eyebrow="Memo Docs"
-          subtitle="正文支持 Markdown 习惯写法，任务项使用 - [ ] 和 - [x] 自动进入右侧回顾。"
-          title="文档编辑"
-        >
-          {activeDoc ? (
-            <div className="memo-editor-layout">
-              <div className="memo-editor-main">
-                <label className="field-label" htmlFor="memo-title">
-                  <span>标题</span>
-                  <input
-                    className="field-input memo-title-input"
-                    id="memo-title"
-                    onChange={(event) => updateActiveDoc({ title: event.target.value })}
-                    value={activeDoc.title}
-                  />
-                </label>
-                <div className="field-row">
-                  <label className="field-label" htmlFor="memo-tags">
-                    <span>标签</span>
-                    <input
-                      className="field-input"
-                      id="memo-tags"
-                      onChange={(event) =>
-                        updateActiveDoc({
-                          tags: event.target.value
-                            .split(',')
-                            .map((tag) => tag.trim())
-                            .filter(Boolean),
-                        })
-                      }
-                      value={tagValue}
-                    />
-                  </label>
-                  <label className="field-label" htmlFor="memo-status">
-                    <span>状态</span>
-                    <select
-                      className="select"
-                      id="memo-status"
-                      onChange={(event) => updateActiveDoc({ status: event.target.value as MemoStatus })}
-                      value={activeDoc.status}
-                    >
-                      <option value="draft">草稿</option>
-                      <option value="active">进行中</option>
-                      <option value="review">待回顾</option>
-                    </select>
-                  </label>
-                </div>
-                <label className="memo-pin-row" htmlFor="memo-pinned">
-                  <input
-                    checked={activeDoc.pinned}
-                    id="memo-pinned"
-                    onChange={(event) => updateActiveDoc({ pinned: event.target.checked })}
-                    type="checkbox"
-                  />
-                  置顶这篇备忘录
-                </label>
-                <label className="field-label memo-body-label" htmlFor="memo-body">
-                  <span>正文</span>
-                  <textarea
-                    className="field-textarea memo-body-input"
-                    id="memo-body"
-                    onChange={(event) => updateActiveDoc({ body: event.target.value })}
-                    value={activeDoc.body}
-                  />
-                </label>
-              </div>
-
-              <aside className="memo-review-panel" aria-label="智能回顾">
-                <section className="memo-review-section">
-                  <p className="memo-review-kicker">Context Brief</p>
-                  <p className="memo-review-text">{insight}</p>
-                </section>
-                <section className="memo-review-section">
-                  <p className="memo-review-kicker">任务</p>
-                  {activeTasks.length > 0 ? (
-                    <ul className="memo-task-list">
-                      {activeTasks.map((task, index) => (
-                        <li className={task.done ? 'memo-task-done' : ''} key={`${task.text}-${index}`}>
-                          {task.text}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="memo-review-text">正文里写入 - [ ] 任务后，会自动出现在这里。</p>
-                  )}
-                </section>
-                <section className="memo-review-section">
-                  <p className="memo-review-kicker">快照</p>
-                  {activeDoc.snapshots.length > 0 ? (
-                    <div className="memo-snapshot-list">
-                      {activeDoc.snapshots.map((snapshot) => (
-                        <button
-                          className="memo-snapshot"
-                          key={snapshot.id}
-                          onClick={() => updateActiveDoc({ body: snapshot.body })}
-                          type="button"
-                        >
-                          <span>{snapshot.label}</span>
-                          <span>{formatDate(snapshot.createdAt)}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="memo-review-text">需要保留阶段性版本时，点击保存快照。</p>
-                  )}
-                </section>
-              </aside>
+            <button className="button button-ghost" onClick={() => applyCommand('underline')} type="button">
+              下划线
+            </button>
+            <button className="button button-ghost" onClick={() => applyCommand('insertUnorderedList')} type="button">
+              清单
+            </button>
+            <button className="button button-ghost" onClick={() => applyCommand('formatBlock')} type="button">
+              引用
+            </button>
+            <button className="button" onClick={() => fileInputRef.current?.click()} type="button">
+              插入图片
+            </button>
+          </>
+        }
+        eyebrow="Memo"
+        subtitle="编辑区支持键盘输入、格式按钮、粘贴图片和本地上传图片。"
+        title="云端随手记"
+      >
+        <div className="memo-cloud-layout">
+          <div className="memo-editor-shell">
+            <input
+              className="memo-title-input"
+              onChange={(event) => handleTitleChange(event.target.value)}
+              placeholder="写下今天要记住的事"
+              value={title}
+            />
+            <div className="memo-toolbar-hint">
+              内容会在停顿后自动保存，离开页面后重新打开仍会是同一份记录。
             </div>
-          ) : (
-            <div className="empty-state">没有匹配的备忘录。</div>
-          )}
-          <StatusBanner
-            right={activeDoc ? `更新 ${formatDate(activeDoc.updatedAt)} · ${activeDoc.body.length} 字符` : undefined}
-            status={status}
-          />
-        </Panel>
-      </div>
+            <div
+              className="memo-rich-editor"
+              contentEditable
+              dangerouslySetInnerHTML={{ __html: contentHtml }}
+              onInput={handleEditorInput}
+              ref={editorRef}
+              suppressContentEditableWarning
+            />
+            <input
+              accept="image/*"
+              className="memo-file-input"
+              onChange={async (event) => {
+                const file = event.target.files?.[0]
+                if (!file) return
+                try {
+                  await handleUpload(file)
+                } finally {
+                  event.target.value = ''
+                }
+              }}
+              ref={fileInputRef}
+              type="file"
+            />
+          </div>
+
+          <aside className="memo-side-panel">
+            <section className="memo-side-card">
+              <p className="memo-side-label">摘要</p>
+              <p className="memo-side-text">{contentText || '这里会显示正文提取的文字摘要。'}</p>
+            </section>
+            <section className="memo-side-card">
+              <p className="memo-side-label">信息</p>
+              <div className="memo-side-metrics">
+                <span>阅读 {memoStats.readingMinutes} 分钟</span>
+                <span>图片 {memoStats.images}</span>
+              </div>
+            </section>
+            <section className="memo-side-card">
+              <p className="memo-side-label">附件</p>
+              <div className="memo-attachment-list">
+                {attachments.length > 0 ? attachments.map((file) => (
+                  <button
+                    className="memo-attachment-item"
+                    key={file.id}
+                    onClick={() => insertImageUrl(getFileDownloadUrl(file.id), file.original_name)}
+                    type="button"
+                  >
+                    {file.original_name}
+                  </button>
+                )) : <p className="memo-side-text">图片上传后会出现在这里，点击可再次插入正文。</p>}
+              </div>
+            </section>
+          </aside>
+        </div>
+        <StatusBanner
+          right={lastSavedAt ? `最后保存 ${formatDate(lastSavedAt)}` : '尚未保存'}
+          status={status}
+        />
+      </Panel>
     </div>
   )
 }

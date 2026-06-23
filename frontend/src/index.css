@@ -912,6 +912,12 @@ a {
   --memo-accent-soft: rgba(13, 148, 136, 0.16);
 }
 
+.memo-hero-cloud {
+  background:
+    linear-gradient(135deg, rgba(13, 148, 136, 0.16), transparent 38%),
+    linear-gradient(180deg, rgba(19, 28, 46, 0.98), rgba(10, 16, 25, 0.98));
+}
+
 .memo-hero {
   background:
     linear-gradient(135deg, rgba(13, 148, 136, 0.16), transparent 42%),
@@ -1028,6 +1034,33 @@ a {
   min-height: 620px;
 }
 
+.memo-cloud-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  gap: 0;
+  min-height: 660px;
+}
+
+.memo-editor-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(10, 16, 25, 0.56), rgba(10, 16, 25, 0.84));
+}
+
+.memo-toolbar-hint {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(16, 24, 39, 0.72);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .memo-editor-main {
   display: flex;
   flex-direction: column;
@@ -1042,6 +1075,84 @@ a {
   font-size: 20px;
   font-weight: 700;
   color: var(--text-strong);
+  letter-spacing: 0;
+}
+
+.memo-title-input::placeholder {
+  color: var(--text-muted);
+}
+
+.memo-rich-editor {
+  min-height: 420px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(10, 16, 25, 0.84);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.8;
+  outline: none;
+  overflow: auto;
+}
+
+.memo-rich-editor:focus {
+  border-color: var(--border-strong);
+}
+
+.memo-rich-editor h1,
+.memo-rich-editor h2,
+.memo-rich-editor h3,
+.memo-rich-editor p,
+.memo-rich-editor ul,
+.memo-rich-editor ol,
+.memo-rich-editor blockquote,
+.memo-rich-editor figure {
+  margin: 0 0 14px;
+}
+
+.memo-rich-editor h1 {
+  font-size: 28px;
+  line-height: 1.2;
+  color: var(--text-strong);
+}
+
+.memo-rich-editor h2 {
+  font-size: 22px;
+  line-height: 1.25;
+  color: var(--text-strong);
+}
+
+.memo-rich-editor blockquote {
+  padding: 10px 14px;
+  border-left: 3px solid var(--memo-accent);
+  background: rgba(13, 148, 136, 0.08);
+  color: var(--text-secondary);
+}
+
+.memo-rich-editor figure {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(16, 24, 39, 0.7);
+}
+
+.memo-rich-editor img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.memo-rich-editor figcaption {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.memo-file-input {
+  display: none;
 }
 
 .memo-pin-row {
@@ -1077,6 +1188,73 @@ a {
   min-width: 0;
   padding: 14px;
   background: rgba(10, 16, 25, 0.48);
+}
+
+.memo-side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  background: rgba(10, 16, 25, 0.48);
+}
+
+.memo-side-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(16, 24, 39, 0.7);
+}
+
+.memo-side-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.memo-side-text {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.memo-side-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.memo-attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memo-attachment-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.memo-attachment-item:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
 }
 
 .memo-review-section {
@@ -1198,6 +1376,15 @@ a {
   }
 
   .memo-editor-main {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .memo-cloud-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .memo-editor-shell {
     border-right: none;
     border-bottom: 1px solid var(--border);
   }
