@@ -48,6 +48,7 @@ if [[ ! -f "$HTPASSWD_FILE" ]]; then
 fi
 
 compose up -d --build
+restart_nginx_gateway
 print_status
 wait_for_url "$HEALTH_URL" "healthz"
 wait_for_url "$READY_URL" "readyz"

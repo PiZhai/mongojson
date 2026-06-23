@@ -81,6 +81,11 @@ maybe_pull_images() {
   fi
 }
 
+restart_nginx_gateway() {
+  log "Restarting nginx gateway to refresh upstream container IPs"
+  compose restart nginx
+}
+
 replace_postgres_password() {
   local password="$1"
   local tmp_file

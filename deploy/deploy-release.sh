@@ -13,6 +13,7 @@ maybe_pull_code
 maybe_pull_images postgres nginx
 
 compose up -d --build backend frontend nginx
+restart_nginx_gateway
 print_status
 wait_for_url "$HEALTH_URL" "healthz"
 wait_for_url "$READY_URL" "readyz"
