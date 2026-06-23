@@ -22,6 +22,14 @@
 - `docker-prune.sh`：清理 Docker 构建缓存和悬挂镜像
 - `backup-postgres.sh`：执行 PostgreSQL 备份
 
+如果你想跳过代码拉取，只重建或只重启：
+
+```bash
+SKIP_PULL=1 /opt/personal-tooling/app/deploy/deploy-release.sh
+```
+
+同样适用于 `deploy-init.sh`、`deploy-frontend.sh`、`deploy-backend.sh`。
+
 ## 2. 常规全量发版
 
 适用：

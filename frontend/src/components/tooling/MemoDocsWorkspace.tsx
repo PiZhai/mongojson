@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getFileDownloadUrl, getMemo, saveMemo, uploadFile } from '../../lib/api/client'
-import type { FileSummary, MemoRecord, ToolStatus } from '../../types/tooling'
-import { Panel } from '../common/Panel'
+import type { MemoRecord, ToolStatus } from '../../types/tooling'
 import { StatusBanner } from '../common/StatusBanner'
 
 const MEMO_SLUG = 'inbox'
@@ -43,12 +42,12 @@ export function MemoDocsWorkspace() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [memo, setMemo] = useState<MemoRecord | null>(null)
   const [title, setTitle] = useState('')
+  const [editorHtml, setEditorHtml] = useState('')
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState('')
-  const [attachments, setAttachments] = useState<FileSummary[]>([])
 
-  const contentHtml = memo?.content_html ?? ''
+  const contentHtml = editorHtml || memo?.content_html || ''
   const contentText = useMemo(() => stripHtml(contentHtml), [contentHtml])
 
   const syncEditorContent = (html: string) => {
@@ -63,6 +62,7 @@ export function MemoDocsWorkspace() {
         const response = await getMemo(MEMO_SLUG)
         setMemo(response.memo)
         setTitle(response.memo.title)
+        setEditorHtml(response.memo.content_html)
         syncEditorContent(response.memo.content_html)
         setStatus({ kind: 'success', message: '随手记已从云端加载。' })
         setLastSavedAt(response.memo.updated_at)
@@ -96,6 +96,7 @@ export function MemoDocsWorkspace() {
           content_text: stripHtml(pendingHtml),
         })
         setMemo(response.memo)
+        setEditorHtml(response.memo.content_html)
         setLastSavedAt(response.memo.updated_at)
         setStatus({ kind: 'success', message: '已自动保存。' })
       } catch (error) {
@@ -114,6 +115,7 @@ export function MemoDocsWorkspace() {
 
   const handleEditorInput = () => {
     const html = editorRef.current?.innerHTML ?? ''
+    setEditorHtml(html)
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
     scheduleSave(undefined, html)
   }
@@ -137,7 +139,6 @@ export function MemoDocsWorkspace() {
   const handleUpload = async (file: File) => {
     setStatus({ kind: 'idle', message: '图片上传中。' })
     const response = await uploadFile(file)
-    setAttachments((current) => [response.file, ...current])
     insertImageUrl(getFileDownloadUrl(response.file.id), file.name)
     setStatus({ kind: 'success', message: '图片已插入并保存到云端。' })
   }
@@ -154,135 +155,87 @@ export function MemoDocsWorkspace() {
   }, [contentHtml, contentText])
 
   return (
-    <div className="page-shell memo-docs-shell">
-      <div className="page-hero memo-hero memo-hero-cloud">
-        <div className="page-hero-main">
-          <h2 className="page-hero-title">随手记</h2>
-          <p className="page-hero-copy">
-            一个随时打开就能写的云端笔记区。支持标题、富文本、图片、自动保存，以及在任意网络下继续看到同一份内容。
-          </p>
-          <div className="page-hero-meta">
-            <span className="meta-chip">自动保存到云端</span>
-            <span className="meta-chip">图片上传</span>
-            <span className="meta-chip">富文本编辑</span>
-            <span className="meta-chip">跨设备同步</span>
-          </div>
+    <div className="memo-focus-shell">
+      <section className="memo-focus-header" aria-labelledby="memo-page-title">
+        <div className="memo-focus-heading">
+          <p className="memo-focus-kicker">Cloud Memo</p>
+          <h2 className="memo-focus-title" id="memo-page-title">随手记</h2>
         </div>
-        <div className="page-hero-side">
-          <div className="hero-stat-grid">
-            <article className="hero-stat">
-              <span className="hero-stat-label">字数</span>
-              <strong className="hero-stat-value">{memoStats.words}</strong>
-            </article>
-            <article className="hero-stat">
-              <span className="hero-stat-label">图片</span>
-              <strong className="hero-stat-value">{memoStats.images}</strong>
-            </article>
-            <article className="hero-stat hero-stat-wide">
-              <span className="hero-stat-label">当前状态</span>
-              <strong className="hero-stat-value">{isSaving ? '保存中' : lastSavedAt ? `已更新 ${formatDate(lastSavedAt)}` : '准备就绪'}</strong>
-            </article>
-          </div>
+        <div className="memo-focus-stats" aria-label="随手记状态">
+          <span>{memoStats.words} 字</span>
+          <span>{memoStats.images} 图</span>
+          <span>{isSaving ? '保存中' : lastSavedAt ? formatDate(lastSavedAt) : '准备就绪'}</span>
         </div>
-      </div>
+      </section>
 
-      <Panel
-        actions={
-          <>
-            <button className="button button-ghost" onClick={() => applyCommand('bold')} type="button">
-              粗体
-            </button>
-            <button className="button button-ghost" onClick={() => applyCommand('italic')} type="button">
-              斜体
-            </button>
-            <button className="button button-ghost" onClick={() => applyCommand('underline')} type="button">
-              下划线
-            </button>
-            <button className="button button-ghost" onClick={() => applyCommand('insertUnorderedList')} type="button">
-              清单
-            </button>
-            <button className="button button-ghost" onClick={() => applyCommand('formatBlock')} type="button">
-              引用
-            </button>
-            <button className="button" onClick={() => fileInputRef.current?.click()} type="button">
-              插入图片
-            </button>
-          </>
-        }
-        eyebrow="Memo"
-        subtitle="编辑区支持键盘输入、格式按钮、粘贴图片和本地上传图片。"
-        title="云端随手记"
-      >
-        <div className="memo-cloud-layout">
-          <div className="memo-editor-shell">
+      <section className="memo-focus-card" aria-label="随手记编辑器">
+        <div className="memo-editor-shell">
+          <div className="memo-title-row">
+            <label className="sr-only" htmlFor="memo-title-input">标题</label>
             <input
+              id="memo-title-input"
               className="memo-title-input"
               onChange={(event) => handleTitleChange(event.target.value)}
               placeholder="写下今天要记住的事"
               value={title}
             />
-            <div className="memo-toolbar-hint">
-              内容会在停顿后自动保存，离开页面后重新打开仍会是同一份记录。
-            </div>
-            <div
-              className="memo-rich-editor"
-              contentEditable
-              dangerouslySetInnerHTML={{ __html: contentHtml }}
-              onInput={handleEditorInput}
-              ref={editorRef}
-              suppressContentEditableWarning
-            />
-            <input
-              accept="image/*"
-              className="memo-file-input"
-              onChange={async (event) => {
-                const file = event.target.files?.[0]
-                if (!file) return
-                try {
-                  await handleUpload(file)
-                } finally {
-                  event.target.value = ''
-                }
-              }}
-              ref={fileInputRef}
-              type="file"
-            />
           </div>
 
-          <aside className="memo-side-panel">
-            <section className="memo-side-card">
-              <p className="memo-side-label">摘要</p>
-              <p className="memo-side-text">{contentText || '这里会显示正文提取的文字摘要。'}</p>
-            </section>
-            <section className="memo-side-card">
-              <p className="memo-side-label">信息</p>
-              <div className="memo-side-metrics">
-                <span>阅读 {memoStats.readingMinutes} 分钟</span>
-                <span>图片 {memoStats.images}</span>
-              </div>
-            </section>
-            <section className="memo-side-card">
-              <p className="memo-side-label">附件</p>
-              <div className="memo-attachment-list">
-                {attachments.length > 0 ? attachments.map((file) => (
-                  <button
-                    className="memo-attachment-item"
-                    key={file.id}
-                    onClick={() => insertImageUrl(getFileDownloadUrl(file.id), file.original_name)}
-                    type="button"
-                  >
-                    {file.original_name}
-                  </button>
-                )) : <p className="memo-side-text">图片上传后会出现在这里，点击可再次插入正文。</p>}
-              </div>
-            </section>
-          </aside>
+          <div className="memo-editor-toolbar" aria-label="编辑工具栏">
+            <button aria-label="加粗" className="memo-tool-button" onClick={() => applyCommand('bold')} type="button">
+              <strong>B</strong>
+            </button>
+            <button aria-label="斜体" className="memo-tool-button" onClick={() => applyCommand('italic')} type="button">
+              <em>I</em>
+            </button>
+            <button aria-label="下划线" className="memo-tool-button" onClick={() => applyCommand('underline')} type="button">
+              <span className="memo-tool-underline">U</span>
+            </button>
+            <button aria-label="无序清单" className="memo-tool-button" onClick={() => applyCommand('insertUnorderedList')} type="button">
+              <span aria-hidden="true">•</span>
+            </button>
+            <button aria-label="引用" className="memo-tool-button" onClick={() => applyCommand('formatBlock')} type="button">
+              <span aria-hidden="true">“</span>
+            </button>
+            <button aria-label="插入图片" className="memo-tool-button memo-tool-button-wide" onClick={() => fileInputRef.current?.click()} type="button">
+              <svg aria-hidden="true" className="memo-tool-icon" viewBox="0 0 24 24">
+                <rect height="14" rx="2" width="16" x="4" y="5" />
+                <path d="M8 14l2.5-2.5 2.2 2.2 1.5-1.5L17 15" />
+                <circle cx="9" cy="9" r="1" />
+              </svg>
+            </button>
+          </div>
+
+          <div
+            aria-label="随手记内容"
+            className="memo-rich-editor"
+            contentEditable
+            onInput={handleEditorInput}
+            ref={editorRef}
+            role="textbox"
+            suppressContentEditableWarning
+          />
+          <input
+            accept="image/*"
+            className="memo-file-input"
+            onChange={async (event) => {
+              const file = event.target.files?.[0]
+              if (!file) return
+              try {
+                await handleUpload(file)
+              } finally {
+                event.target.value = ''
+              }
+            }}
+            ref={fileInputRef}
+            type="file"
+          />
         </div>
         <StatusBanner
           right={lastSavedAt ? `最后保存 ${formatDate(lastSavedAt)}` : '尚未保存'}
           status={status}
         />
-      </Panel>
+      </section>
     </div>
   )
 }

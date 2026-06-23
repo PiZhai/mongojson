@@ -9,7 +9,7 @@ require_command git
 require_command docker
 
 ensure_runtime_files
-git_pull_latest
+maybe_pull_code
 maybe_pull_images nginx postgres
 
 compose up -d --build backend nginx
