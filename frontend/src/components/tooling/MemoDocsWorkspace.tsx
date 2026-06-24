@@ -132,12 +132,130 @@ function insertAtSelection(
   return { nextValue, cursorStart, cursorEnd }
 }
 
+type SlashCommand = {
+  id: string
+  label: string
+  hint: string
+  insert: (selection: { value: string; start: number; end: number }) => {
+    value: string
+    cursorStart: number
+    cursorEnd: number
+  }
+}
+
+const slashCommands: SlashCommand[] = [
+  {
+    id: 'text',
+    label: '文本',
+    hint: '普通段落',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}${value.slice(end)}`,
+      cursorStart: start,
+      cursorEnd: start,
+    }),
+  },
+  {
+    id: 'h1',
+    label: '一级标题',
+    hint: '# 标题',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}# ${value.slice(end)}`,
+      cursorStart: start + 2,
+      cursorEnd: start + 2,
+    }),
+  },
+  {
+    id: 'h2',
+    label: '二级标题',
+    hint: '## 标题',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}## ${value.slice(end)}`,
+      cursorStart: start + 3,
+      cursorEnd: start + 3,
+    }),
+  },
+  {
+    id: 'h3',
+    label: '三级标题',
+    hint: '### 标题',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}### ${value.slice(end)}`,
+      cursorStart: start + 4,
+      cursorEnd: start + 4,
+    }),
+  },
+  {
+    id: 'ul',
+    label: '无序列表',
+    hint: '- 项目',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}- ${value.slice(end)}`,
+      cursorStart: start + 2,
+      cursorEnd: start + 2,
+    }),
+  },
+  {
+    id: 'ol',
+    label: '有序列表',
+    hint: '1. 项目',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}1. ${value.slice(end)}`,
+      cursorStart: start + 3,
+      cursorEnd: start + 3,
+    }),
+  },
+  {
+    id: 'quote',
+    label: '引用',
+    hint: '> 引用内容',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}> ${value.slice(end)}`,
+      cursorStart: start + 2,
+      cursorEnd: start + 2,
+    }),
+  },
+  {
+    id: 'code',
+    label: '代码块',
+    hint: '```',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}\`\`\`\n${value.slice(end)}\n\`\`\``,
+      cursorStart: start + 4,
+      cursorEnd: start + 4,
+    }),
+  },
+  {
+    id: 'divider',
+    label: '分隔线',
+    hint: '---',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}---\n${value.slice(end)}`,
+      cursorStart: start + 4,
+      cursorEnd: start + 4,
+    }),
+  },
+  {
+    id: 'link',
+    label: '链接',
+    hint: '[文本](url)',
+    insert: ({ value, start, end }) => ({
+      value: `${value.slice(0, start)}[${value.slice(start, end) || '链接文本'}](url)${value.slice(end)}`,
+      cursorStart: start + 1,
+      cursorEnd: start + 1 + (value.slice(start, end) || '链接文本').length,
+    }),
+  },
+]
+
 export function MemoDocsWorkspace() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const saveTimerRef = useRef<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [title, setTitle] = useState('')
   const [editorMarkdown, setEditorMarkdown] = useState('')
+  const [viewMode, setViewMode] = useState<'edit' | 'source'>('edit')
+  const [slashOpen, setSlashOpen] = useState(false)
+  const [slashQuery, setSlashQuery] = useState('')
+  const [slashIndex, setSlashIndex] = useState(0)
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState('')
@@ -148,6 +266,15 @@ export function MemoDocsWorkspace() {
     const lines = editorMarkdown ? editorMarkdown.split('\n').length : 0
     return { chars, images, lines }
   }, [editorMarkdown])
+
+  const slashMatches = useMemo(() => {
+    const normalized = slashQuery.trim().toLowerCase()
+    if (!slashOpen) return []
+    if (!normalized) return slashCommands
+    return slashCommands.filter((command) => {
+      return `${command.label} ${command.hint}`.toLowerCase().includes(normalized)
+    })
+  }, [slashOpen, slashQuery])
 
   useEffect(() => {
     void (async () => {
@@ -221,6 +348,20 @@ export function MemoDocsWorkspace() {
     setEditorMarkdown(value)
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
     scheduleSave(title, value)
+
+    const textarea = textareaRef.current
+    if (!textarea) return
+    const cursor = textarea.selectionStart ?? value.length
+    const beforeCursor = value.slice(0, cursor)
+    const slashStart = beforeCursor.lastIndexOf('/')
+    const token = slashStart >= 0 ? beforeCursor.slice(slashStart + 1) : ''
+    const shouldOpen =
+      slashStart >= 0 &&
+      beforeCursor[slashStart - 1] !== '/' &&
+      !/\s/.test(beforeCursor.slice(slashStart + 1, cursor))
+    setSlashOpen(shouldOpen)
+    setSlashQuery(shouldOpen ? token : '')
+    setSlashIndex(0)
   }
 
   const handleUpload = async (file: File) => {
@@ -228,6 +369,38 @@ export function MemoDocsWorkspace() {
     const response = await uploadFile(file)
     applyMarkdownInsert(`![${file.name}](${getFileDownloadUrl(response.file.id)})\n\n`, '', file.name)
     setStatus({ kind: 'success', message: '图片已插入并保存到云端。' })
+  }
+
+  const closeSlashMenu = () => {
+    setSlashOpen(false)
+    setSlashQuery('')
+    setSlashIndex(0)
+  }
+
+  const applySlashCommand = (command: SlashCommand) => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    const value = editorMarkdown
+    const cursor = textarea.selectionStart ?? value.length
+    const beforeCursor = value.slice(0, cursor)
+    const slashStart = beforeCursor.lastIndexOf('/')
+    const selection = {
+      value,
+      start: slashStart >= 0 ? slashStart : cursor,
+      end: cursor,
+    }
+    const result = command.insert(selection)
+    const nextValue = result.value
+    setEditorMarkdown(nextValue)
+    closeSlashMenu()
+    setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
+    scheduleSave(title, nextValue)
+    window.requestAnimationFrame(() => {
+      textarea.focus()
+      const start = result.cursorStart ?? selection.start
+      const end = result.cursorEnd ?? start
+      textarea.setSelectionRange(start, end)
+    })
   }
 
   const previewText = editorMarkdown.trim() || '从标题开始写，#、##、-、> 和图片链接都可以直接输入。'
@@ -260,6 +433,27 @@ export function MemoDocsWorkspace() {
             />
           </div>
 
+          <div className="memo-mode-switch" role="tablist" aria-label="显示模式">
+            <button
+              aria-selected={viewMode === 'edit'}
+              className={`memo-mode-button${viewMode === 'edit' ? ' memo-mode-button-active' : ''}`}
+              onClick={() => setViewMode('edit')}
+              role="tab"
+              type="button"
+            >
+              编辑
+            </button>
+            <button
+              aria-selected={viewMode === 'source'}
+              className={`memo-mode-button${viewMode === 'source' ? ' memo-mode-button-active' : ''}`}
+              onClick={() => setViewMode('source')}
+              role="tab"
+              type="button"
+            >
+              源码
+            </button>
+          </div>
+
           <div className="memo-editor-toolbar" aria-label="编辑工具栏">
             <button className="memo-tool-button" onClick={() => applyMarkdownInsert('**', '**', '加粗文本')} type="button" aria-label="加粗">
               <strong>B</strong>
@@ -282,13 +476,43 @@ export function MemoDocsWorkspace() {
             </button>
           </div>
 
-          <textarea
-            aria-label="随手记内容"
-            className="memo-rich-editor memo-markdown-editor"
-            onChange={(event) => handleMarkdownChange(event.target.value)}
-            ref={textareaRef}
-            value={editorMarkdown}
-          />
+          {viewMode === 'edit' ? (
+            <textarea
+              aria-label="随手记内容"
+              className="memo-rich-editor memo-markdown-editor"
+              onChange={(event) => handleMarkdownChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (!slashOpen) return
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault()
+                  setSlashIndex((value) => (slashMatches.length === 0 ? 0 : (value + 1) % slashMatches.length))
+                  return
+                }
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault()
+                  setSlashIndex((value) => (slashMatches.length === 0 ? 0 : (value - 1 + slashMatches.length) % slashMatches.length))
+                  return
+                }
+                if (event.key === 'Enter' || event.key === 'Tab') {
+                  if (slashMatches[slashIndex]) {
+                    event.preventDefault()
+                    applySlashCommand(slashMatches[slashIndex])
+                    return
+                  }
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  closeSlashMenu()
+                }
+              }}
+              ref={textareaRef}
+              value={editorMarkdown}
+            />
+          ) : (
+            <pre aria-label="随手记源码" className="memo-source-view">
+              <code>{editorMarkdown || '空文档'}</code>
+            </pre>
+          )}
           <input
             accept="image/*"
             className="memo-file-input"
@@ -306,9 +530,35 @@ export function MemoDocsWorkspace() {
           />
 
           <div className="memo-editor-footer">
-            <span>Markdown 文档</span>
+            <span>{viewMode === 'edit' ? 'Markdown 编辑' : '源码显示'}</span>
             <span>{previewText}</span>
           </div>
+          {slashOpen && viewMode === 'edit' ? (
+            <div className="memo-slash-menu" role="listbox" aria-label="命令选择">
+              <div className="memo-slash-search">/{slashQuery || '输入关键字'}</div>
+              {slashMatches.length > 0 ? (
+                slashMatches.map((command, index) => (
+                  <button
+                    aria-selected={index === slashIndex}
+                    className={`memo-slash-item${index === slashIndex ? ' memo-slash-item-active' : ''}`}
+                    key={command.id}
+                    onMouseEnter={() => setSlashIndex(index)}
+                    onMouseDown={(event) => {
+                      event.preventDefault()
+                      applySlashCommand(command)
+                    }}
+                    role="option"
+                    type="button"
+                  >
+                    <span className="memo-slash-item-main">{command.label}</span>
+                    <span className="memo-slash-item-hint">{command.hint}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="memo-slash-empty">没有匹配的命令</div>
+              )}
+            </div>
+          ) : null}
         </div>
         <StatusBanner
           right={lastSavedAt ? `最后保存 ${formatDate(lastSavedAt)}` : '尚未保存'}
