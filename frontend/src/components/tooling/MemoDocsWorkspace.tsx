@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getFileDownloadUrl, getMemo, saveMemo, uploadFile } from '../../lib/api/client'
-import type { MemoRecord, ToolStatus } from '../../types/tooling'
+import type { ToolStatus } from '../../types/tooling'
 import { StatusBanner } from '../common/StatusBanner'
 
 const MEMO_SLUG = 'inbox'
@@ -23,7 +23,7 @@ function toMarkdown(html: string) {
       return content
         .replace(/<[^>]+>/g, '')
         .split('\n')
-        .map((line: string) => `> ${line.trim()}`)
+        .map((line: string) => `> ${line}`)
         .join('\n') + '\n\n'
     })
     .replace(/<li>(.*?)<\/li>/gi, '- $1\n')
@@ -31,7 +31,6 @@ function toMarkdown(html: string) {
     .replace(/<figure>\s*<img src="(.*?)" alt="(.*?)" \/>\s*<figcaption>(.*?)<\/figcaption>\s*<\/figure>/gis, '![ $2 ]($1)\n\n*$3*\n\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
-    .trim()
 }
 
 function markdownToHtml(markdown: string) {
@@ -108,58 +107,58 @@ function markdownToHtml(markdown: string) {
   return html.join('\n')
 }
 
-function stripHtml(html: string) {
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  return (doc.body.textContent ?? '').replace(/\u00a0/g, ' ').trim()
+function countVisibleChars(markdown: string) {
+  return Array.from(markdown.replace(/\s+/g, '')).length
 }
 
-function safeInsertMarkdown(markdown: string) {
-  const selection = window.getSelection()
-  if (!selection || selection.rangeCount === 0) return false
-  const range = selection.getRangeAt(0)
-  range.deleteContents()
-  const fragment = range.createContextualFragment(markdownToHtml(markdown))
-  const lastNode = fragment.lastChild
-  range.insertNode(fragment)
-  if (lastNode) {
-    range.setStartAfter(lastNode)
-    range.setEndAfter(lastNode)
-    selection.removeAllRanges()
-    selection.addRange(range)
-  }
-  return true
+function countImages(markdown: string) {
+  return (markdown.match(/!\[[^\]]*\]\([^)]+\)/g) ?? []).length
+}
+
+function insertAtSelection(
+  textarea: HTMLTextAreaElement,
+  value: string,
+  before: string,
+  after = '',
+  placeholder = '',
+) {
+  const start = textarea.selectionStart ?? value.length
+  const end = textarea.selectionEnd ?? value.length
+  const selected = value.slice(start, end)
+  const content = selected || placeholder
+  const nextValue = `${value.slice(0, start)}${before}${content}${after}${value.slice(end)}`
+  const cursorStart = start + before.length
+  const cursorEnd = cursorStart + content.length
+  return { nextValue, cursorStart, cursorEnd }
 }
 
 export function MemoDocsWorkspace() {
-  const editorRef = useRef<HTMLDivElement | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const saveTimerRef = useRef<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const [memo, setMemo] = useState<MemoRecord | null>(null)
   const [title, setTitle] = useState('')
   const [editorMarkdown, setEditorMarkdown] = useState('')
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState('')
 
-  const contentHtml = useMemo(() => markdownToHtml(editorMarkdown || toMarkdown(memo?.content_html ?? '')), [editorMarkdown, memo?.content_html])
-  const contentText = useMemo(() => stripHtml(contentHtml), [contentHtml])
-
-  const syncEditorContent = (markdown: string) => {
-    const html = markdownToHtml(markdown)
-    if (editorRef.current && editorRef.current.innerHTML !== html) {
-      editorRef.current.innerHTML = html
-    }
-  }
+  const memoStats = useMemo(() => {
+    const chars = countVisibleChars(editorMarkdown)
+    const images = countImages(editorMarkdown)
+    const lines = editorMarkdown ? editorMarkdown.split('\n').length : 0
+    return { chars, images, lines }
+  }, [editorMarkdown])
 
   useEffect(() => {
     void (async () => {
       try {
         const response = await getMemo(MEMO_SLUG)
-        setMemo(response.memo)
+        const nextMarkdown =
+          response.memo.content_text?.trim().length > 0
+            ? response.memo.content_text
+            : toMarkdown(response.memo.content_html)
         setTitle(response.memo.title)
-        const nextMarkdown = toMarkdown(response.memo.content_html)
         setEditorMarkdown(nextMarkdown)
-        syncEditorContent(nextMarkdown)
         setStatus({ kind: 'success', message: '随手记已从云端加载。' })
         setLastSavedAt(response.memo.updated_at)
       } catch (error) {
@@ -176,26 +175,19 @@ export function MemoDocsWorkspace() {
     }
   }, [])
 
-  const scheduleSave = (nextTitle?: string, nextMarkdown?: string) => {
+  const scheduleSave = (nextTitle: string, nextMarkdown: string) => {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current)
     }
-    const pendingTitle = nextTitle ?? title
-    const pendingMarkdown = nextMarkdown ?? editorMarkdown
     saveTimerRef.current = window.setTimeout(async () => {
       setIsSaving(true)
       try {
-        const html = markdownToHtml(pendingMarkdown)
         const response = await saveMemo({
           slug: MEMO_SLUG,
-          title: pendingTitle || '随手记',
-          content_html: html,
-          content_text: stripHtml(html),
+          title: nextTitle || '随手记',
+          content_html: markdownToHtml(nextMarkdown),
+          content_text: nextMarkdown,
         })
-        setMemo(response.memo)
-        const nextMarkdownValue = toMarkdown(response.memo.content_html)
-        setEditorMarkdown(nextMarkdownValue)
-        syncEditorContent(nextMarkdownValue)
         setLastSavedAt(response.memo.updated_at)
         setStatus({ kind: 'success', message: '已自动保存。' })
       } catch (error) {
@@ -206,44 +198,39 @@ export function MemoDocsWorkspace() {
     }, 700)
   }
 
+  const applyMarkdownInsert = (before: string, after = '', placeholder = '') => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    const { nextValue, cursorStart, cursorEnd } = insertAtSelection(textarea, editorMarkdown, before, after, placeholder)
+    setEditorMarkdown(nextValue)
+    setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
+    scheduleSave(title, nextValue)
+    window.requestAnimationFrame(() => {
+      textarea.focus()
+      textarea.setSelectionRange(cursorStart, cursorEnd)
+    })
+  }
+
   const handleTitleChange = (value: string) => {
     setTitle(value)
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
-    scheduleSave(value)
+    scheduleSave(value, editorMarkdown)
   }
 
-  const handleEditorInput = () => {
-    const html = editorRef.current?.innerHTML ?? ''
-    const markdown = toMarkdown(html)
-    setEditorMarkdown(markdown)
+  const handleMarkdownChange = (value: string) => {
+    setEditorMarkdown(value)
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
-    scheduleSave(undefined, markdown)
-  }
-
-  const insertMarkdown = (snippet: string) => {
-    editorRef.current?.focus()
-    if (safeInsertMarkdown(snippet)) {
-      handleEditorInput()
-    }
+    scheduleSave(title, value)
   }
 
   const handleUpload = async (file: File) => {
     setStatus({ kind: 'idle', message: '图片上传中。' })
     const response = await uploadFile(file)
-    insertMarkdown(`![${file.name}](${getFileDownloadUrl(response.file.id)})`)
+    applyMarkdownInsert(`![${file.name}](${getFileDownloadUrl(response.file.id)})\n\n`, '', file.name)
     setStatus({ kind: 'success', message: '图片已插入并保存到云端。' })
   }
 
-  const memoStats = useMemo(() => {
-    const text = contentText
-    const images = (contentHtml.match(/<img\b/gi) ?? []).length
-    const words = text ? text.split(/\s+/).filter(Boolean).length : 0
-    return {
-      words,
-      images,
-      readingMinutes: Math.max(1, Math.ceil(Math.max(words, text.length / 2) / 220)),
-    }
-  }, [contentHtml, contentText])
+  const previewText = editorMarkdown.trim() || '从标题开始写，#、##、-、> 和图片链接都可以直接输入。'
 
   return (
     <div className="memo-focus-shell">
@@ -253,8 +240,9 @@ export function MemoDocsWorkspace() {
           <h2 className="memo-focus-title" id="memo-page-title">随手记</h2>
         </div>
         <div className="memo-focus-stats" aria-label="随手记状态">
-          <span>{memoStats.words} 字</span>
+          <span>{memoStats.chars} 字</span>
           <span>{memoStats.images} 图</span>
+          <span>{memoStats.lines} 行</span>
           <span>{isSaving ? '保存中' : lastSavedAt ? formatDate(lastSavedAt) : '准备就绪'}</span>
         </div>
       </section>
@@ -273,16 +261,16 @@ export function MemoDocsWorkspace() {
           </div>
 
           <div className="memo-editor-toolbar" aria-label="编辑工具栏">
-            <button className="memo-tool-button" onClick={() => insertMarkdown('**加粗文本**')} type="button" aria-label="加粗">
+            <button className="memo-tool-button" onClick={() => applyMarkdownInsert('**', '**', '加粗文本')} type="button" aria-label="加粗">
               <strong>B</strong>
             </button>
-            <button className="memo-tool-button" onClick={() => insertMarkdown('*斜体文本*')} type="button" aria-label="斜体">
+            <button className="memo-tool-button" onClick={() => applyMarkdownInsert('*', '*', '斜体文本')} type="button" aria-label="斜体">
               <em>I</em>
             </button>
-            <button className="memo-tool-button" onClick={() => insertMarkdown('> 引用内容\n')} type="button" aria-label="引用">
+            <button className="memo-tool-button" onClick={() => applyMarkdownInsert('> ', '', '引用内容')} type="button" aria-label="引用">
               <span aria-hidden="true">“</span>
             </button>
-            <button className="memo-tool-button" onClick={() => insertMarkdown('- 清单项\n')} type="button" aria-label="清单">
+            <button className="memo-tool-button" onClick={() => applyMarkdownInsert('- ', '', '清单项')} type="button" aria-label="清单">
               <span aria-hidden="true">•</span>
             </button>
             <button className="memo-tool-button memo-tool-button-wide" onClick={() => fileInputRef.current?.click()} type="button" aria-label="插入图片">
@@ -294,14 +282,12 @@ export function MemoDocsWorkspace() {
             </button>
           </div>
 
-          <div
+          <textarea
             aria-label="随手记内容"
             className="memo-rich-editor memo-markdown-editor"
-            contentEditable
-            onInput={handleEditorInput}
-            ref={editorRef}
-            role="textbox"
-            suppressContentEditableWarning
+            onChange={(event) => handleMarkdownChange(event.target.value)}
+            ref={textareaRef}
+            value={editorMarkdown}
           />
           <input
             accept="image/*"
@@ -321,7 +307,7 @@ export function MemoDocsWorkspace() {
 
           <div className="memo-editor-footer">
             <span>Markdown 文档</span>
-            <span>{contentText || '从标题开始写，图片会自动转成 Markdown 链接。'}</span>
+            <span>{previewText}</span>
           </div>
         </div>
         <StatusBanner
