@@ -7,6 +7,7 @@ const JsonToolPage = lazy(() => import('./pages/JsonToolPage').then((module) => 
 const InspectToolPage = lazy(() =>
   import('./pages/InspectToolPage').then((module) => ({ default: module.InspectToolPage })),
 )
+const MemoDocsPage = lazy(() => import('./pages/MemoDocsPage').then((module) => ({ default: module.MemoDocsPage })))
 const MongoJsonToolPage = lazy(() =>
   import('./pages/MongoJsonToolPage').then((module) => ({ default: module.MongoJsonToolPage })),
 )
@@ -36,6 +37,7 @@ function App() {
           <Route path="tools/json" element={withSuspense(<JsonToolPage />)} />
           <Route path="tools/mongodb-json" element={withSuspense(<MongoJsonToolPage />)} />
           <Route path="tools/visualize" element={withSuspense(<VisualizeToolPage />)} />
+          <Route path="tools/memo-docs" element={withSuspense(<MemoDocsPage />)} />
         </Route>
       </Routes>
     </BrowserRouter>

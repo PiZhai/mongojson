@@ -18,7 +18,7 @@ create_default_dirs
 
 if [[ -d "$APP_DIR/.git" ]]; then
   log "Found existing repo in $APP_DIR"
-  git_pull_latest
+  maybe_pull_code
 else
   [[ -n "$REPO_URL" ]] || die "Missing git repo in $APP_DIR. Clone first or rerun with REPO_URL=<repo-url>."
   if [[ -n "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
@@ -48,6 +48,7 @@ if [[ ! -f "$HTPASSWD_FILE" ]]; then
 fi
 
 compose up -d --build
+restart_nginx_gateway
 print_status
 wait_for_url "$HEALTH_URL" "healthz"
 wait_for_url "$READY_URL" "readyz"

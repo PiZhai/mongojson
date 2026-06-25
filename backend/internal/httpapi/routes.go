@@ -11,6 +11,7 @@ import (
 	"mongojson/backend/internal/config"
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
+	"mongojson/backend/internal/service/memo"
 	"mongojson/backend/internal/service/presets"
 )
 
@@ -18,6 +19,7 @@ type Dependencies struct {
 	Config        config.Config
 	FileService   *filemeta.Service
 	JobService    *jobs.Service
+	MemoService   *memo.Service
 	PresetService *presets.Service
 	Readiness     func(context.Context) (map[string]string, error)
 }
@@ -31,6 +33,8 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 	router.Route("/api", func(r chi.Router) {
 		r.Post("/files", handler.uploadFile)
 		r.Get("/files/{id}/download", handler.downloadFile)
+		r.Get("/memo", handler.getMemo)
+		r.Put("/memo", handler.saveMemo)
 		r.Post("/jobs", handler.createJob)
 		r.Get("/jobs/{id}", handler.getJob)
 		r.Get("/presets", handler.listPresets)

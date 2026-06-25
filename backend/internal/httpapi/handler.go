@@ -81,6 +81,34 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusCreated, map[string]domain.FileRecord{"file": record})
 }
 
+func (h *Handler) getMemo(w http.ResponseWriter, r *http.Request) {
+	record, err := h.deps.MemoService.GetOrCreate(r.Context(), r.URL.Query().Get("slug"))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"memo": record})
+}
+
+func (h *Handler) saveMemo(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Slug        string `json:"slug"`
+		Title       string `json:"title"`
+		ContentHTML string `json:"content_html"`
+		ContentText string `json:"content_text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.MemoService.Save(r.Context(), body.Slug, body.Title, body.ContentHTML, body.ContentText)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"memo": record})
+}
+
 func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {
 	record, err := h.deps.FileService.GetByID(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {

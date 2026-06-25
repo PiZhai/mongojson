@@ -22,6 +22,14 @@
 - `docker-prune.sh`：清理 Docker 构建缓存和悬挂镜像
 - `backup-postgres.sh`：执行 PostgreSQL 备份
 
+如果你想跳过代码拉取，只重建或只重启：
+
+```bash
+SKIP_PULL=1 /opt/personal-tooling/app/deploy/deploy-release.sh
+```
+
+同样适用于 `deploy-init.sh`、`deploy-frontend.sh`、`deploy-backend.sh`。
+
 ## 2. 常规全量发版
 
 适用：
@@ -37,6 +45,7 @@
 
 - 会先 `git pull --ff-only`
 - 会重建 `backend`、`frontend`、`nginx`
+- 发版后会额外重启一次 `nginx`，刷新 upstream 容器 IP，避免旧解析导致 `502`
 - 不会清掉 Docker build cache
 
 如果需要顺便拉一下 `postgres` / `nginx` 远程镜像更新：
@@ -59,6 +68,7 @@ PULL_IMAGES=1 /opt/personal-tooling/app/deploy/deploy-release.sh
 
 - 会先 `git pull --ff-only`
 - 只重建 `frontend` 和 `nginx`
+- 发版后会额外重启一次 `nginx`，刷新 upstream 容器 IP
 - 不动 `backend` 和 `postgres`
 
 ## 4. 仅后端发版
@@ -75,6 +85,7 @@ PULL_IMAGES=1 /opt/personal-tooling/app/deploy/deploy-release.sh
 
 - 会先 `git pull --ff-only`
 - 只重建 `backend` 和 `nginx`
+- 发版后会额外重启一次 `nginx`，刷新 upstream 容器 IP
 - 不动 `frontend`
 
 ## 5. 无改动重启

@@ -18,6 +18,7 @@ import (
 	"mongojson/backend/internal/platform/storage"
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
+	"mongojson/backend/internal/service/memo"
 	"mongojson/backend/internal/service/presets"
 )
 
@@ -55,6 +56,7 @@ func NewServer() (*Server, error) {
 	fileService := filemeta.NewService(db, fileStore, cfg.FileRetention)
 	jobService := jobs.NewService(db, fileStore, cfg.FileRetention)
 	presetService := presets.NewService(db)
+	memoService := memo.NewService(db)
 
 	worker := jobs.NewWorker(jobService, cfg)
 	worker.Start(context.Background())
@@ -65,7 +67,7 @@ func NewServer() (*Server, error) {
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: false,
 		MaxAge:           300,
@@ -75,6 +77,7 @@ func NewServer() (*Server, error) {
 		Config:        cfg,
 		FileService:   fileService,
 		JobService:    jobService,
+		MemoService:   memoService,
 		PresetService: presetService,
 		Readiness:     readinessChecker(cfg, db, worker),
 	})

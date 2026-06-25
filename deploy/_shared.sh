@@ -65,11 +65,25 @@ git_pull_latest() {
   git -C "$APP_DIR" pull --ff-only
 }
 
+maybe_pull_code() {
+  if [[ "${SKIP_PULL:-0}" == "1" ]]; then
+    log "Skipping git pull by request"
+    return 0
+  fi
+
+  git_pull_latest
+}
+
 maybe_pull_images() {
   if [[ "${PULL_IMAGES:-0}" == "1" ]]; then
     log "Pulling remote image updates"
     compose pull "$@" || true
   fi
+}
+
+restart_nginx_gateway() {
+  log "Restarting nginx gateway to refresh upstream container IPs"
+  compose restart nginx
 }
 
 replace_postgres_password() {

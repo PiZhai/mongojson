@@ -241,3 +241,13 @@ export type PresetRecord = {
   created_at: string
   updated_at: string
 }
+
+export type MemoRecord = {
+  id: string
+  slug: string
+  title: string
+  content_html: string
+  content_text: string
+  created_at: string
+  updated_at: string
+}
