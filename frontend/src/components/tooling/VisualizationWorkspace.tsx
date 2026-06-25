@@ -67,16 +67,6 @@ export function VisualizationWorkspace() {
     }
   }, [rows, xKey, yKey])
 
-  const visualizeContext = rows.length > 0
-    ? {
-        crumb: ['数据可视化', chartType === 'line' ? '折线图' : '柱状图', `${xKey || 'X'} vs ${yKey || 'Y'}`],
-        helper: `当前使用 ${xKey || 'X'} 作为维度，${yKey || 'Y'} 作为数值字段，共 ${rows.length} 行数据。`,
-      }
-    : {
-        crumb: ['数据可视化', '待生成'],
-        helper: '先生成图表，系统会根据 JSON 自动推断维度字段和数值列。',
-      }
-
   useEffect(() => {
     void (async () => {
       try {
@@ -111,58 +101,6 @@ export function VisualizationWorkspace() {
 
   return (
     <div className="page-shell">
-      <div className="page-hero">
-        <div className="page-hero-main">
-          <h2 className="page-hero-title">数据可视化工作区</h2>
-          <p className="page-hero-copy">
-            将 JSON 映射成图表，适合快速查看趋势、分布和关键字段。首期提供从对象数组到柱状图的基础链路。
-          </p>
-          <div className="page-hero-meta">
-            <span className="meta-chip">JSON to Chart</span>
-            <span className="meta-chip">轻量图表</span>
-            <span className="meta-chip">Preset Ready</span>
-          </div>
-        </div>
-        <div className="page-hero-side">
-          <div className="hero-stat-grid">
-            <article className="hero-stat">
-              <span className="hero-stat-label">已识别字段</span>
-              <strong className="hero-stat-value">{summary.keys.length}</strong>
-            </article>
-            <article className="hero-stat">
-              <span className="hero-stat-label">数值列</span>
-              <strong className="hero-stat-value">{summary.numericKeys.length}</strong>
-            </article>
-            <article className="hero-stat hero-stat-wide">
-              <span className="hero-stat-label">当前链路</span>
-              <strong className="hero-stat-value">JSON 解析 {'->'} 字段映射 {'->'} 图表预览</strong>
-            </article>
-          </div>
-        </div>
-      </div>
-
-      <section className="context-strip" aria-label="当前上下文">
-        <div className="context-strip-copy">
-          <p className="context-strip-label">Current Context</p>
-          <div className="context-breadcrumb" role="list">
-            {visualizeContext.crumb.map((item, index) => (
-              <span className="context-breadcrumb-item" key={`${item}-${index}`} role="listitem">
-                {index > 0 ? <span className="context-breadcrumb-separator">/</span> : null}
-                <span>{item}</span>
-              </span>
-            ))}
-          </div>
-          <p className="context-strip-text">{visualizeContext.helper}</p>
-        </div>
-        <div className="context-strip-actions">
-          {rows.length > 0 ? (
-            <button className="button button-ghost button-sm" onClick={() => setChartType((value) => (value === 'bar' ? 'line' : 'bar'))} type="button">
-              切换为{chartType === 'bar' ? '折线图' : '柱状图'}
-            </button>
-          ) : null}
-        </div>
-      </section>
-
       <Panel
         actions={
           <>
@@ -186,10 +124,14 @@ export function VisualizationWorkspace() {
             >
               保存预设
             </button>
+            {rows.length > 0 ? (
+              <button className="button button-ghost" onClick={() => setChartType((value) => (value === 'bar' ? 'line' : 'bar'))} type="button">
+                {chartType === 'bar' ? '折线图' : '柱状图'}
+              </button>
+            ) : null}
           </>
         }
         eyebrow="Visualize"
-        subtitle="左侧录入数据，右侧配置维度与数值字段，并即时渲染图表。"
         title="图表配置"
       >
         <div className="workspace-grid">
@@ -314,8 +256,7 @@ export function VisualizationWorkspace() {
                   </svg>
                 ) : (
                   <div className="inline-empty-state">
-                    <p className="inline-empty-state-title">等待图表数据</p>
-                    <p className="inline-empty-state-text">生成图表后，这里会展示柱状图或折线图预览。</p>
+                    <p className="inline-empty-state-title">暂无图表</p>
                   </div>
                 )}
               </div>
@@ -327,21 +268,6 @@ export function VisualizationWorkspace() {
           status={status}
         />
       </Panel>
-
-      <div className="card-grid">
-        <article className="info-card">
-          <p className="info-card-title">输入建议</p>
-          <p className="info-card-text">首期最适合对象数组输入，每个对象代表一行，字段会自动映射为维度和指标候选。</p>
-        </article>
-        <article className="info-card">
-          <p className="info-card-title">图表引擎</p>
-          <p className="info-card-text">当前使用轻量内置 SVG 图表，后续如需复杂交互可再接入专业图表引擎。</p>
-        </article>
-        <article className="info-card">
-          <p className="info-card-title">预设能力</p>
-          <p className="info-card-text">图表映射支持保存到后端预设表，为后续个人模板体系打基础。</p>
-        </article>
-      </div>
     </div>
   )
 }

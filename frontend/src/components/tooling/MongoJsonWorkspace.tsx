@@ -5,7 +5,6 @@ import { DiffMode } from './mongo-json/DiffMode'
 import { EscapeMode } from './mongo-json/EscapeMode'
 import { FormatMode } from './mongo-json/FormatMode'
 import { ModeSwitch } from './mongo-json/ModeSwitch'
-import { MongoJsonHero } from './mongo-json/MongoJsonHero'
 import { ShellMode } from './mongo-json/ShellMode'
 import { TableMode } from './mongo-json/TableMode'
 import { isMongoMode } from './mongo-json/modeMeta'
@@ -26,8 +25,6 @@ export function MongoJsonWorkspace() {
 
   return (
     <div className="page-shell">
-      <MongoJsonHero activeModeLabel={workspace.activeModeLabel} mode={mode} />
-
       <ModeSwitch mode={mode} onModeChange={setMode} />
       <ContextStrip
         actions={

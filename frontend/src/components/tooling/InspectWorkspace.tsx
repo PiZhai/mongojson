@@ -71,37 +71,7 @@ export function InspectWorkspace() {
   }
 
   return (
-    <div className="page-shell">
-      <div className="page-hero">
-        <div className="page-hero-main">
-          <h2 className="page-hero-title">智能数据诊断</h2>
-          <p className="page-hero-copy">
-            粘贴日志、curl、Mongo Shell、转义字符串或 JSON，先判断数据形态，再把干净片段送到合适的工具继续处理。
-          </p>
-          <div className="page-hero-meta">
-            <span className="meta-chip">Smart Paste</span>
-            <span className="meta-chip">JSON Extract</span>
-            <span className="meta-chip">Workflow Router</span>
-          </div>
-        </div>
-        <div className="page-hero-side">
-          <div className="hero-stat-grid">
-            <article className="hero-stat">
-              <span className="hero-stat-label">识别类型</span>
-              <strong className="hero-stat-value">{kindLabels[result.kind]}</strong>
-            </article>
-            <article className="hero-stat">
-              <span className="hero-stat-label">置信度</span>
-              <strong className="hero-stat-value">{Math.round(result.confidence * 100)}%</strong>
-            </article>
-            <article className="hero-stat hero-stat-wide">
-              <span className="hero-stat-label">推荐动作</span>
-              <strong className="hero-stat-value">{result.suggestedActions.map((action) => action.label).join(' / ') || '等待输入'}</strong>
-            </article>
-          </div>
-        </div>
-      </div>
-
+    <div className="page-shell inspect-page-shell">
       <Panel
         actions={
           <>
@@ -114,7 +84,6 @@ export function InspectWorkspace() {
           </>
         }
         eyebrow="Inspect"
-        subtitle="识别不会改变原文；只有点击推荐动作时，才把提取结果传到目标工具。"
         title="粘贴诊断"
       >
         <div className="editor-split">
@@ -126,7 +95,7 @@ export function InspectWorkspace() {
           </div>
           <ResultPane language="json" placeholder="识别到结构化片段后会显示在这里。" title="Extracted" value={result.extractedText} />
         </div>
-        <StatusBanner right={`${result.issues.length} 条提示 · ${result.suggestedActions.length} 个动作`} status={status} />
+        <StatusBanner right={`${kindLabels[result.kind]} · ${Math.round(result.confidence * 100)}%`} status={status} />
       </Panel>
 
       <div className="workspace-grid">
@@ -136,7 +105,6 @@ export function InspectWorkspace() {
               result.suggestedActions.map((action) => (
                 <article className="info-card" key={action.id}>
                   <p className="info-card-title">{action.label}</p>
-                  <p className="info-card-text">{action.description}</p>
                   <div className="toolbar">
                     <button className="button button-sm" onClick={() => runAction(action)} type="button">
                       执行
@@ -145,7 +113,7 @@ export function InspectWorkspace() {
                 </article>
               ))
             ) : (
-              <div className="empty-state">粘贴数据后，这里会展示可执行动作。</div>
+              <div className="empty-state">暂无动作</div>
             )}
           </div>
         </Panel>
@@ -162,7 +130,6 @@ export function InspectWorkspace() {
             ) : (
               <article className="info-card">
                 <p className="info-card-title">OK</p>
-                <p className="info-card-text">没有额外提示，可以直接进入推荐动作。</p>
               </article>
             )}
           </div>

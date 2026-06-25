@@ -93,24 +93,32 @@ export function ensureMongoLanguage(monaco: typeof Monaco) {
     },
   })
 
-  monaco.editor.defineTheme('mongodb-vs-dark', {
-    base: 'vs-dark',
+  monaco.editor.defineTheme('mongodb-light', {
+    base: 'vs',
     inherit: true,
     rules: [
-      { token: 'key', foreground: 'D4D4D4' },
-      { token: 'type.identifier', foreground: '4EC9B0', fontStyle: 'bold' },
-      { token: 'operator.keyword', foreground: 'C586C0', fontStyle: 'bold' },
-      { token: 'identifier', foreground: '9CDCFE' },
-      { token: 'string', foreground: 'CE9178' },
-      { token: 'number', foreground: 'B5CEA8' },
-      { token: 'keyword', foreground: '569CD6' },
-      { token: 'comment', foreground: '6A9955' },
-      { token: 'delimiter.curly', foreground: 'FFD700' },
-      { token: 'delimiter.square', foreground: 'DA70D6' },
-      { token: 'delimiter.parenthesis', foreground: '4FC1FF' },
-      { token: 'delimiter.comma', foreground: '808080' },
-      { token: 'delimiter.colon', foreground: '808080' },
+      { token: 'key', foreground: '1f2937' },
+      { token: 'type.identifier', foreground: '047857', fontStyle: 'bold' },
+      { token: 'operator.keyword', foreground: '7c3aed', fontStyle: 'bold' },
+      { token: 'identifier', foreground: '2563eb' },
+      { token: 'string', foreground: 'b45309' },
+      { token: 'number', foreground: '047857' },
+      { token: 'keyword', foreground: '1d4ed8' },
+      { token: 'comment', foreground: '6b7280' },
+      { token: 'delimiter.curly', foreground: 'ca8a04' },
+      { token: 'delimiter.square', foreground: '9333ea' },
+      { token: 'delimiter.parenthesis', foreground: '0284c7' },
+      { token: 'delimiter.comma', foreground: '64748b' },
+      { token: 'delimiter.colon', foreground: '64748b' },
     ],
-    colors: {},
+    colors: {
+      'editor.background': '#fbfcfe',
+      'editor.foreground': '#1f2937',
+      'editorLineNumber.foreground': '#9ca3af',
+      'editorCursor.foreground': '#2563eb',
+      'editor.selectionBackground': '#dbeafe',
+      'editor.inactiveSelectionBackground': '#e5e7eb',
+      'editor.lineHighlightBackground': '#f3f6fb',
+    },
   })
 }

@@ -4,7 +4,6 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 type NavItem = {
   to: string
   title: string
-  description: string
   icon: 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo'
 }
 
@@ -15,25 +14,21 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
       {
         to: '/tools/inspect',
         title: '智能诊断',
-        description: '识别粘贴内容并推荐下一步',
         icon: 'inspect',
       },
       {
         to: '/tools/json',
         title: 'JSON 工具',
-        description: '格式化、压缩、校验与树视图',
         icon: 'json',
       },
       {
         to: '/tools/mongodb-json',
         title: 'MongoDB JSON',
-        description: '扩展类型、对比、表格与 Shell',
         icon: 'mongo',
       },
       {
         to: '/tools/visualize',
         title: '数据可视化',
-        description: '将 JSON 表格数据映射成图表',
         icon: 'visualize',
       },
     ],
@@ -44,33 +39,27 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
       {
         to: '/tools/memo-docs',
         title: '在线备忘录',
-        description: '文档、任务、回顾与本地快照',
         icon: 'memo',
       },
     ],
   },
 ]
 
-const pageMeta: Record<string, { title: string; subtitle: string }> = {
+const pageMeta: Record<string, { title: string }> = {
   '/tools/inspect': {
     title: '智能诊断',
-    subtitle: '先识别粘贴内容的真实形态，再把干净片段送到合适的 JSON、Mongo 或可视化工具。',
   },
   '/tools/json': {
     title: 'JSON 工具',
-    subtitle: '处理标准 JSON 的格式化、压缩、校验与结构浏览，适合作为所有数据工作的起点。',
   },
   '/tools/mongodb-json': {
     title: 'MongoDB JSON 工具',
-    subtitle: '处理扩展类型、Shell 语句、结构对比和表格化浏览，面向更真实的数据排查场景。',
   },
   '/tools/visualize': {
     title: '数据可视化',
-    subtitle: '把 JSON 或表格结构映射成图表视图，快速判断分布、趋势和重点字段。',
   },
   '/tools/memo-docs': {
-    title: '在线备忘录文档',
-    subtitle: '把随手记录升级为可检索、可回顾、可导出的轻量文档工作区。',
+    title: '在线备忘录',
   },
 }
 
@@ -136,19 +125,6 @@ function NavIcon({ icon }: Pick<NavItem, 'icon'>) {
   )
 }
 
-function ThemeGlyph({ dark }: { dark: boolean }) {
-  return dark ? (
-    <svg aria-hidden="true" className="theme-icon" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6M18.7 18.7l-1.6-1.6M6.9 6.9L5.3 5.3" />
-    </svg>
-  ) : (
-    <svg aria-hidden="true" className="theme-icon" viewBox="0 0 24 24">
-      <path d="M18.5 14.6A7.5 7.5 0 0 1 9.4 5.5a8.5 8.5 0 1 0 9.1 9.1z" />
-    </svg>
-  )
-}
-
 function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
   return collapsed ? (
     <svg aria-hidden="true" className="theme-icon" viewBox="0 0 24 24">
@@ -163,7 +139,6 @@ function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
 
 export function AppShell() {
   const location = useLocation()
-  const [dark, setDark] = useState(true)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') {
       return false
@@ -186,7 +161,6 @@ export function AppShell() {
     <div
       className="app-shell"
       data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}
-      data-theme={dark ? 'dark' : 'light'}
     >
       <a className="skip-link" href="#main-content">
         跳到主内容
@@ -199,8 +173,7 @@ export function AppShell() {
               <span className="app-brand-name">Personal Tooling</span>
             </div>
             <div className="app-brand-badge">
-              <span>v1</span>
-              <span>Browser Workspace</span>
+              <span>Workspace</span>
             </div>
           </div>
 
@@ -231,43 +204,25 @@ export function AppShell() {
                     <span className="nav-icon" aria-hidden="true">
                       <NavIcon icon={item.icon} />
                     </span>
-                    <span className="nav-link-copy">
-                      <span className="nav-link-title">{item.title}</span>
-                      <span className="nav-link-desc">{item.description}</span>
-                    </span>
+                    <span className="nav-link-title">{item.title}</span>
                   </NavLink>
                 )
               })}
             </div>
           ))}
 
-        <div className="sidebar-footer">
-          <p className="sidebar-footer-title">运行策略</p>
-          <p className="sidebar-footer-text">
-            前端负责交互和轻量解析，后端负责平台底座、存储和可扩展能力。首期按单人在线工具站设计。
-          </p>
-        </div>
       </aside>
 
       <main className="app-main" id="main-content">
         <header className="app-header">
           <div className="app-header-copy">
             <h1 className="app-header-title">{meta.title}</h1>
-            <p className="app-header-subtitle">{meta.subtitle}</p>
           </div>
           <div className="app-header-actions">
             <div className="app-header-badge">
               <span className="app-header-badge-dot" />
-              <span>Local Workspace</span>
+              <span>已连接</span>
             </div>
-            <button
-              aria-label="Toggle theme"
-              className="theme-button"
-              onClick={() => setDark((value) => !value)}
-              type="button"
-            >
-              <ThemeGlyph dark={dark} />
-            </button>
           </div>
         </header>
         <div className="app-content">

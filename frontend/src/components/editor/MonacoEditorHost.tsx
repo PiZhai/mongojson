@@ -49,7 +49,7 @@ export function MonacoEditorHost({
         padding: { top: 16, bottom: 16 },
         fontFamily: "'JetBrains Mono', 'SFMono-Regular', 'SF Mono', Menlo, Consolas, monospace",
       }}
-      theme={language === MONGO_LANGUAGE_ID ? 'mongodb-vs-dark' : 'vs-dark'}
+      theme={language === MONGO_LANGUAGE_ID ? 'mongodb-light' : 'vs'}
       value={value}
     />
   )

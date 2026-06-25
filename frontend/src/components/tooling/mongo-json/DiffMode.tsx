@@ -134,24 +134,18 @@ export function DiffMode({
         <div className="panel">
           <div className="panel-header">
             <div className="panel-header-copy">
-              <div className="panel-eyebrow">Detail</div>
-              <h3 className="panel-title">路径定位说明</h3>
+              <div className="panel-eyebrow">Index</div>
+              <h3 className="panel-title">字段索引</h3>
             </div>
           </div>
-          <div className="stack panel-body-compact">
-            <article className="info-card">
-              <p className="info-card-title">跳转规则</p>
-              <p className="info-card-text">点击路径后，会优先跳到存在该字段的一侧，并将对应行滚动到编辑器中心，形成从摘要到详情的定位链路。</p>
+          <div className="summary-strip summary-strip-compact">
+            <article className="summary-tile">
+              <span className="summary-tile-label">左侧字段</span>
+              <strong className="summary-tile-value">{Object.keys(normalizedDiffLeft.keyLineMap).length}</strong>
             </article>
-            <article className="info-card">
-              <p className="info-card-title">字段路径</p>
-              <p className="info-card-text">对象字段使用 `a.b.c`，数组项使用 `[0]` 的路径形式，便于对应实际 JSON 结构。</p>
-            </article>
-            <article className="info-card">
-              <p className="info-card-title">当前索引</p>
-              <p className="info-card-text">
-                左侧已索引 {Object.keys(normalizedDiffLeft.keyLineMap).length} 个字段，右侧已索引 {Object.keys(normalizedDiffRight.keyLineMap).length} 个字段，可继续沿字段路径向下排查。
-              </p>
+            <article className="summary-tile">
+              <span className="summary-tile-label">右侧字段</span>
+              <strong className="summary-tile-value">{Object.keys(normalizedDiffRight.keyLineMap).length}</strong>
             </article>
           </div>
         </div>

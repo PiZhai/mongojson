@@ -65,7 +65,7 @@ export function DiffEditorPanel({
           wordWrap: 'on',
         }}
         original={original}
-        theme="mongodb-vs-dark"
+        theme="mongodb-light"
       />
     </div>
   )
