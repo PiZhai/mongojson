@@ -24,6 +24,11 @@ docs/       架构和实现说明
 - MongoDB JSON Tool
 - Visualization Tool
 
+MongoDB JSON Tool 的下一阶段设计见
+[MongoDB Tool Open Source Core Design](mongodb-open-source-core-design.md)，目标是将
+Monaco 定位为编辑器交互层，将解析、格式化、修复和基础校验迁移到开源库 facade，
+同时保留项目自研的 MongoDB 风险规则和摘要能力。
+
 ## Backend services
 
 - `file`: upload, metadata, download
