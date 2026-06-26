@@ -222,9 +222,11 @@ vi /opt/personal-tooling/env/prod.env
 
 ```dotenv
 POSTGRES_PASSWORD=replace_with_your_strong_password
+BACKEND_IMAGE=registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-backend:20260627-001
+FRONTEND_IMAGE=registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-frontend:20260627-001
 ```
 
-请把 `replace_with_your_strong_password` 替换为强密码，例如 20 位以上随机字符串。
+请把 `replace_with_your_strong_password` 替换为强密码，例如 20 位以上随机字符串。`BACKEND_IMAGE` 和 `FRONTEND_IMAGE` 替换为本地或 CI 构建并推送后的真实镜像标签。
 
 ### 6.3 查看环境文件
 
@@ -300,8 +302,7 @@ services:
       - /opt/personal-tooling/data/postgres:/var/lib/postgresql/data
 
   backend:
-    build:
-      context: ../backend
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -315,8 +316,7 @@ services:
       - /opt/personal-tooling/data/backend:/app/data
 
   frontend:
-    build:
-      context: ../frontend
+    image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE}
     restart: unless-stopped
     depends_on:
       - backend
@@ -502,9 +502,8 @@ if [[ ! -f /opt/personal-tooling/env/.htpasswd ]]; then
   exit 1
 fi
 
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull || true
-docker builder prune -f >/dev/null 2>&1 || true
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull backend frontend nginx
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d backend frontend nginx
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
 ```
 
@@ -564,11 +563,13 @@ docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-co
 
 如果能正常输出完整配置，说明环境变量和 Compose 文件没问题。
 
-### 9.3 如果之前失败过，建议先清理构建缓存
+### 9.3 检查镜像标签
 
 ```bash
-docker builder prune -f
+grep -E '^(BACKEND_IMAGE|FRONTEND_IMAGE)=' /opt/personal-tooling/env/prod.env
 ```
+
+确认两个镜像标签都存在，并且服务器已登录对应镜像仓库。
 
 ---
 
@@ -591,7 +592,8 @@ chmod +x /opt/personal-tooling/app/deploy/backup-postgres.sh
 
 ```bash
 cd /opt/personal-tooling/app
-docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml up -d --build
+docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml pull backend frontend nginx
+docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml up -d backend frontend nginx
 ```
 
 ### 10.4 查看容器状态

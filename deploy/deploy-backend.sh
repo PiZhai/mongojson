@@ -9,10 +9,12 @@ require_command git
 require_command docker
 
 ensure_runtime_files
+ensure_image_env
 maybe_pull_code
-maybe_pull_images nginx postgres
+maybe_pull_images postgres
 
-compose up -d --build backend nginx
+compose pull backend nginx
+compose up -d backend nginx
 restart_nginx_gateway
 print_status
 wait_for_url "$HEALTH_URL" "healthz"

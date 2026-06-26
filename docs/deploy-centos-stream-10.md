@@ -13,11 +13,11 @@
 采用单机容器编排：
 
 - `nginx`：公网入口，转发前端和 API
-- `frontend`：React/Vite 构建产物
-- `backend`：Go API
+- `frontend`：从镜像仓库拉取的 React/Vite 构建产物镜像
+- `backend`：从镜像仓库拉取的 Go API 镜像
 - `postgres`：主数据库
 
-首次部署阶段使用**一键全量部署**，后续日常发版再区分：
+生产机不现场编译前后端。先在本地或 CI 构建并推送镜像，生产机只执行 `pull + restart`。首次部署阶段使用**一键全量部署**，后续日常发版再区分：
 
 - 全量发版
 - 仅前端发版
@@ -79,11 +79,22 @@ git clone https://github.com/PiZhai/mongojson.git .
 
 ## 6. 一键首次部署
 
+首次部署前，先在本地构建并推送镜像：
+
+```powershell
+cd C:\Mine\projects\mongojson
+.\deploy\build-push-images.ps1 `
+  -Registry registry.cn-hangzhou.aliyuncs.com/your-namespace `
+  -Tag 20260627-001
+```
+
 推荐直接执行：
 
 ```bash
 POSTGRES_PASSWORD='<strong-postgres-password>' \
 BASIC_AUTH_PASSWORD='<strong-basic-auth-password>' \
+BACKEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-backend:20260627-001' \
+FRONTEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-frontend:20260627-001' \
 /opt/personal-tooling/app/deploy/deploy-init.sh
 ```
 
@@ -92,6 +103,7 @@ BASIC_AUTH_PASSWORD='<strong-basic-auth-password>' \
 - `POSTGRES_PASSWORD`：写入 `/opt/personal-tooling/env/prod.env`
 - `BASIC_AUTH_PASSWORD`：生成 `/opt/personal-tooling/env/.htpasswd`
 - `BASIC_AUTH_USER` 默认是 `admin`
+- `BACKEND_IMAGE` / `FRONTEND_IMAGE`：生产机要拉取的前后端镜像标签
 
 如果要自定义 Basic Auth 用户名：
 
@@ -99,6 +111,8 @@ BASIC_AUTH_PASSWORD='<strong-basic-auth-password>' \
 POSTGRES_PASSWORD='<strong-postgres-password>' \
 BASIC_AUTH_USER='your-admin-name' \
 BASIC_AUTH_PASSWORD='<strong-basic-auth-password>' \
+BACKEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-backend:20260627-001' \
+FRONTEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-frontend:20260627-001' \
 /opt/personal-tooling/app/deploy/deploy-init.sh
 ```
 

@@ -112,6 +112,52 @@ env_has_placeholder_password() {
   grep -Eq '^POSTGRES_PASSWORD=(replace_with_strong_password)?$' "$ENV_FILE"
 }
 
+env_has_placeholder_value() {
+  local key="$1"
+  local placeholder="$2"
+
+  if ! grep -Eq "^${key}=" "$ENV_FILE"; then
+    return 0
+  fi
+
+  grep -Eq "^${key}=(${placeholder})?$" "$ENV_FILE"
+}
+
+replace_env_value() {
+  local key="$1"
+  local value="$2"
+  local tmp_file
+
+  tmp_file="$(mktemp)"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { replaced = 0 }
+    $0 ~ "^" key "=" {
+      print key "=" value
+      replaced = 1
+      next
+    }
+    { print }
+    END {
+      if (!replaced) {
+        print key "=" value
+      }
+    }
+  ' "$ENV_FILE" > "$tmp_file"
+  mv "$tmp_file" "$ENV_FILE"
+}
+
+ensure_image_env() {
+  ensure_runtime_env
+
+  if env_has_placeholder_value "BACKEND_IMAGE" "replace_with_backend_image"; then
+    die "Set BACKEND_IMAGE in $ENV_FILE before deploying."
+  fi
+
+  if env_has_placeholder_value "FRONTEND_IMAGE" "replace_with_frontend_image"; then
+    die "Set FRONTEND_IMAGE in $ENV_FILE before deploying."
+  fi
+}
+
 create_default_dirs() {
   mkdir -p \
     "$APP_DIR" \

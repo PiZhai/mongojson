@@ -15,8 +15,7 @@ services:
       - /opt/personal-tooling/data/postgres:/var/lib/postgresql/data
 
   backend:
-    build:
-      context: ../backend
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -30,8 +29,7 @@ services:
       - /opt/personal-tooling/data/backend:/app/data
 
   frontend:
-    build:
-      context: ../frontend
+    image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE}
     restart: unless-stopped
     depends_on:
       - backend

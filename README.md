@@ -88,6 +88,7 @@ Compose 运行包含：
 - `deploy/docker-compose.prod.yml`
 - `deploy/nginx.prod.conf`
 - `deploy/.env.prod.example`
+- `deploy/build-push-images.ps1`
 - `deploy/deploy-prod.sh`
 - `deploy/deploy-init.sh`
 - `deploy/deploy-release.sh`

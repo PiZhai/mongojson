@@ -9,6 +9,8 @@ REPO_URL="${REPO_URL:-}"
 BASIC_AUTH_USER="${BASIC_AUTH_USER:-admin}"
 BASIC_AUTH_PASSWORD="${BASIC_AUTH_PASSWORD:-}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+BACKEND_IMAGE="${BACKEND_IMAGE:-}"
+FRONTEND_IMAGE="${FRONTEND_IMAGE:-}"
 
 require_command git
 require_command docker
@@ -41,13 +43,27 @@ if env_has_placeholder_password; then
   log "Updated POSTGRES_PASSWORD in $ENV_FILE"
 fi
 
+if env_has_placeholder_value "BACKEND_IMAGE" "replace_with_backend_image"; then
+  [[ -n "$BACKEND_IMAGE" ]] || die "Set BACKEND_IMAGE before first deploy, or edit $ENV_FILE manually."
+  replace_env_value "BACKEND_IMAGE" "$BACKEND_IMAGE"
+  log "Updated BACKEND_IMAGE in $ENV_FILE"
+fi
+
+if env_has_placeholder_value "FRONTEND_IMAGE" "replace_with_frontend_image"; then
+  [[ -n "$FRONTEND_IMAGE" ]] || die "Set FRONTEND_IMAGE before first deploy, or edit $ENV_FILE manually."
+  replace_env_value "FRONTEND_IMAGE" "$FRONTEND_IMAGE"
+  log "Updated FRONTEND_IMAGE in $ENV_FILE"
+fi
+
 if [[ ! -f "$HTPASSWD_FILE" ]]; then
   [[ -n "$BASIC_AUTH_PASSWORD" ]] || die "Set BASIC_AUTH_PASSWORD before first deploy, or create $HTPASSWD_FILE manually."
   htpasswd -bc "$HTPASSWD_FILE" "$BASIC_AUTH_USER" "$BASIC_AUTH_PASSWORD"
   log "Created Basic Auth file: $HTPASSWD_FILE"
 fi
 
-compose up -d --build
+ensure_image_env
+compose pull backend frontend nginx postgres
+compose up -d
 restart_nginx_gateway
 print_status
 wait_for_url "$HEALTH_URL" "healthz"
