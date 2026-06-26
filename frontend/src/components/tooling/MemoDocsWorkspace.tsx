@@ -2,11 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getFileDownloadUrl, getMemo, saveMemo, uploadFile } from '../../lib/api/client'
 import type { ToolStatus } from '../../types/tooling'
 import { StatusBanner } from '../common/StatusBanner'
-import {
-  MarkdownLiveEditor,
-  type MarkdownLiveEditorHandle,
-  type MarkdownSlashCommand,
-} from '../editor/MarkdownLiveEditor'
+import { VditorMemoEditor, type VditorMemoEditorHandle } from '../editor/VditorMemoEditor'
 
 const MEMO_SLUG = 'inbox'
 
@@ -38,80 +34,6 @@ function toMarkdown(html: string) {
     .replace(/&nbsp;/g, ' ')
 }
 
-function markdownToHtml(markdown: string) {
-  const lines = markdown.split('\n')
-  const html: string[] = []
-  let inList = false
-  let inQuote = false
-
-  const closeBlocks = () => {
-    if (inList) {
-      html.push('</ul>')
-      inList = false
-    }
-    if (inQuote) {
-      html.push('</blockquote>')
-      inQuote = false
-    }
-  }
-
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd()
-    if (!line.trim()) {
-      closeBlocks()
-      continue
-    }
-
-    if (line.startsWith('### ')) {
-      closeBlocks()
-      html.push(`<h3>${line.slice(4)}</h3>`)
-      continue
-    }
-    if (line.startsWith('## ')) {
-      closeBlocks()
-      html.push(`<h2>${line.slice(3)}</h2>`)
-      continue
-    }
-    if (line.startsWith('# ')) {
-      closeBlocks()
-      html.push(`<h1>${line.slice(2)}</h1>`)
-      continue
-    }
-    if (line.startsWith('> ')) {
-      if (!inQuote) {
-        closeBlocks()
-        html.push('<blockquote>')
-        inQuote = true
-      }
-      html.push(line.slice(2))
-      continue
-    }
-    if (line.startsWith('- ')) {
-      if (!inList) {
-        closeBlocks()
-        html.push('<ul>')
-        inList = true
-      }
-      html.push(`<li>${line.slice(2)}</li>`)
-      continue
-    }
-    if (line.startsWith('![')) {
-      closeBlocks()
-      const match = line.match(/^!\[(.*?)\]\((.*?)\)$/)
-      if (match) {
-        html.push(`<figure><img src="${match[2]}" alt="${match[1]}" /><figcaption>${match[1]}</figcaption></figure>`)
-      }
-      continue
-    }
-
-    closeBlocks()
-    html.push(`<p>${line}</p>`)
-  }
-
-  closeBlocks()
-  return html.join('\n')
-}
-
 function countVisibleChars(markdown: string) {
   return Array.from(markdown.replace(/\s+/g, '')).length
 }
@@ -120,127 +42,11 @@ function countImages(markdown: string) {
   return (markdown.match(/!\[[^\]]*\]\([^)]+\)/g) ?? []).length
 }
 
-type SlashCommand = MarkdownSlashCommand & {
-  id: string
-  label: string
-  hint: string
-}
-
-const slashCommands: SlashCommand[] = [
-  {
-    id: 'text',
-    label: '文本',
-    hint: '普通段落',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}${value.slice(end)}`,
-      cursorStart: start,
-      cursorEnd: start,
-    }),
-  },
-  {
-    id: 'h1',
-    label: '一级标题',
-    hint: '# 标题',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}# ${value.slice(end)}`,
-      cursorStart: start + 2,
-      cursorEnd: start + 2,
-    }),
-  },
-  {
-    id: 'h2',
-    label: '二级标题',
-    hint: '## 标题',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}## ${value.slice(end)}`,
-      cursorStart: start + 3,
-      cursorEnd: start + 3,
-    }),
-  },
-  {
-    id: 'h3',
-    label: '三级标题',
-    hint: '### 标题',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}### ${value.slice(end)}`,
-      cursorStart: start + 4,
-      cursorEnd: start + 4,
-    }),
-  },
-  {
-    id: 'ul',
-    label: '无序列表',
-    hint: '- 项目',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}- ${value.slice(end)}`,
-      cursorStart: start + 2,
-      cursorEnd: start + 2,
-    }),
-  },
-  {
-    id: 'ol',
-    label: '有序列表',
-    hint: '1. 项目',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}1. ${value.slice(end)}`,
-      cursorStart: start + 3,
-      cursorEnd: start + 3,
-    }),
-  },
-  {
-    id: 'quote',
-    label: '引用',
-    hint: '> 引用内容',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}> ${value.slice(end)}`,
-      cursorStart: start + 2,
-      cursorEnd: start + 2,
-    }),
-  },
-  {
-    id: 'code',
-    label: '代码块',
-    hint: '```',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}\`\`\`\n${value.slice(end)}\n\`\`\``,
-      cursorStart: start + 4,
-      cursorEnd: start + 4,
-    }),
-  },
-  {
-    id: 'divider',
-    label: '分隔线',
-    hint: '---',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}---\n${value.slice(end)}`,
-      cursorStart: start + 4,
-      cursorEnd: start + 4,
-    }),
-  },
-  {
-    id: 'link',
-    label: '链接',
-    hint: '[文本](url)',
-    insert: ({ value, start, end }) => {
-      const selected = value.slice(start, end) || '链接文本'
-      return {
-        value: `${value.slice(0, start)}[${selected}](url)${value.slice(end)}`,
-        cursorStart: start + 1,
-        cursorEnd: start + 1 + selected.length,
-      }
-    },
-  },
-]
-
 export function MemoDocsWorkspace() {
-  const editorRef = useRef<MarkdownLiveEditorHandle | null>(null)
+  const editorRef = useRef<VditorMemoEditorHandle | null>(null)
   const saveTimerRef = useRef<number | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [title, setTitle] = useState('')
   const [editorMarkdown, setEditorMarkdown] = useState('')
-  const [slashOpen, setSlashOpen] = useState(false)
-  const [slashQuery, setSlashQuery] = useState('')
-  const [slashIndex, setSlashIndex] = useState(0)
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState('')
@@ -251,15 +57,6 @@ export function MemoDocsWorkspace() {
     const lines = editorMarkdown ? editorMarkdown.split('\n').length : 0
     return { chars, images, lines }
   }, [editorMarkdown])
-
-  const slashMatches = useMemo(() => {
-    const normalized = slashQuery.trim().toLowerCase()
-    if (!slashOpen) return []
-    if (!normalized) return slashCommands
-    return slashCommands.filter((command) => {
-      return `${command.id} ${command.label} ${command.hint}`.toLowerCase().includes(normalized)
-    })
-  }, [slashOpen, slashQuery])
 
   useEffect(() => {
     void (async () => {
@@ -297,7 +94,7 @@ export function MemoDocsWorkspace() {
         const response = await saveMemo({
           slug: MEMO_SLUG,
           title: nextTitle || '随手记',
-          content_html: markdownToHtml(nextMarkdown),
+          content_html: editorRef.current?.getHtml() ?? '',
           content_text: nextMarkdown,
         })
         setLastSavedAt(response.memo.updated_at)
@@ -325,44 +122,9 @@ export function MemoDocsWorkspace() {
   const handleUpload = async (file: File) => {
     setStatus({ kind: 'idle', message: '图片上传中。' })
     const response = await uploadFile(file)
-    editorRef.current?.insertText(`![${file.name}](${getFileDownloadUrl(response.file.id)})\n\n`)
+    const markdown = `![${file.name}](${getFileDownloadUrl(response.file.id)})`
     setStatus({ kind: 'success', message: '图片已插入并保存到云端。' })
-  }
-
-  const closeSlashMenu = () => {
-    setSlashOpen(false)
-    setSlashQuery('')
-    setSlashIndex(0)
-  }
-
-  const applyMarkdownInsert = (before: string, after = '', placeholder = '') => {
-    editorRef.current?.wrapSelection(before, after, placeholder)
-  }
-
-  const applySlashCommand = (command: SlashCommand) => {
-    editorRef.current?.applySlashCommand(command)
-    closeSlashMenu()
-  }
-
-  const handleCommandKey = (key: 'ArrowDown' | 'ArrowUp' | 'Enter' | 'Tab' | 'Escape') => {
-    if (!slashOpen) return false
-    if (key === 'ArrowDown') {
-      setSlashIndex((value) => (slashMatches.length === 0 ? 0 : (value + 1) % slashMatches.length))
-      return true
-    }
-    if (key === 'ArrowUp') {
-      setSlashIndex((value) => (slashMatches.length === 0 ? 0 : (value - 1 + slashMatches.length) % slashMatches.length))
-      return true
-    }
-    if (key === 'Enter' || key === 'Tab') {
-      if (slashMatches[slashIndex]) {
-        applySlashCommand(slashMatches[slashIndex])
-        return true
-      }
-      return false
-    }
-    closeSlashMenu()
-    return true
+    return markdown
   }
 
   return (
@@ -393,83 +155,13 @@ export function MemoDocsWorkspace() {
             />
           </div>
 
-          <div className="memo-editor-toolbar" aria-label="编辑工具栏">
-            <button className="memo-tool-button" onClick={() => applyMarkdownInsert('**', '**', '加粗文本')} onMouseDown={(event) => event.preventDefault()} type="button" aria-label="加粗">
-              <strong>B</strong>
-            </button>
-            <button className="memo-tool-button" onClick={() => applyMarkdownInsert('*', '*', '斜体文本')} onMouseDown={(event) => event.preventDefault()} type="button" aria-label="斜体">
-              <em>I</em>
-            </button>
-            <button className="memo-tool-button" onClick={() => applyMarkdownInsert('> ', '', '引用内容')} onMouseDown={(event) => event.preventDefault()} type="button" aria-label="引用">
-              <span aria-hidden="true">“</span>
-            </button>
-            <button className="memo-tool-button" onClick={() => applyMarkdownInsert('- ', '', '清单项')} onMouseDown={(event) => event.preventDefault()} type="button" aria-label="清单">
-              <span aria-hidden="true">•</span>
-            </button>
-            <button className="memo-tool-button memo-tool-button-wide" onClick={() => fileInputRef.current?.click()} onMouseDown={(event) => event.preventDefault()} type="button" aria-label="插入图片">
-              <svg aria-hidden="true" className="memo-tool-icon" viewBox="0 0 24 24">
-                <rect height="14" rx="2" width="16" x="4" y="5" />
-                <path d="M8 14l2.5-2.5 2.2 2.2 1.5-1.5L17 15" />
-                <circle cx="9" cy="9" r="1" />
-              </svg>
-            </button>
-          </div>
-
-          <MarkdownLiveEditor
+          <VditorMemoEditor
             onChange={commitMarkdown}
-            onCommandKey={handleCommandKey}
-            onSlashChange={({ open, query }) => {
-              setSlashOpen(open)
-              setSlashQuery(query)
-              setSlashIndex(0)
-            }}
+            onUpload={handleUpload}
             placeholder="从标题开始写，#、##、-、> 和图片链接都可以直接输入。"
             ref={editorRef}
             value={editorMarkdown}
           />
-
-          <input
-            accept="image/*"
-            className="memo-file-input"
-            onChange={async (event) => {
-              const file = event.target.files?.[0]
-              if (!file) return
-              try {
-                await handleUpload(file)
-              } finally {
-                event.target.value = ''
-              }
-            }}
-            ref={fileInputRef}
-            type="file"
-          />
-
-          {slashOpen ? (
-            <div className="memo-slash-menu" role="listbox" aria-label="命令选择">
-              <div className="memo-slash-search">/{slashQuery || '输入关键字'}</div>
-              {slashMatches.length > 0 ? (
-                slashMatches.map((command, index) => (
-                  <button
-                    aria-selected={index === slashIndex}
-                    className={`memo-slash-item${index === slashIndex ? ' memo-slash-item-active' : ''}`}
-                    key={command.id}
-                    onMouseEnter={() => setSlashIndex(index)}
-                    onMouseDown={(event) => {
-                      event.preventDefault()
-                      applySlashCommand(command)
-                    }}
-                    role="option"
-                    type="button"
-                  >
-                    <span className="memo-slash-item-main">{command.label}</span>
-                    <span className="memo-slash-item-hint">{command.hint}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="memo-slash-empty">没有匹配的命令</div>
-              )}
-            </div>
-          ) : null}
         </div>
         <StatusBanner
           right={lastSavedAt ? `最后保存 ${formatDate(lastSavedAt)}` : '尚未保存'}

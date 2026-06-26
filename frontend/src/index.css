@@ -868,6 +868,74 @@ button.path-chip,
   color: var(--text-muted);
 }
 
+.memo-vditor-editor {
+  flex: 1;
+  min-height: calc(100vh - 242px);
+  background: var(--editor-bg);
+}
+
+.memo-vditor-editor .vditor {
+  min-height: calc(100vh - 242px);
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--editor-bg);
+  font-family: var(--font-sans);
+}
+
+.memo-vditor-editor .vditor-toolbar {
+  position: sticky;
+  top: 58px;
+  z-index: 8;
+  min-height: 43px;
+  padding: 5px 22px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(251, 252, 254, 0.94);
+  backdrop-filter: blur(10px);
+}
+
+.memo-vditor-editor .vditor-content {
+  min-height: calc(100vh - 286px);
+}
+
+.memo-vditor-editor .vditor-ir {
+  min-height: calc(100vh - 286px);
+  background: var(--editor-bg);
+}
+
+.memo-vditor-editor .vditor-ir pre.vditor-reset {
+  max-width: 980px;
+  min-height: calc(100vh - 286px);
+  margin: 0 auto;
+  padding: 30px 44px 120px !important;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.memo-vditor-editor .vditor-reset {
+  color: var(--text);
+}
+
+.memo-vditor-editor .vditor-reset h1,
+.memo-vditor-editor .vditor-reset h2,
+.memo-vditor-editor .vditor-reset h3,
+.memo-vditor-editor .vditor-reset h4,
+.memo-vditor-editor .vditor-reset h5,
+.memo-vditor-editor .vditor-reset h6 {
+  color: var(--text-strong);
+  letter-spacing: 0;
+}
+
+.memo-vditor-editor .vditor-toolbar__item button {
+  border-radius: 6px;
+}
+
+.memo-vditor-editor .vditor-toolbar__item button:hover {
+  background: var(--surface);
+}
+
 .memo-editor-toolbar {
   position: sticky;
   top: 58px;
