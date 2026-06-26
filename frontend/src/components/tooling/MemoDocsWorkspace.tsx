@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { getFileDownloadUrl, getMemo, saveMemo, uploadFile } from '../../lib/api/client'
 import type { ToolStatus } from '../../types/tooling'
 import { StatusBanner } from '../common/StatusBanner'
+import {
+  MarkdownLiveEditor,
+  type MarkdownLiveEditorHandle,
+  type MarkdownSlashCommand,
+} from '../editor/MarkdownLiveEditor'
 
 const MEMO_SLUG = 'inbox'
 
@@ -28,7 +33,7 @@ function toMarkdown(html: string) {
     })
     .replace(/<li>(.*?)<\/li>/gi, '- $1\n')
     .replace(/<p>(.*?)<\/p>/gi, '$1\n\n')
-    .replace(/<figure>\s*<img src="(.*?)" alt="(.*?)" \/>\s*<figcaption>(.*?)<\/figcaption>\s*<\/figure>/gis, '![ $2 ]($1)\n\n*$3*\n\n')
+    .replace(/<figure>\s*<img src="(.*?)" alt="(.*?)" \/>\s*<figcaption>(.*?)<\/figcaption>\s*<\/figure>/gis, '![$2]($1)\n\n*$3*\n\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
 }
@@ -115,194 +120,10 @@ function countImages(markdown: string) {
   return (markdown.match(/!\[[^\]]*\]\([^)]+\)/g) ?? []).length
 }
 
-type MemoBlock = {
-  id: string
-  kind: 'line' | 'code'
-  source: string
-  startLine: number
-  endLine: number
-  language?: string
-}
-
-function parseMemoBlocks(markdown: string): MemoBlock[] {
-  const lines = markdown.split('\n')
-  const blocks: MemoBlock[] = []
-  let index = 0
-
-  while (index < lines.length) {
-    const line = lines[index]
-    const fenceMatch = line.trim().match(/^```(.*)$/)
-    if (fenceMatch) {
-      let endLine = index
-      for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-        if (lines[cursor].trim().startsWith('```')) {
-          endLine = cursor
-          break
-        }
-      }
-      if (endLine === index) {
-        endLine = lines.length - 1
-      }
-      const sourceLines = lines.slice(index, endLine + 1)
-      blocks.push({
-        id: `${index}:${endLine}:code`,
-        kind: 'code',
-        source: sourceLines.join('\n'),
-        startLine: index,
-        endLine,
-        language: fenceMatch[1]?.trim() || undefined,
-      })
-      index = endLine + 1
-      continue
-    }
-
-    blocks.push({
-      id: `${index}:${index}:line`,
-      kind: 'line',
-      source: line,
-      startLine: index,
-      endLine: index,
-    })
-    index += 1
-  }
-
-  return blocks
-}
-
-function getLineStartOffset(markdown: string, lineIndex: number) {
-  if (lineIndex <= 0) return 0
-  return markdown.split('\n').slice(0, lineIndex).reduce((offset, line) => offset + line.length + 1, 0)
-}
-
-function replaceBlockSource(markdown: string, block: MemoBlock, nextSource: string) {
-  const lines = markdown.split('\n')
-  return [...lines.slice(0, block.startLine), ...nextSource.split('\n'), ...lines.slice(block.endLine + 1)].join('\n')
-}
-
-function renderInlineMarkdown(text: string): ReactNode[] {
-  const nodes: ReactNode[] = []
-  const pattern = /(!\[([^\]]*)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*|\[([^\]]+)\]\(([^)]+)\))/g
-  let cursor = 0
-  let match: RegExpExecArray | null
-
-  while ((match = pattern.exec(text))) {
-    if (match.index > cursor) {
-      nodes.push(text.slice(cursor, match.index))
-    }
-    const [raw] = match
-    const key = `${match.index}-${raw}`
-    if (match[1].startsWith('![')) {
-      nodes.push(<img alt={match[2]} className="memo-inline-image" key={key} src={match[3]} />)
-    } else if (match[4]) {
-      nodes.push(<code key={key}>{match[4]}</code>)
-    } else if (match[5]) {
-      nodes.push(<strong key={key}>{match[5]}</strong>)
-    } else if (match[6]) {
-      nodes.push(<em key={key}>{match[6]}</em>)
-    } else if (match[7]) {
-      nodes.push(
-        <a href={match[8]} key={key} rel="noreferrer" target="_blank">
-          {match[7]}
-        </a>,
-      )
-    }
-    cursor = match.index + raw.length
-  }
-
-  if (cursor < text.length) {
-    nodes.push(text.slice(cursor))
-  }
-  return nodes
-}
-
-function renderReadingLine(line: string) {
-  const trimmed = line.trim()
-  if (!trimmed) {
-    return <div className="memo-render-line memo-render-empty" aria-hidden="true" />
-  }
-
-  const heading = trimmed.match(/^(#{1,3})\s+(.+)$/)
-  if (heading) {
-    const level = heading[1].length
-    const children = renderInlineMarkdown(heading[2])
-    if (level === 1) return <h1 className="memo-render-heading">{children}</h1>
-    if (level === 2) return <h2 className="memo-render-heading">{children}</h2>
-    return <h3 className="memo-render-heading">{children}</h3>
-  }
-
-  const quote = line.match(/^\s*>\s?(.*)$/)
-  if (quote) {
-    return <blockquote className="memo-render-quote">{renderInlineMarkdown(quote[1])}</blockquote>
-  }
-
-  const unordered = line.match(/^\s*[-*]\s+(.+)$/)
-  if (unordered) {
-    return (
-      <div className="memo-render-list-line">
-        <span className="memo-render-bullet" aria-hidden="true" />
-        <span>{renderInlineMarkdown(unordered[1])}</span>
-      </div>
-    )
-  }
-
-  const ordered = line.match(/^\s*(\d+)\.\s+(.+)$/)
-  if (ordered) {
-    return (
-      <div className="memo-render-list-line">
-        <span className="memo-render-order">{ordered[1]}.</span>
-        <span>{renderInlineMarkdown(ordered[2])}</span>
-      </div>
-    )
-  }
-
-  if (/^\s*---+\s*$/.test(line)) {
-    return <hr className="memo-render-divider" />
-  }
-
-  return <p className="memo-render-paragraph">{renderInlineMarkdown(line)}</p>
-}
-
-function renderReadingCodeBlock(block: MemoBlock) {
-  const lines = block.source.split('\n')
-  const opening = lines[0] ?? ''
-  const hasClosing = lines.length > 1 && lines[lines.length - 1].trim().startsWith('```')
-  const code = lines.slice(1, hasClosing ? -1 : undefined).join('\n')
-  const language = block.language || opening.trim().slice(3).trim()
-
-  return (
-    <pre className="memo-render-code">
-      {language ? <span className="memo-render-code-lang">{language}</span> : null}
-      <code>{code || ' '}</code>
-    </pre>
-  )
-}
-
-function insertAtSelection(
-  textarea: HTMLTextAreaElement,
-  value: string,
-  before: string,
-  after = '',
-  placeholder = '',
-) {
-  const start = textarea.selectionStart ?? value.length
-  const end = textarea.selectionEnd ?? value.length
-  const selected = value.slice(start, end)
-  const content = selected || placeholder
-  const nextValue = `${value.slice(0, start)}${before}${content}${after}${value.slice(end)}`
-  const cursorStart = start + before.length
-  const cursorEnd = cursorStart + content.length
-  return { nextValue, cursorStart, cursorEnd }
-}
-
-type SlashCommand = {
+type SlashCommand = MarkdownSlashCommand & {
   id: string
   label: string
   hint: string
-  insert: (selection: { value: string; start: number; end: number }) => {
-    value: string
-    cursorStart: number
-    cursorEnd: number
-  }
 }
 
 const slashCommands: SlashCommand[] = [
@@ -400,25 +221,23 @@ const slashCommands: SlashCommand[] = [
     id: 'link',
     label: '链接',
     hint: '[文本](url)',
-    insert: ({ value, start, end }) => ({
-      value: `${value.slice(0, start)}[${value.slice(start, end) || '链接文本'}](url)${value.slice(end)}`,
-      cursorStart: start + 1,
-      cursorEnd: start + 1 + (value.slice(start, end) || '链接文本').length,
-    }),
+    insert: ({ value, start, end }) => {
+      const selected = value.slice(start, end) || '链接文本'
+      return {
+        value: `${value.slice(0, start)}[${selected}](url)${value.slice(end)}`,
+        cursorStart: start + 1,
+        cursorEnd: start + 1 + selected.length,
+      }
+    },
   },
 ]
 
 export function MemoDocsWorkspace() {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const editorRef = useRef<MarkdownLiveEditorHandle | null>(null)
   const saveTimerRef = useRef<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const activeBlockRef = useRef<MemoBlock | null>(null)
   const [title, setTitle] = useState('')
   const [editorMarkdown, setEditorMarkdown] = useState('')
-  const [viewMode, setViewMode] = useState<'edit' | 'source'>('edit')
-  const [activeBlockId, setActiveBlockId] = useState<string | null>(null)
-  const [hoverBlockId, setHoverBlockId] = useState<string | null>(null)
-  const [pendingFocusBlockId, setPendingFocusBlockId] = useState<string | null>(null)
   const [slashOpen, setSlashOpen] = useState(false)
   const [slashQuery, setSlashQuery] = useState('')
   const [slashIndex, setSlashIndex] = useState(0)
@@ -433,14 +252,12 @@ export function MemoDocsWorkspace() {
     return { chars, images, lines }
   }, [editorMarkdown])
 
-  const memoBlocks = useMemo(() => parseMemoBlocks(editorMarkdown), [editorMarkdown])
-
   const slashMatches = useMemo(() => {
     const normalized = slashQuery.trim().toLowerCase()
     if (!slashOpen) return []
     if (!normalized) return slashCommands
     return slashCommands.filter((command) => {
-      return `${command.label} ${command.hint}`.toLowerCase().includes(normalized)
+      return `${command.id} ${command.label} ${command.hint}`.toLowerCase().includes(normalized)
     })
   }, [slashOpen, slashQuery])
 
@@ -470,14 +287,6 @@ export function MemoDocsWorkspace() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!pendingFocusBlockId || activeBlockId !== pendingFocusBlockId) return
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus()
-      setPendingFocusBlockId(null)
-    })
-  }, [activeBlockId, pendingFocusBlockId])
-
   const scheduleSave = (nextTitle: string, nextMarkdown: string) => {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current)
@@ -501,46 +310,10 @@ export function MemoDocsWorkspace() {
     }, 700)
   }
 
-  const updateSlashState = (value: string, cursor: number) => {
-    const beforeCursor = value.slice(0, cursor)
-    const slashStart = beforeCursor.lastIndexOf('/')
-    const token = slashStart >= 0 ? beforeCursor.slice(slashStart + 1) : ''
-    const shouldOpen =
-      slashStart >= 0 &&
-      beforeCursor[slashStart - 1] !== '/' &&
-      !/\s/.test(beforeCursor.slice(slashStart + 1, cursor))
-    setSlashOpen(shouldOpen)
-    setSlashQuery(shouldOpen ? token : '')
-    setSlashIndex(0)
-  }
-
   const commitMarkdown = (nextMarkdown: string) => {
     setEditorMarkdown(nextMarkdown)
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
     scheduleSave(title, nextMarkdown)
-  }
-
-  const updateBlockSource = (block: MemoBlock, nextSource: string) => {
-    const nextMarkdown = replaceBlockSource(editorMarkdown, block, nextSource)
-    commitMarkdown(nextMarkdown)
-    return nextMarkdown
-  }
-
-  const applyMarkdownInsert = (before: string, after = '', placeholder = '') => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    const activeBlock = viewMode === 'edit' ? activeBlockRef.current : null
-    const currentValue = activeBlock ? activeBlock.source : editorMarkdown
-    const { nextValue, cursorStart, cursorEnd } = insertAtSelection(textarea, currentValue, before, after, placeholder)
-    if (activeBlock) {
-      updateBlockSource(activeBlock, nextValue)
-    } else {
-      commitMarkdown(nextValue)
-    }
-    window.requestAnimationFrame(() => {
-      textarea.focus()
-      textarea.setSelectionRange(cursorStart, cursorEnd)
-    })
   }
 
   const handleTitleChange = (value: string) => {
@@ -549,23 +322,10 @@ export function MemoDocsWorkspace() {
     scheduleSave(value, editorMarkdown)
   }
 
-  const handleMarkdownChange = (value: string) => {
-    commitMarkdown(value)
-    const textarea = textareaRef.current
-    if (!textarea) return
-    const cursor = textarea.selectionStart ?? value.length
-    updateSlashState(value, cursor)
-  }
-
-  const handleBlockChange = (block: MemoBlock, value: string, selectionStart: number) => {
-    const nextMarkdown = updateBlockSource(block, value)
-    updateSlashState(nextMarkdown, getLineStartOffset(nextMarkdown, block.startLine) + selectionStart)
-  }
-
   const handleUpload = async (file: File) => {
     setStatus({ kind: 'idle', message: '图片上传中。' })
     const response = await uploadFile(file)
-    applyMarkdownInsert(`![${file.name}](${getFileDownloadUrl(response.file.id)})\n\n`, '', file.name)
+    editorRef.current?.insertText(`![${file.name}](${getFileDownloadUrl(response.file.id)})\n\n`)
     setStatus({ kind: 'success', message: '图片已插入并保存到云端。' })
   }
 
@@ -575,98 +335,34 @@ export function MemoDocsWorkspace() {
     setSlashIndex(0)
   }
 
+  const applyMarkdownInsert = (before: string, after = '', placeholder = '') => {
+    editorRef.current?.wrapSelection(before, after, placeholder)
+  }
+
   const applySlashCommand = (command: SlashCommand) => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    const activeBlock = viewMode === 'edit' ? activeBlockRef.current : null
-    const value = activeBlock ? activeBlock.source : editorMarkdown
-    const cursor = textarea.selectionStart ?? value.length
-    const beforeCursor = value.slice(0, cursor)
-    const slashStart = beforeCursor.lastIndexOf('/')
-    const selection = {
-      value,
-      start: slashStart >= 0 ? slashStart : cursor,
-      end: cursor,
+    editorRef.current?.applySlashCommand(command)
+    closeSlashMenu()
+  }
+
+  const handleCommandKey = (key: 'ArrowDown' | 'ArrowUp' | 'Enter' | 'Tab' | 'Escape') => {
+    if (!slashOpen) return false
+    if (key === 'ArrowDown') {
+      setSlashIndex((value) => (slashMatches.length === 0 ? 0 : (value + 1) % slashMatches.length))
+      return true
     }
-    const result = command.insert(selection)
-    const nextValue = result.value
-    if (activeBlock) {
-      updateBlockSource(activeBlock, nextValue)
-    } else {
-      commitMarkdown(nextValue)
+    if (key === 'ArrowUp') {
+      setSlashIndex((value) => (slashMatches.length === 0 ? 0 : (value - 1 + slashMatches.length) % slashMatches.length))
+      return true
+    }
+    if (key === 'Enter' || key === 'Tab') {
+      if (slashMatches[slashIndex]) {
+        applySlashCommand(slashMatches[slashIndex])
+        return true
+      }
+      return false
     }
     closeSlashMenu()
-    window.requestAnimationFrame(() => {
-      textarea.focus()
-      const start = result.cursorStart ?? selection.start
-      const end = result.cursorEnd ?? start
-      textarea.setSelectionRange(start, end)
-    })
-  }
-
-  const handleLiveKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!slashOpen) return
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      setSlashIndex((value) => (slashMatches.length === 0 ? 0 : (value + 1) % slashMatches.length))
-      return
-    }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      setSlashIndex((value) => (slashMatches.length === 0 ? 0 : (value - 1 + slashMatches.length) % slashMatches.length))
-      return
-    }
-    if (event.key === 'Enter' || event.key === 'Tab') {
-      if (slashMatches[slashIndex]) {
-        event.preventDefault()
-        applySlashCommand(slashMatches[slashIndex])
-        return
-      }
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      closeSlashMenu()
-    }
-  }
-
-  const renderEditableBlock = (block: MemoBlock) => (
-    <textarea
-      aria-label={block.kind === 'code' ? '代码块源码' : '当前行源码'}
-      className={`memo-live-source${block.kind === 'code' ? ' memo-live-code-source' : ''}`}
-      onBlur={() => {
-        setActiveBlockId(null)
-        activeBlockRef.current = null
-      }}
-      onChange={(event) => handleBlockChange(block, event.target.value, event.target.selectionStart ?? event.target.value.length)}
-      onFocus={() => {
-        activeBlockRef.current = block
-        setActiveBlockId(block.id)
-      }}
-      onKeyDown={handleLiveKeyDown}
-      ref={textareaRef}
-      rows={Math.max(1, block.source.split('\n').length)}
-      value={block.source}
-    />
-  )
-
-  const renderMemoBlock = (block: MemoBlock) => {
-    const isActive = viewMode === 'edit' && (activeBlockId === block.id || hoverBlockId === block.id)
-    return (
-      <div
-        className={`memo-live-block memo-live-block-${block.kind}${isActive ? ' memo-live-block-active' : ''}`}
-        key={block.id}
-        onClick={() => {
-          activeBlockRef.current = block
-          setActiveBlockId(block.id)
-          setPendingFocusBlockId(block.id)
-        }}
-        onMouseEnter={() => setHoverBlockId(block.id)}
-        onMouseLeave={() => setHoverBlockId((value) => (value === block.id ? null : value))}
-        onMouseMove={() => setHoverBlockId(block.id)}
-      >
-        {isActive ? renderEditableBlock(block) : block.kind === 'code' ? renderReadingCodeBlock(block) : renderReadingLine(block.source)}
-      </div>
-    )
+    return true
   }
 
   return (
@@ -697,27 +393,6 @@ export function MemoDocsWorkspace() {
             />
           </div>
 
-          <div className="memo-mode-switch" role="tablist" aria-label="显示模式">
-            <button
-              aria-selected={viewMode === 'edit'}
-              className={`memo-mode-button${viewMode === 'edit' ? ' memo-mode-button-active' : ''}`}
-              onClick={() => setViewMode('edit')}
-              role="tab"
-              type="button"
-            >
-              编辑
-            </button>
-            <button
-              aria-selected={viewMode === 'source'}
-              className={`memo-mode-button${viewMode === 'source' ? ' memo-mode-button-active' : ''}`}
-              onClick={() => setViewMode('source')}
-              role="tab"
-              type="button"
-            >
-              源码
-            </button>
-          </div>
-
           <div className="memo-editor-toolbar" aria-label="编辑工具栏">
             <button className="memo-tool-button" onClick={() => applyMarkdownInsert('**', '**', '加粗文本')} onMouseDown={(event) => event.preventDefault()} type="button" aria-label="加粗">
               <strong>B</strong>
@@ -740,42 +415,19 @@ export function MemoDocsWorkspace() {
             </button>
           </div>
 
-          {viewMode === 'edit' ? (
-            <div className="memo-live-editor" aria-label="随手记内容">
-              {memoBlocks.length > 0 ? memoBlocks.map(renderMemoBlock) : (
-                <div
-                  className="memo-live-block memo-live-block-line memo-live-block-active"
-                  onMouseEnter={() => setHoverBlockId('empty')}
-                  onMouseLeave={() => setHoverBlockId(null)}
-                >
-                  <textarea
-                    aria-label="当前行源码"
-                    className="memo-live-source"
-                    onChange={(event) => handleMarkdownChange(event.target.value)}
-                    onFocus={() => setActiveBlockId('empty')}
-                    onKeyDown={handleLiveKeyDown}
-                    placeholder="从标题开始写，#、##、-、> 和图片链接都可以直接输入。"
-                    ref={textareaRef}
-                    rows={1}
-                    value={editorMarkdown}
-                  />
-                </div>
-              )}
-            </div>
-          ) : (
-            <textarea
-              aria-label="随手记源码"
-              className="memo-source-view memo-markdown-editor"
-              onChange={(event) => handleMarkdownChange(event.target.value)}
-              onFocus={() => {
-                activeBlockRef.current = null
-                setActiveBlockId(null)
-              }}
-              onKeyDown={handleLiveKeyDown}
-              ref={textareaRef}
-              value={editorMarkdown}
-            />
-          )}
+          <MarkdownLiveEditor
+            onChange={commitMarkdown}
+            onCommandKey={handleCommandKey}
+            onSlashChange={({ open, query }) => {
+              setSlashOpen(open)
+              setSlashQuery(query)
+              setSlashIndex(0)
+            }}
+            placeholder="从标题开始写，#、##、-、> 和图片链接都可以直接输入。"
+            ref={editorRef}
+            value={editorMarkdown}
+          />
+
           <input
             accept="image/*"
             className="memo-file-input"
@@ -792,11 +444,7 @@ export function MemoDocsWorkspace() {
             type="file"
           />
 
-          <div className="memo-editor-footer">
-            <span>{viewMode === 'edit' ? 'Live Preview' : 'Source Mode'}</span>
-            <span>{viewMode === 'edit' ? '当前行显示源码，其余内容渲染为阅读视图' : '完整 Markdown 源码编辑'}</span>
-          </div>
-          {slashOpen && viewMode === 'edit' ? (
+          {slashOpen ? (
             <div className="memo-slash-menu" role="listbox" aria-label="命令选择">
               <div className="memo-slash-search">/{slashQuery || '输入关键字'}</div>
               {slashMatches.length > 0 ? (
