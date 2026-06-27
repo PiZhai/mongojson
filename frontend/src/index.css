@@ -1042,9 +1042,92 @@ button.path-chip,
 }
 
 .memo-vditor-editor {
-  flex: 1;
-  min-height: calc(100vh - 242px);
+  flex: 0 0 auto;
+  height: calc(100vh - 242px);
+  min-height: 360px;
+  max-height: calc(100vh - 242px);
   background: var(--editor-bg);
+}
+
+.memo-vditor-editor.vditor {
+  height: calc(100vh - 242px) !important;
+  min-height: 360px;
+  max-height: calc(100vh - 242px);
+  border: none;
+  border-radius: 0;
+  background: var(--editor-bg);
+}
+
+.memo-vditor-editor .vditor-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.memo-vditor-editor .vditor-outline {
+  flex: 0 0 236px;
+  width: 236px;
+  border-right: 1px solid var(--border);
+  background: #f8fbff;
+  overscroll-behavior: contain;
+  overflow-y: auto;
+}
+
+.memo-vditor-editor .vditor-ir,
+.memo-vditor-editor .vditor-wysiwyg {
+  min-height: 0;
+}
+
+.memo-vditor-editor .vditor-ir > .vditor-reset,
+.memo-vditor-editor .vditor-wysiwyg > .vditor-reset,
+.memo-vditor-editor .vditor-sv,
+.memo-vditor-editor .vditor-preview {
+  overscroll-behavior: contain;
+}
+
+.memo-vditor-editor .vditor-ir > .vditor-reset,
+.memo-vditor-editor .vditor-wysiwyg > .vditor-reset,
+.memo-vditor-editor .vditor-sv {
+  overflow-y: auto;
+}
+
+.memo-vditor-editor .vditor-outline__title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 38px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(248, 251, 255, 0.96);
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.memo-vditor-editor .vditor-outline__content {
+  padding: 8px 0 14px;
+}
+
+.memo-vditor-editor .vditor-outline li > span {
+  min-height: 30px;
+  padding: 6px 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.memo-vditor-editor .vditor-outline li > span:hover {
+  background: #eef6ff;
+  color: var(--accent);
+}
+
+.memo-vditor-editor .vditor-outline li > span.memo-outline-item-active {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.memo-vditor-editor .vditor-outline__action {
+  margin-right: 6px;
 }
 
 .memo-vditor-editor .vditor-copy {
@@ -1438,6 +1521,11 @@ button.path-chip,
     max-height: none;
   }
 
+  .memo-vditor-editor .vditor-outline {
+    flex-basis: 200px;
+    width: 200px;
+  }
+
   .editor-split,
   .workspace-grid,
   .card-grid {
@@ -1471,5 +1559,9 @@ button.path-chip,
   .mode-switch {
     width: 100%;
     overflow-x: auto;
+  }
+
+  .memo-vditor-editor .vditor-outline {
+    display: none !important;
   }
 }
