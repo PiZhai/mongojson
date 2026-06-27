@@ -15,6 +15,7 @@ import (
 
 	"mongojson/backend/internal/domain"
 	"mongojson/backend/internal/service/jobs"
+	"mongojson/backend/internal/service/memo"
 )
 
 type Handler struct {
@@ -92,17 +93,28 @@ func (h *Handler) getMemo(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) saveMemo(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Slug        string `json:"slug"`
-		Title       string `json:"title"`
-		ContentHTML string `json:"content_html"`
-		ContentText string `json:"content_text"`
+		Slug          string           `json:"slug"`
+		Title         string           `json:"title"`
+		ContentHTML   string           `json:"content_html"`
+		ContentText   string           `json:"content_text"`
+		FloatingCards *json.RawMessage `json:"floating_cards"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	record, err := h.deps.MemoService.Save(r.Context(), body.Slug, body.Title, body.ContentHTML, body.ContentText)
+	record, err := h.deps.MemoService.SaveMemo(r.Context(), memo.SaveInput{
+		Slug:          body.Slug,
+		Title:         body.Title,
+		ContentHTML:   body.ContentHTML,
+		ContentText:   body.ContentText,
+		FloatingCards: body.FloatingCards,
+	})
 	if err != nil {
+		if errors.Is(err, memo.ErrInvalidFloatingCards) {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

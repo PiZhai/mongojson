@@ -37,11 +37,20 @@ type PresetRecord struct {
 }
 
 type MemoRecord struct {
-	ID          string    `json:"id"`
-	Slug        string    `json:"slug"`
-	Title       string    `json:"title"`
-	ContentHTML string    `json:"content_html"`
-	ContentText string    `json:"content_text"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            string             `json:"id"`
+	Slug          string             `json:"slug"`
+	Title         string             `json:"title"`
+	ContentHTML   string             `json:"content_html"`
+	ContentText   string             `json:"content_text"`
+	FloatingCards []MemoFloatingCard `json:"floating_cards"`
+	CreatedAt     time.Time          `json:"created_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
+type MemoFloatingCard struct {
+	ID        string    `json:"id"`
+	Content   string    `json:"content"`
+	Color     string    `json:"color"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

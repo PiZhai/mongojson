@@ -82,9 +82,12 @@ func (db *DB) Migrate(ctx context.Context) error {
 			title text not null,
 			content_html text not null,
 			content_text text not null,
+			floating_cards jsonb not null default '[]'::jsonb,
 			created_at timestamptz not null default now(),
 			updated_at timestamptz not null default now()
 		);`,
+		`alter table tool_memos
+			add column if not exists floating_cards jsonb not null default '[]'::jsonb;`,
 		`create index if not exists idx_tool_jobs_status on tool_jobs(status);`,
 		`create index if not exists idx_tool_files_expires_at on tool_files(expires_at);`,
 	}
