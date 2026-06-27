@@ -11,8 +11,8 @@ export type VditorMemoEditorHandle = {
 }
 
 export type VditorMemoMode = 'wysiwyg' | 'ir' | 'sv'
-export type VditorMemoTheme = 'classic' | 'dark'
-export type VditorMemoContentTheme = 'ant-design' | 'light' | 'dark' | 'wechat'
+export type VditorMemoTheme = 'classic'
+export type VditorMemoContentTheme = 'ant-design' | 'light' | 'wechat'
 export type VditorMemoCodeTheme = string
 
 type VditorMemoEditorProps = {

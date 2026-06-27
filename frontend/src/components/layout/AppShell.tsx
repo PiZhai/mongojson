@@ -221,7 +221,7 @@ export function AppShell() {
           <div className="app-header-actions">
             <div className="app-header-badge">
               <span className="app-header-badge-dot" />
-              <span>已连接</span>
+              <span>工作区在线</span>
             </div>
           </div>
         </header>

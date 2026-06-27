@@ -1,27 +1,12 @@
 .app-shell {
-  --bg: #f5f6f8;
-  --surface: #ffffff;
-  --surface-raised: #f8f9fb;
-  --surface-soft: #eef1f5;
-  --border: #e1e5eb;
-  --border-strong: #c8d0dc;
-  --text: #1f2937;
-  --text-secondary: #4b5563;
-  --text-muted: #6b7280;
-  --text-strong: #111827;
-  --success: #16a34a;
-  --warning: #d97706;
-  --error: #dc2626;
-  --accent: #2563eb;
-  --accent-soft: #eaf1ff;
-  --editor-bg: #fbfcfe;
-  --shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
   display: grid;
   grid-template-columns: 228px minmax(0, 1fr);
   height: 100vh;
   min-height: 100vh;
   overflow: hidden;
-  background: var(--bg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(245, 247, 251, 0.68)),
+    var(--bg);
   color: var(--text);
   transition: grid-template-columns 180ms ease;
 }
@@ -37,8 +22,10 @@
   min-height: 0;
   padding: 18px 14px;
   overflow-y: auto;
-  border-right: 1px solid var(--border);
-  background: #fbfcfe;
+  border-right: 1px solid rgba(198, 210, 226, 0.72);
+  background: var(--surface-glass);
+  backdrop-filter: blur(22px);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.7);
 }
 
 .sidebar-topbar {
@@ -57,6 +44,8 @@
 }
 
 .app-brand {
+  flex-direction: column;
+  align-items: flex-start;
   gap: 8px;
 }
 
@@ -84,14 +73,23 @@
 }
 
 .brand-mark {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   color: var(--accent);
   stroke-width: 1.9;
 }
 
 .app-brand-badge {
-  display: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 7px;
+  border: 1px solid rgba(0, 122, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(231, 242, 255, 0.72);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .sidebar-toggle-button {
@@ -101,8 +99,8 @@
   width: 32px;
   height: 32px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
+  border-radius: 8px;
+  background: var(--surface-glass-strong);
   color: var(--text-secondary);
   transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
 }
@@ -110,7 +108,7 @@
 .sidebar-toggle-button:hover {
   color: var(--accent);
   border-color: var(--border-strong);
-  background: var(--surface-raised);
+  background: #ffffff;
 }
 
 .theme-icon {
@@ -141,22 +139,34 @@
   min-height: 38px;
   padding: 0 10px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text-secondary);
   text-decoration: none;
   cursor: pointer;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
 }
 
 .nav-link:hover {
   color: var(--text-strong);
-  background: #f0f3f8;
+  background: rgba(255, 255, 255, 0.62);
 }
 
 .nav-link-active {
   color: var(--accent);
-  border-color: #d8e4ff;
-  background: var(--accent-soft);
+  border-color: rgba(0, 122, 255, 0.22);
+  background: rgba(231, 242, 255, 0.88);
+  box-shadow: 0 6px 16px rgba(0, 122, 255, 0.1);
+}
+
+.nav-link-active::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 5px;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-teal));
 }
 
 .nav-icon {
@@ -214,9 +224,9 @@
   z-index: 20;
   padding: 6px 9px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  border-radius: 8px;
+  background: var(--surface-glass-strong);
+  box-shadow: var(--shadow-soft);
   color: var(--text-strong);
   font-size: 12px;
   line-height: 1.3;
@@ -252,9 +262,9 @@
   gap: 12px;
   min-height: 58px;
   padding: 0 22px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(198, 210, 226, 0.72);
+  background: rgba(255, 255, 255, 0.76);
+  backdrop-filter: blur(22px);
 }
 
 .app-header-title {
@@ -276,11 +286,12 @@
   gap: 7px;
   min-height: 30px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(47, 158, 68, 0.18);
   border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-muted);
+  background: rgba(241, 251, 245, 0.9);
+  color: #287a3e;
   font-size: 12px;
+  font-weight: 650;
 }
 
 .app-header-badge-dot {

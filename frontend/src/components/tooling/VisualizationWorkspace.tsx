@@ -153,7 +153,7 @@ export function VisualizationWorkspace() {
                   <h3 className="panel-title">维度映射</h3>
                 </div>
               </div>
-              <div className="stack" style={{ padding: 16 }}>
+              <div className="stack visualization-config-body">
                 <label className="field-label">
                   <span>X 轴字段</span>
                   <select className="select" onChange={(event) => setXKey(event.target.value)} value={xKey}>
@@ -219,6 +219,27 @@ export function VisualizationWorkspace() {
               <div className="chart-host">
                 {rows.length > 0 && xKey && yKey ? (
                   <svg aria-label={`${xKey} 到 ${yKey} 的${chartType === 'line' ? '折线图' : '柱状图'}`} className="chart-svg" role="img" viewBox={`0 0 ${chartData.width} ${chartData.height}`}>
+                    <defs>
+                      <linearGradient id="chart-line-gradient" x1="0%" x2="100%" y1="0%" y2="0%">
+                        <stop offset="0%" stopColor="#007aff" />
+                        <stop offset="38%" stopColor="#0f9f8f" />
+                        <stop offset="72%" stopColor="#f97316" />
+                        <stop offset="100%" stopColor="#7c3aed" />
+                      </linearGradient>
+                    </defs>
+                    {[0.25, 0.5, 0.75].map((ratio) => {
+                      const y = chartData.top + chartData.plotHeight * ratio
+                      return (
+                        <line
+                          className="chart-grid-line"
+                          key={ratio}
+                          x1={chartData.left}
+                          x2={chartData.width - 24}
+                          y1={y}
+                          y2={y}
+                        />
+                      )
+                    })}
                     <line className="chart-axis" x1={chartData.left} x2={chartData.width - 24} y1={chartData.top + chartData.plotHeight} y2={chartData.top + chartData.plotHeight} />
                     <line className="chart-axis" x1={chartData.left} x2={chartData.left} y1={chartData.top} y2={chartData.top + chartData.plotHeight} />
                     <text className="chart-axis-label" x={chartData.left - 8} y={chartData.top + 8}>
@@ -227,16 +248,16 @@ export function VisualizationWorkspace() {
                     {chartType === 'line' ? (
                       <>
                         <path className="chart-line" d={chartData.linePath} />
-                        {chartData.points.map((point) => (
-                          <circle className="chart-point" cx={point.x} cy={point.y} key={`${point.label}-${point.x}`} r="4">
+                        {chartData.points.map((point, index) => (
+                          <circle className={`chart-point chart-point-${index % 6}`} cx={point.x} cy={point.y} key={`${point.label}-${point.x}`} r="4">
                             <title>{`${point.label}: ${formatChartValue(point.value)}`}</title>
                           </circle>
                         ))}
                       </>
                     ) : (
-                      chartData.points.map((point) => (
+                      chartData.points.map((point, index) => (
                         <rect
-                          className="chart-bar"
+                          className={`chart-bar chart-bar-${index % 6}`}
                           height={chartData.top + chartData.plotHeight - point.y}
                           key={`${point.label}-${point.x}`}
                           rx="4"

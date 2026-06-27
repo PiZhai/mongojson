@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { getFileDownloadUrl, getMemo, saveMemo, uploadFile } from '../../lib/api/client'
 import type { ToolStatus } from '../../types/tooling'
 import { StatusBanner } from '../common/StatusBanner'
@@ -17,12 +17,29 @@ const FLOATING_CARDS_STORAGE_KEY = 'mongojson.memoDocs.floatingCards'
 const FLOATING_CARDS_V2_STORAGE_KEY = 'mongojson.memoDocs.floatingCards.v2'
 
 type FloatingCard = {
+  color: string
   content: string
   createdAt: string
   id: string
 }
 
 type FloatingCardDropPosition = 'before' | 'after'
+type FloatingCardColorOption = {
+  border: string
+  label: string
+  value: string
+}
+
+const DEFAULT_FLOATING_CARD_COLOR = '#fff7d6'
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i
+
+const floatingCardColors: FloatingCardColorOption[] = [
+  { label: '便签黄', value: '#fff7d6', border: '#f0dc91' },
+  { label: '天空蓝', value: '#eaf6ff', border: '#badfff' },
+  { label: '樱花粉', value: '#fff0f5', border: '#ffc8d8' },
+  { label: '薄荷绿', value: '#edfbf2', border: '#bce8cc' },
+  { label: '淡紫色', value: '#f4efff', border: '#d8c7ff' },
+]
 
 const editorModes: Array<[VditorMemoMode, string]> = [
   ['wysiwyg', '所见即所得'],
@@ -31,67 +48,37 @@ const editorModes: Array<[VditorMemoMode, string]> = [
 ]
 const editorThemes: Array<[VditorMemoTheme, string]> = [
   ['classic', '浅色'],
-  ['dark', '深色'],
 ]
 const contentThemes: Array<[VditorMemoContentTheme, string]> = [
   ['light', 'Light'],
   ['ant-design', 'Ant Design'],
-  ['dark', 'Dark'],
   ['wechat', 'WeChat'],
 ]
 const codeThemes: Array<[VditorMemoCodeTheme, string]> = [
   ['github', 'GitHub'],
-  ['github-dark', 'GitHub Dark'],
-  ['github-dark-dimmed', 'GitHub Dark Dimmed'],
   ['vs', 'VS'],
-  ['vs2015', 'VS 2015'],
   ['xcode', 'Xcode'],
   ['atom-one-light', 'Atom One Light'],
-  ['atom-one-dark', 'Atom One Dark'],
-  ['atom-one-dark-reasonable', 'Atom One Dark Reasonable'],
   ['a11y-light', 'A11y Light'],
-  ['a11y-dark', 'A11y Dark'],
-  ['agate', 'Agate'],
-  ['androidstudio', 'Android Studio'],
-  ['an-old-hope', 'An Old Hope'],
   ['arduino-light', 'Arduino Light'],
-  ['arta', 'Arta'],
   ['ascetic', 'Ascetic'],
-  ['dark', 'Dark'],
   ['default', 'Default'],
   ['docco', 'Docco'],
-  ['far', 'Far'],
   ['foundation', 'Foundation'],
   ['googlecode', 'Google Code'],
   ['idea', 'IDEA'],
   ['intellij-light', 'IntelliJ Light'],
-  ['ir-black', 'IR Black'],
   ['isbl-editor-light', 'ISBL Light'],
-  ['kimbie-dark', 'Kimbie Dark'],
   ['kimbie-light', 'Kimbie Light'],
   ['lightfair', 'Lightfair'],
   ['magula', 'Magula'],
   ['mono-blue', 'Mono Blue'],
-  ['monokai', 'Monokai'],
-  ['monokai-sublime', 'Monokai Sublime'],
-  ['night-owl', 'Night Owl'],
-  ['nord', 'Nord'],
-  ['obsidian', 'Obsidian'],
-  ['panda-syntax-dark', 'Panda Dark'],
-  ['qtcreator-dark', 'Qt Creator Dark'],
   ['qtcreator-light', 'Qt Creator Light'],
   ['rainbow', 'Rainbow'],
   ['routeros', 'RouterOS'],
   ['school-book', 'School Book'],
-  ['shades-of-purple', 'Shades of Purple'],
-  ['stackoverflow-dark', 'Stack Overflow Dark'],
   ['stackoverflow-light', 'Stack Overflow Light'],
-  ['sunburst', 'Sunburst'],
-  ['tokyo-night-dark', 'Tokyo Night Dark'],
   ['tokyo-night-light', 'Tokyo Night Light'],
-  ['tomorrow-night-blue', 'Tomorrow Night Blue'],
-  ['tomorrow-night-bright', 'Tomorrow Night Bright'],
-  ['xt256', 'XT256'],
 ]
 
 function formatDate(value: string) {
@@ -130,8 +117,62 @@ function countImages(markdown: string) {
   return (markdown.match(/!\[[^\]]*\]\([^)]+\)/g) ?? []).length
 }
 
-function createFloatingCard(content = ''): FloatingCard {
+function normalizeFloatingCardColor(value: unknown) {
+  if (typeof value === 'string' && HEX_COLOR_PATTERN.test(value)) {
+    return value.toLowerCase()
+  }
+  return DEFAULT_FLOATING_CARD_COLOR
+}
+
+function parseHexColor(value: string) {
+  const normalized = normalizeFloatingCardColor(value).slice(1)
   return {
+    blue: Number.parseInt(normalized.slice(4, 6), 16),
+    green: Number.parseInt(normalized.slice(2, 4), 16),
+    red: Number.parseInt(normalized.slice(0, 2), 16),
+  }
+}
+
+function toHexChannel(value: number) {
+  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0')
+}
+
+function mixHexColor(source: string, target: string, targetWeight: number) {
+  const sourceRgb = parseHexColor(source)
+  const targetRgb = parseHexColor(target)
+  const sourceWeight = 1 - targetWeight
+  return `#${toHexChannel(sourceRgb.red * sourceWeight + targetRgb.red * targetWeight)}${toHexChannel(
+    sourceRgb.green * sourceWeight + targetRgb.green * targetWeight,
+  )}${toHexChannel(sourceRgb.blue * sourceWeight + targetRgb.blue * targetWeight)}`
+}
+
+function getFloatingCardBorderColor(color: string) {
+  return floatingCardColors.find((item) => item.value === normalizeFloatingCardColor(color))?.border ?? mixHexColor(color, '#6f7d91', 0.28)
+}
+
+function getFloatingCardTextColor(color: string) {
+  const { red, green, blue } = parseHexColor(color)
+  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255
+  return luminance < 0.56 ? '#f8fbff' : '#111827'
+}
+
+function getFloatingCardMutedColor(color: string) {
+  return getFloatingCardTextColor(color) === '#f8fbff' ? '#e7edf6' : '#4f5f76'
+}
+
+function getFloatingCardStyle(card: FloatingCard): CSSProperties {
+  const color = normalizeFloatingCardColor(card.color)
+  return {
+    '--memo-card-bg': color,
+    '--memo-card-border': getFloatingCardBorderColor(color),
+    '--memo-card-muted': getFloatingCardMutedColor(color),
+    '--memo-card-text': getFloatingCardTextColor(color),
+  } as CSSProperties
+}
+
+function createFloatingCard(content = '', color = DEFAULT_FLOATING_CARD_COLOR): FloatingCard {
+  return {
+    color: normalizeFloatingCardColor(color),
     content,
     createdAt: new Date().toISOString(),
     id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
@@ -167,6 +208,7 @@ function loadFloatingCards() {
       return parsed
         .filter((card) => typeof card?.id === 'string' && typeof card?.content === 'string')
         .map((card) => ({
+          color: normalizeFloatingCardColor(card.color),
           content: card.content,
           createdAt: typeof card.createdAt === 'string' ? card.createdAt : new Date().toISOString(),
           id: card.id,
@@ -177,6 +219,53 @@ function loadFloatingCards() {
   }
 
   return [createFloatingCard()]
+}
+
+type FloatingCardColorPickerProps = {
+  id: string
+  label: string
+  onChange: (color: string) => void
+  value: string
+}
+
+function FloatingCardColorPicker({ id, label, onChange, value }: FloatingCardColorPickerProps) {
+  const normalizedValue = normalizeFloatingCardColor(value)
+
+  return (
+    <div
+      aria-label={label}
+      className="memo-card-color-picker"
+      onDragStart={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      role="group"
+    >
+      {floatingCardColors.map((color) => {
+        const isActive = normalizedValue === color.value
+        return (
+          <button
+            aria-label={`${label}：${color.label}`}
+            aria-pressed={isActive}
+            className={`memo-card-color-swatch${isActive ? ' memo-card-color-swatch-active' : ''}`}
+            key={color.value}
+            onClick={() => onChange(color.value)}
+            style={{ '--memo-card-swatch-color': color.value } as CSSProperties}
+            title={color.label}
+            type="button"
+          />
+        )
+      })}
+      <label className="memo-card-custom-color" style={{ '--memo-card-swatch-color': normalizedValue } as CSSProperties} title={`${label}：自定义`}>
+        <span className="sr-only">{`${label}：自定义颜色`}</span>
+        <input
+          aria-label={`${label}：自定义颜色`}
+          id={id}
+          onChange={(event) => onChange(normalizeFloatingCardColor(event.target.value))}
+          type="color"
+          value={normalizedValue}
+        />
+      </label>
+    </div>
+  )
 }
 
 export function MemoDocsWorkspace() {
@@ -192,6 +281,7 @@ export function MemoDocsWorkspace() {
   const [editorTheme, setEditorTheme] = useState<VditorMemoTheme>('classic')
   const [contentTheme, setContentTheme] = useState<VditorMemoContentTheme>('light')
   const [codeTheme, setCodeTheme] = useState<VditorMemoCodeTheme>('github')
+  const [newFloatingCardColor, setNewFloatingCardColor] = useState(DEFAULT_FLOATING_CARD_COLOR)
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState('')
@@ -297,11 +387,17 @@ export function MemoDocsWorkspace() {
   }
 
   const addFloatingCard = () => {
-    setFloatingCards((cards) => [...cards, createFloatingCard()])
+    setFloatingCards((cards) => [...cards, createFloatingCard('', newFloatingCardColor)])
   }
 
   const updateFloatingCard = (cardId: string, content: string) => {
     setFloatingCards((cards) => cards.map((card) => (card.id === cardId ? { ...card, content } : card)))
+  }
+
+  const updateFloatingCardColor = (cardId: string, color: string) => {
+    setFloatingCards((cards) =>
+      cards.map((card) => (card.id === cardId ? { ...card, color: normalizeFloatingCardColor(color) } : card)),
+    )
   }
 
   const removeFloatingCard = (cardId: string) => {
@@ -471,26 +567,25 @@ export function MemoDocsWorkspace() {
         </section>
 
         <aside className="memo-floating-panel" aria-label="随手记悬浮卡片栏">
-          <button
-            aria-label="在悬浮卡片栏右侧添加卡片"
-            className="memo-floating-side-add"
-            onClick={addFloatingCard}
-            title="添加卡片"
-            type="button"
-          >
-            +
-          </button>
           <div className="memo-floating-panel-header">
             <span className="memo-floating-panel-title">悬浮卡片</span>
-            <button
-              aria-label="添加悬浮卡片"
-              className="memo-floating-icon-button"
-              onClick={addFloatingCard}
-              title="添加卡片"
-              type="button"
-            >
-              +
-            </button>
+            <div className="memo-floating-panel-actions">
+              <FloatingCardColorPicker
+                id="memo-new-floating-card-color"
+                label="新卡片颜色"
+                onChange={setNewFloatingCardColor}
+                value={newFloatingCardColor}
+              />
+              <button
+                aria-label="添加悬浮卡片"
+                className="memo-floating-icon-button"
+                onClick={addFloatingCard}
+                title="添加卡片"
+                type="button"
+              >
+                +
+              </button>
+            </div>
           </div>
           <div className="memo-floating-card-list">
             {floatingCards.map((card, index) => {
@@ -508,6 +603,7 @@ export function MemoDocsWorkspace() {
                   key={card.id}
                   onDragOver={(event) => handleFloatingCardDragOver(card.id, event)}
                   onDrop={(event) => handleFloatingCardDrop(card.id, event)}
+                  style={getFloatingCardStyle(card)}
                 >
                   <div
                     aria-label={`拖拽排序卡片 ${index + 1}`}
@@ -519,6 +615,12 @@ export function MemoDocsWorkspace() {
                   >
                     <span className="memo-floating-card-time">{formatCardCreatedAt(card.createdAt)}</span>
                     <div className="memo-floating-card-actions">
+                      <FloatingCardColorPicker
+                        id={`memo-floating-card-color-${card.id}`}
+                        label={`卡片 ${index + 1} 颜色`}
+                        onChange={(color) => updateFloatingCardColor(card.id, color)}
+                        value={card.color}
+                      />
                       <button
                         aria-label={`删除卡片 ${index + 1}`}
                         className="memo-floating-delete-button"
