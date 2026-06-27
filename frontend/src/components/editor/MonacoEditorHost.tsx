@@ -12,8 +12,10 @@ export function MonacoEditorHost({
   minimap = false,
   height = '100%',
   focusLine = null,
+  diagnostics = [],
 }: CodeEditorProps) {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
+  const monacoRef = useRef<typeof Monaco | null>(null)
 
   useEffect(() => {
     if (!focusLine || !editorRef.current) return
@@ -21,6 +23,41 @@ export function MonacoEditorHost({
     editorRef.current.setPosition({ lineNumber: focusLine, column: 1 })
     editorRef.current.focus()
   }, [focusLine])
+
+  useEffect(() => {
+    const editor = editorRef.current
+    const monaco = monacoRef.current
+    const model = editor?.getModel()
+    if (!editor || !monaco || !model) return
+
+    const text = model.getValue()
+    const markers = diagnostics.map((diagnostic) => {
+      const position = typeof diagnostic.offset === 'number'
+        ? model.getPositionAt(Math.max(0, Math.min(text.length, diagnostic.offset)))
+        : {
+            lineNumber: diagnostic.line ?? 1,
+            column: diagnostic.column ?? 1,
+          }
+      const severity =
+        diagnostic.severity === 'error'
+          ? monaco.MarkerSeverity.Error
+          : diagnostic.severity === 'warning'
+            ? monaco.MarkerSeverity.Warning
+            : monaco.MarkerSeverity.Info
+
+      return {
+        severity,
+        message: diagnostic.message,
+        source: diagnostic.source,
+        startLineNumber: position.lineNumber,
+        startColumn: position.column,
+        endLineNumber: position.lineNumber,
+        endColumn: Math.max(position.column + 1, position.column),
+      }
+    })
+
+    monaco.editor.setModelMarkers(model, language, markers)
+  }, [diagnostics, language, value])
 
   return (
     <Editor
@@ -33,8 +70,9 @@ export function MonacoEditorHost({
       language={language}
       onMount={(editor, monaco) => {
         editorRef.current = editor
-        if (language === MONGO_LANGUAGE_ID && editor.getModel()) {
-          monaco.editor.setModelMarkers(editor.getModel()!, MONGO_LANGUAGE_ID, [])
+        monacoRef.current = monaco
+        if (editor.getModel()) {
+          monaco.editor.setModelMarkers(editor.getModel()!, language, [])
         }
       }}
       onChange={(next) => onChange?.(next ?? '')}

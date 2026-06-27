@@ -2,20 +2,24 @@ import { useMemo, useState } from 'react'
 import {
   astNodeToDisplay,
   buildTableFromAst,
-  escapeJsonString,
-  formatJson,
-  formatShellStatement,
   getFieldDiffSummary,
-  normalizeForCompare,
   parseShellStatement,
-  unescapeJsonString,
-  validateShellStatement,
 } from '../../../lib/tooling/jsonFormatter'
+import {
+  escapeMongoJsonString,
+  formatMongoJson,
+  formatMongoShell,
+  normalizeMongoForCompare,
+  repairStandardJson,
+  unescapeMongoJsonString,
+  validateMongoShell,
+} from '../../../lib/mongodb-core'
 import { inspectMongoQuery } from '../../../lib/tooling/mongoInspector'
 import { buildSchemaProfile, generateSchema } from '../../../lib/tooling/schemaProfile'
 import { formatJsonPatch, getSemanticDiff } from '../../../lib/tooling/semanticDiff'
 import { readWorkspaceTransfer } from '../../../lib/tooling/workspaceTransfer'
 import type { DiffSummary, ShellValidation, TableData, ToolStatus } from '../../../types/tooling'
+import type { MongoDiagnostic } from '../../../lib/mongodb-core'
 import { diffSampleRight, mongoSample, shellSample } from './samples'
 import type { DiffFocus, InputHint, MongoMode, ShellFocus, SummaryTile, TableTypeFilter } from './types'
 import { formatParseMessage, mapHintTone, modeLabels } from './modeMeta'
@@ -25,11 +29,14 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
   const transfer = useMemo(() => readWorkspaceTransfer('mongodb-json', mode), [mode])
   const [input, setInput] = useState(() => (transfer && (mode === 'format' || mode === 'table') ? transfer.input : mongoSample))
   const [output, setOutput] = useState('')
+  const [extendedJsonOutput, setExtendedJsonOutput] = useState('')
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '等待执行 MongoDB JSON 工具操作。' })
   const [stats, setStats] = useState({ chars: 0, lines: 0, depth: 0 })
   const [diffLeft, setDiffLeft] = useState(() => (transfer && mode === 'diff' ? transfer.input : mongoSample))
   const [diffRight, setDiffRight] = useState(diffSampleRight)
   const [tableData, setTableData] = useState<TableData | null>(null)
+  const [repairInput, setRepairInput] = useState(() => (transfer && mode === 'repair' ? transfer.input : '{ name: "Ada", trailing: true, }'))
+  const [repairOutput, setRepairOutput] = useState('')
   const [escapeInput, setEscapeInput] = useState(() => (transfer && (mode === 'escape' || mode === 'unescape') ? transfer.input : mongoSample))
   const [escapeOutput, setEscapeOutput] = useState('')
   const [shellInput, setShellInput] = useState(() => (transfer && mode === 'shell' ? transfer.input : shellSample))
@@ -46,15 +53,16 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
   const { copied, copyText } = useCopyFeedback(setStatus)
 
   const activeModeLabel = modeLabels[mode]
-  const normalizedDiffLeft = useMemo(() => normalizeForCompare(diffLeft), [diffLeft])
-  const normalizedDiffRight = useMemo(() => normalizeForCompare(diffRight), [diffRight])
+  const normalizedDiffLeft = useMemo(() => normalizeMongoForCompare(diffLeft), [diffLeft])
+  const normalizedDiffRight = useMemo(() => normalizeMongoForCompare(diffRight), [diffRight])
   const parsedShell = useMemo(() => parseShellStatement(shellInput), [shellInput])
-  const formatInputCheck = useMemo(() => formatJson(input, false), [input])
-  const tableInputCheck = useMemo(() => formatJson(input, false), [input])
-  const escapeInputCheck = useMemo(() => formatJson(escapeInput, false), [escapeInput])
+  const formatInputCheck = useMemo(() => formatMongoJson(input, false), [input])
+  const tableInputCheck = useMemo(() => formatMongoJson(input, false), [input])
+  const repairInputCheck = useMemo(() => repairStandardJson(repairInput), [repairInput])
+  const escapeInputCheck = useMemo(() => formatMongoJson(escapeInput, false), [escapeInput])
   const shellInputCheck = useMemo(() => {
     const parsed = parseShellStatement(shellInput)
-    const validations = validateShellStatement(shellInput)
+    const validations = validateMongoShell(shellInput)
     return {
       parsed,
       validations,
@@ -75,8 +83,8 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
   }, [arrayMatchKey, diffIgnoreInput, normalizedDiffLeft.ast, normalizedDiffRight.ast])
   const schemaProfile = useMemo(() => {
     if (!tableData) return null
-    const result = formatJson(input, false)
-    return 'error' in result ? null : buildSchemaProfile(result.ast)
+    const result = formatMongoJson(input, false)
+    return result.ok && result.ast ? buildSchemaProfile(result.ast) : null
   }, [input, tableData])
   const generatedSchema = useMemo(() => {
     if (!schemaProfile) return null
@@ -84,6 +92,13 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
   }, [generatedSchemaTarget, schemaProfile])
   const mongoInspection = useMemo(() => inspectMongoQuery(shellInput), [shellInput])
   const formattedJsonPatch = useMemo(() => formatJsonPatch(semanticDiff.patch), [semanticDiff.patch])
+  const inputDiagnostics = useMemo<MongoDiagnostic[]>(() => {
+    if (mode === 'format') return formatInputCheck.diagnostics
+    if (mode === 'table') return tableInputCheck.diagnostics
+    if (mode === 'repair') return repairInputCheck.diagnostics
+    if (mode === 'escape' || mode === 'unescape') return escapeInputCheck.diagnostics
+    return []
+  }, [escapeInputCheck.diagnostics, formatInputCheck.diagnostics, mode, repairInputCheck.diagnostics, tableInputCheck.diagnostics])
 
   const tablePreview = useMemo(() => {
     if (!tableData) {
@@ -222,6 +237,13 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
       }
     }
 
+    if (mode === 'repair') {
+      return {
+        crumb: [...base, '标准 JSON 修复'],
+        helper: '显式修复常见 JSON 破损输入，输出标准 JSON；MongoDB shell 类型会转换成普通 JSON 值。',
+      }
+    }
+
     if (mode === 'escape' || mode === 'unescape') {
       return {
         crumb: [...base, '字符串处理'],
@@ -237,21 +259,27 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
 
   const liveStatus = useMemo((): ToolStatus => {
     if (mode === 'format') {
-      if ('error' in formatInputCheck) {
+      if (!formatInputCheck.ok) {
         return {
           kind: 'error',
-          message: formatParseMessage(formatInputCheck.error, '输入解析失败：', formatInputCheck.position),
+          message: formatParseMessage(formatInputCheck.diagnostics[0]?.message ?? '输入解析失败', '输入解析失败：', formatInputCheck.diagnostics[0]?.offset),
         }
+      }
+      if (formatInputCheck.diagnostics.some((diagnostic) => diagnostic.severity === 'warning')) {
+        return { kind: 'warning', message: formatInputCheck.diagnostics[0]?.message ?? '输入已通过兼容解析器解析。' }
       }
       return { kind: 'success', message: '输入已通过 MongoDB JSON 解析，可执行格式化。' }
     }
 
     if (mode === 'table') {
-      if ('error' in tableInputCheck) {
+      if (!tableInputCheck.ok) {
         return {
           kind: 'error',
-          message: formatParseMessage(tableInputCheck.error, '输入解析失败：', tableInputCheck.position),
+          message: formatParseMessage(tableInputCheck.diagnostics[0]?.message ?? '输入解析失败', '输入解析失败：', tableInputCheck.diagnostics[0]?.offset),
         }
+      }
+      if (tableInputCheck.diagnostics.some((diagnostic) => diagnostic.severity === 'warning')) {
+        return { kind: 'warning', message: tableInputCheck.diagnostics[0]?.message ?? '输入已通过兼容解析器解析。' }
       }
       return { kind: 'success', message: '输入已通过 MongoDB JSON 解析，可构建表格。' }
     }
@@ -272,30 +300,43 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
       return { kind: 'success', message: 'Shell 输入结构有效，可执行格式化。' }
     }
 
+    if (mode === 'repair') {
+      if (!repairInput.trim()) {
+        return { kind: 'idle', message: '等待输入需要修复的 JSON 文本。' }
+      }
+      if (!repairInputCheck.ok) {
+        return {
+          kind: 'error',
+          message: formatParseMessage(repairInputCheck.diagnostics[0]?.message ?? '修复失败', '修复失败：', repairInputCheck.diagnostics[0]?.offset),
+        }
+      }
+      return { kind: 'success', message: '输入可以修复为标准 JSON。' }
+    }
+
     if (mode === 'escape' || mode === 'unescape') {
       if (!escapeInput.trim()) {
         return { kind: 'idle', message: '等待输入 MongoDB JSON 文本。' }
       }
       if (mode === 'escape') {
-        if ('error' in escapeInputCheck) {
+        if (!escapeInputCheck.ok) {
           return {
             kind: 'error',
-            message: formatParseMessage(escapeInputCheck.error, '输入解析失败：', escapeInputCheck.position),
+            message: formatParseMessage(escapeInputCheck.diagnostics[0]?.message ?? '输入解析失败', '输入解析失败：', escapeInputCheck.diagnostics[0]?.offset),
           }
         }
         return { kind: 'success', message: '输入已通过 MongoDB JSON 解析，可执行转义。' }
       }
 
       try {
-        const unescaped = unescapeJsonString(escapeInput)
+        const unescaped = unescapeMongoJsonString(escapeInput)
         if (unescaped.error) {
           return { kind: 'error', message: `输入还原失败：${unescaped.error}` }
         }
-        const parsed = formatJson(unescaped.output ?? '', false)
-        if ('error' in parsed) {
+        const parsed = formatMongoJson(unescaped.output ?? '', false)
+        if (!parsed.ok) {
           return {
             kind: 'warning',
-            message: formatParseMessage(parsed.error, '字符串可还原，但还原后的 MongoDB JSON 无法解析：', parsed.position),
+            message: formatParseMessage(parsed.diagnostics[0]?.message ?? '还原后无法解析', '字符串可还原，但还原后的 MongoDB JSON 无法解析：', parsed.diagnostics[0]?.offset),
           }
         }
         return { kind: 'success', message: '输入可还原且还原后的 MongoDB JSON 结构有效。' }
@@ -305,7 +346,7 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
     }
 
     return status
-  }, [escapeInput, escapeInputCheck, formatInputCheck, mode, shellInput, shellInputCheck, status, tableInputCheck])
+  }, [escapeInput, escapeInputCheck, formatInputCheck, mode, repairInput, repairInputCheck, shellInput, shellInputCheck, status, tableInputCheck])
 
   const inputHint = useMemo<InputHint | null>(() => {
     if (liveStatus.kind === 'idle') {
@@ -333,6 +374,13 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
       }
     }
 
+    if (mode === 'repair') {
+      return {
+        tone: mapHintTone(liveStatus.kind),
+        text: liveStatus.kind === 'error' ? liveStatus.message : '可以修复为标准 JSON。',
+      }
+    }
+
     if (mode === 'escape') {
       return {
         tone: mapHintTone(liveStatus.kind),
@@ -351,23 +399,29 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
   }, [liveStatus, mode])
 
   const runFormat = () => {
-    const result = formatJson(input, false)
-    if ('error' in result) {
-      setOutput(result.error)
-      setStatus({ kind: 'error', message: result.error })
+    const result = formatMongoJson(input, false)
+    if (!result.ok) {
+      const message = result.diagnostics[0]?.message ?? 'MongoDB JSON 解析失败。'
+      setOutput(message)
+      setExtendedJsonOutput('')
+      setStatus({ kind: 'error', message })
       setStats({ chars: 0, lines: 0, depth: 0 })
       return
     }
-    setOutput(result.formatted)
-    setStatus({ kind: 'success', message: 'MongoDB JSON 已格式化。' })
-    setStats({ chars: result.charCount, lines: result.lineCount, depth: result.maxDepth })
+    setOutput(result.text)
+    setExtendedJsonOutput(result.extendedJson ?? '')
+    setStatus({
+      kind: result.diagnostics.some((diagnostic) => diagnostic.severity === 'warning') ? 'warning' : 'success',
+      message: result.extendedJson ? 'MongoDB JSON 已格式化，可复制 Canonical Extended JSON。' : 'MongoDB JSON 已通过兼容解析器格式化。',
+    })
+    setStats({ chars: result.stats?.chars ?? 0, lines: result.stats?.lines ?? 0, depth: result.stats?.maxDepth ?? 0 })
   }
 
   const runTable = () => {
-    const result = formatJson(input, false)
-    if ('error' in result) {
+    const result = formatMongoJson(input, false)
+    if (!result.ok || !result.ast) {
       setTableData(null)
-      setStatus({ kind: 'error', message: result.error })
+      setStatus({ kind: 'error', message: result.diagnostics[0]?.message ?? '当前输入无法解析。' })
       return
     }
     const table = buildTableFromAst(result.ast)
@@ -384,7 +438,7 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
   }
 
   const runEscape = () => {
-    const action = mode === 'escape' ? escapeJsonString : unescapeJsonString
+    const action = mode === 'escape' ? escapeMongoJsonString : unescapeMongoJsonString
     const result = action(escapeInput)
     if (result.error) {
       setEscapeOutput(result.error)
@@ -395,16 +449,29 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
     setStatus({ kind: 'success', message: mode === 'escape' ? '已完成转义。' : '已完成还原。' })
   }
 
-  const runShell = () => {
-    const formatted = formatShellStatement(shellInput)
-    const validations = validateShellStatement(shellInput)
-    setShellChecks(validations)
-    if (!parseShellStatement(shellInput)) {
-      setShellOutput('未识别为 MongoDB Shell 语句。')
-      setStatus({ kind: 'warning', message: '当前输入不是可识别的 MongoDB Shell 语句。' })
+  const runRepair = () => {
+    const result = repairStandardJson(repairInput)
+    if (!result.ok) {
+      const message = result.diagnostics[0]?.message ?? '修复失败。'
+      setRepairOutput(message)
+      setStatus({ kind: 'error', message })
       return
     }
-    setShellOutput(formatted ?? shellInput)
+    setRepairOutput(result.text)
+    setStatus({ kind: 'success', message: '已修复为标准 JSON。' })
+  }
+
+  const runShell = () => {
+    const formatted = formatMongoShell(shellInput)
+    const validations = validateMongoShell(shellInput)
+    setShellChecks(validations)
+    if (!formatted.ok) {
+      const message = formatted.diagnostics[0]?.message ?? '当前输入不是可识别的 MongoDB Shell 语句。'
+      setShellOutput(formatted.text ?? message)
+      setStatus({ kind: 'warning', message })
+      return
+    }
+    setShellOutput(formatted.text)
     const hasError = validations.some((item) => item.level === 'err')
     const hasWarn = validations.some((item) => item.level === 'warn')
     setStatus({
@@ -452,10 +519,12 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
     diffSummary,
     escapeInput,
     escapeOutput,
+    extendedJsonOutput,
     formattedJsonPatch,
     generatedSchema,
     generatedSchemaTarget,
     input,
+    inputDiagnostics,
     inputHint,
     jumpToDiffPath,
     jumpToShellOffset,
@@ -466,8 +535,11 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
     parsedShell,
     primaryDiffPath,
     mongoInspection,
+    repairInput,
+    repairOutput,
     runEscape,
     runFormat,
+    runRepair,
     runShell,
     runTable,
     selectedRow,
@@ -478,6 +550,7 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
     setEscapeInput,
     setGeneratedSchemaTarget,
     setInput,
+    setRepairInput,
     setSelectedRow,
     setArrayMatchKey,
     setShellFocus,

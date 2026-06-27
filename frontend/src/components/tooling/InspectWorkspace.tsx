@@ -56,6 +56,11 @@ export function InspectWorkspace() {
       navigate('/tools/mongodb-json?mode=unescape')
       return
     }
+    if (action.id === 'repair') {
+      saveWorkspaceTransfer({ target: 'mongodb-json', mode: 'repair', input: payload })
+      navigate('/tools/mongodb-json?mode=repair')
+      return
+    }
     if (action.id === 'format') {
       const target = result.kind === 'standard-json' ? 'json' : 'mongodb-json'
       saveWorkspaceTransfer({ target, mode: 'format', input: payload })

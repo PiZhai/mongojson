@@ -21,6 +21,7 @@ describe('diagnostics tooling', () => {
     expect(inspectInput('{"a":1}\n{"a":2}')).toMatchObject({ kind: 'ndjson' })
     expect(inspectInput('INFO payload={"a":1,"b":2} done')).toMatchObject({ kind: 'log-json-fragment' })
     expect(inspectInput(`curl -X POST http://local -d '{"a":1}'`)).toMatchObject({ kind: 'curl' })
+    expect(inspectInput('{ name: "Ada", }').suggestedActions.map((item) => item.id)).toContain('repair')
   })
 
   it('produces semantic diff with ignored paths and json patch', () => {

@@ -4,13 +4,20 @@ import type {
   InspectSuggestedAction,
   InspectSuggestedActionId,
 } from '../../types/tooling'
-import { formatJson, parseShellStatement, unescapeJsonString } from './jsonFormatter'
+import { formatMongoJson, repairStandardJson, unescapeMongoJsonString } from '../mongodb-core'
+import { parseShellStatement } from './jsonFormatter'
 
 const actionCatalog: Record<InspectSuggestedActionId, InspectSuggestedAction> = {
   format: {
     id: 'format',
     label: '格式化',
     description: '把当前内容送入 JSON 或 MongoDB JSON 格式化工作区。',
+  },
+  repair: {
+    id: 'repair',
+    label: '修复 JSON',
+    description: '显式把破损或宽松 JSON 修复为标准 JSON。',
+    targetPath: '/tools/mongodb-json?mode=repair',
   },
   unescape: {
     id: 'unescape',
@@ -44,7 +51,7 @@ const actionCatalog: Record<InspectSuggestedActionId, InspectSuggestedAction> = 
 }
 
 function withActions(ids: InspectSuggestedActionId[]) {
-  return ids.map((id) => actionCatalog[id])
+  return Array.from(new Set(ids)).map((id) => actionCatalog[id])
 }
 
 function clampConfidence(value: number) {
@@ -117,7 +124,7 @@ function inspectJsonLike(text: string, issues: InspectIssue[] = []): InspectResu
   const strict = parseStrictJson(text)
   if (strict != null) {
     const isString = typeof strict === 'string'
-    const escaped = isString ? unescapeJsonString(text) : null
+    const escaped = isString ? unescapeMongoJsonString(text) : null
     if (isString && escaped?.output) {
       return {
         kind: 'escaped-json-string',
@@ -137,14 +144,14 @@ function inspectJsonLike(text: string, issues: InspectIssue[] = []): InspectResu
     }
   }
 
-  const mongoResult = formatJson(text, false)
-  if (!('error' in mongoResult)) {
+  const mongoResult = formatMongoJson(text, false)
+  if (mongoResult.ok) {
     return {
       kind: 'mongo-json',
       confidence: 0.9,
       extractedText: text,
       issues,
-      suggestedActions: withActions(['format', 'table', 'diff']),
+      suggestedActions: withActions(['format', 'table', 'diff', 'repair']),
     }
   }
 
@@ -206,6 +213,17 @@ export function inspectInput(input: string): InspectResult {
   const jsonLike = inspectJsonLike(trimmed)
   if (jsonLike) return jsonLike
 
+  const repair = repairStandardJson(trimmed)
+  if (repair.ok) {
+    return {
+      kind: 'unknown',
+      confidence: 0.72,
+      extractedText: trimmed,
+      issues: [{ level: 'info', message: '当前内容无法稳定识别为 MongoDB JSON，但可修复为标准 JSON。' }],
+      suggestedActions: withActions(['repair', 'extract']),
+    }
+  }
+
   const fragment = extractJsonFragment(trimmed)
   if (fragment) {
     const fragmentResult = inspectJsonLike(fragment, [{ level: 'info', message: '已从日志或混合文本中提取 JSON 片段。' }])
@@ -214,7 +232,7 @@ export function inspectInput(input: string): InspectResult {
         ...fragmentResult,
         kind: 'log-json-fragment',
         confidence: clampConfidence(fragmentResult.confidence - 0.12),
-        suggestedActions: withActions(['extract', ...fragmentResult.suggestedActions.map((item) => item.id)]),
+        suggestedActions: withActions(['extract', ...fragmentResult.suggestedActions.map((item) => item.id), 'repair']),
       }
     }
   }
@@ -224,6 +242,6 @@ export function inspectInput(input: string): InspectResult {
     confidence: 0.2,
     extractedText: trimmed,
     issues: [{ level: 'warn', message: '暂未识别出稳定的数据结构，可先手动提取 JSON 或 Shell 片段。' }],
-    suggestedActions: withActions(['extract']),
+    suggestedActions: withActions(['extract', 'repair']),
   }
 }

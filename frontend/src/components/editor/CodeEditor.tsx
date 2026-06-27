@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react'
+import type { MongoDiagnostic } from '../../lib/mongodb-core'
 
 const MonacoEditorHost = lazy(() =>
   import('./MonacoEditorHost').then((module) => ({ default: module.MonacoEditorHost })),
@@ -12,6 +13,7 @@ export type CodeEditorProps = {
   minimap?: boolean
   height?: string
   focusLine?: number | null
+  diagnostics?: MongoDiagnostic[]
 }
 
 export function CodeEditor({
@@ -22,6 +24,7 @@ export function CodeEditor({
   minimap = false,
   height = '100%',
   focusLine = null,
+  diagnostics = [],
 }: CodeEditorProps) {
   return (
     <div className="editor-host">
@@ -40,6 +43,7 @@ export function CodeEditor({
           onChange={onChange}
           readOnly={readOnly}
           value={value}
+          diagnostics={diagnostics}
         />
       </Suspense>
     </div>

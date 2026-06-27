@@ -1,6 +1,6 @@
 import type { ToolStatus } from '../../../types/tooling'
 
-export type MongoMode = 'format' | 'diff' | 'table' | 'shell' | 'escape' | 'unescape'
+export type MongoMode = 'format' | 'diff' | 'table' | 'shell' | 'repair' | 'escape' | 'unescape'
 
 export type DiffFocus = {
   side: 'left' | 'right'

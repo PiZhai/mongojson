@@ -1,4 +1,5 @@
 import { MONGO_LANGUAGE_ID } from '../../../lib/editor/mongoLanguage'
+import type { MongoDiagnostic } from '../../../lib/mongodb-core'
 import type { GeneratedSchema, GeneratedSchemaTarget, SchemaProfile, TableData, ToolStatus } from '../../../types/tooling'
 import { InputHealthHint } from '../../common/InputHealthHint'
 import { Panel } from '../../common/Panel'
@@ -17,6 +18,7 @@ type TableModeProps = {
   copied: string | null
   input: string
   inputHint: InputHint | null
+  inputDiagnostics: MongoDiagnostic[]
   liveStatus: ToolStatus
   generatedSchema: GeneratedSchema | null
   generatedSchemaTarget: GeneratedSchemaTarget
@@ -42,6 +44,7 @@ export function TableMode({
   copied,
   input,
   inputHint,
+  inputDiagnostics,
   liveStatus,
   generatedSchema,
   generatedSchemaTarget,
@@ -88,7 +91,7 @@ export function TableMode({
               </button>
             </div>
           </div>
-          <CodeEditor language={MONGO_LANGUAGE_ID} onChange={setInput} value={input} />
+          <CodeEditor diagnostics={inputDiagnostics} language={MONGO_LANGUAGE_ID} onChange={setInput} value={input} />
           {inputHint ? <InputHealthHint text={inputHint.text} tone={inputHint.tone} /> : null}
         </div>
         <div className="editor-pane">

@@ -4,8 +4,9 @@
 
 - 智能粘贴诊断：识别 JSON、Mongo Shell、curl、日志片段、NDJSON 和转义字符串，并推荐下一步
 - 标准 JSON 格式化、压缩、校验
-- MongoDB JSON 格式化、语义对比、Schema 体检、Shell 查询风险检查、字符串转义/还原
+- MongoDB JSON 格式化、Canonical Extended JSON 输出、语义对比、Schema 体检、Shell 查询风险检查、JSON 修复、字符串转义/还原
 - 数据可视化
+- 在线备忘录与悬浮卡片
 
 ## 项目结构
 
@@ -110,7 +111,9 @@ Compose 运行包含：
 
 - 前端已完成工作台壳、路由、智能诊断入口和核心工具页骨架
 - 旧版 JSON / MongoDB JSON 关键逻辑已迁移为 TypeScript 模块
-- MongoDB JSON 工作台已扩展语义 Diff、Schema 体检、结构生成和 Shell 风险检查
+- MongoDB JSON 工作台已扩展语义 Diff、Schema 体检、结构生成、Shell 风险检查、显式 JSON 修复和 Extended JSON 复制
+- MongoDB 解析核心已增加 `frontend/src/lib/mongodb-core` facade，第三方 BSON / JSON repair / 查询解析依赖只在该边界内使用，并通过 BSON/JS 值到项目 AST 的适配器支撑表格、Diff、Schema 流程
+- 在线备忘录已支持云端自动保存、图片上传和悬浮卡片
 - 后端已完成 PostgreSQL、文件上传、预设管理、短期留存框架；异步任务底座保留但当前构建默认拒绝创建任务
 - 文档转换方向保留在项目规划中，但当前构建未启用相关前后端能力
 

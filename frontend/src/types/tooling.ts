@@ -104,7 +104,7 @@ export type InspectInputKind =
   | 'ndjson'
   | 'unknown'
 
-export type InspectSuggestedActionId = 'format' | 'unescape' | 'diff' | 'table' | 'shell' | 'extract'
+export type InspectSuggestedActionId = 'format' | 'repair' | 'unescape' | 'diff' | 'table' | 'shell' | 'extract'
 
 export type InspectSuggestedAction = {
   id: InspectSuggestedActionId

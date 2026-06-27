@@ -1,4 +1,5 @@
 import { MONGO_LANGUAGE_ID } from '../../../lib/editor/mongoLanguage'
+import type { MongoDiagnostic } from '../../../lib/mongodb-core'
 import type { ToolStatus } from '../../../types/tooling'
 import { InputHealthHint } from '../../common/InputHealthHint'
 import { Panel } from '../../common/Panel'
@@ -9,8 +10,10 @@ import type { InputHint } from './types'
 
 type FormatModeProps = {
   copied: string | null
+  extendedJsonOutput: string
   input: string
   inputHint: InputHint | null
+  inputDiagnostics: MongoDiagnostic[]
   liveStatus: ToolStatus
   output: string
   runFormat: () => void
@@ -22,8 +25,10 @@ type FormatModeProps = {
 
 export function FormatMode({
   copied,
+  extendedJsonOutput,
   input,
   inputHint,
+  inputDiagnostics,
   liveStatus,
   output,
   runFormat,
@@ -35,9 +40,14 @@ export function FormatMode({
   return (
     <Panel
       actions={
-        <button className="button button-primary" onClick={runFormat} type="button">
-          执行格式化
-        </button>
+        <>
+          <button className="button button-primary" onClick={runFormat} type="button">
+            执行格式化
+          </button>
+          <button className="button button-ghost" disabled={!extendedJsonOutput} onClick={() => copyText(extendedJsonOutput, 'format-ejson', '已复制 Canonical Extended JSON。')} type="button">
+            {copied === 'format-ejson' ? '已复制 EJSON' : '复制 EJSON'}
+          </button>
+        </>
       }
       eyebrow="MongoDB JSON"
       subtitle="针对扩展类型的宽松解析与格式化。"
@@ -53,7 +63,7 @@ export function FormatMode({
               </button>
             </div>
           </div>
-          <CodeEditor language={MONGO_LANGUAGE_ID} onChange={setInput} value={input} />
+          <CodeEditor diagnostics={inputDiagnostics} language={MONGO_LANGUAGE_ID} onChange={setInput} value={input} />
           {inputHint ? <InputHealthHint text={inputHint.text} tone={inputHint.tone} /> : null}
         </div>
         <ResultPane

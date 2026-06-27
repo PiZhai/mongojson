@@ -5,6 +5,7 @@ import { DiffMode } from './mongo-json/DiffMode'
 import { EscapeMode } from './mongo-json/EscapeMode'
 import { FormatMode } from './mongo-json/FormatMode'
 import { ModeSwitch } from './mongo-json/ModeSwitch'
+import { RepairMode } from './mongo-json/RepairMode'
 import { ShellMode } from './mongo-json/ShellMode'
 import { TableMode } from './mongo-json/TableMode'
 import { isMongoMode } from './mongo-json/modeMeta'
@@ -52,13 +53,30 @@ export function MongoJsonWorkspace() {
         <FormatMode
           copied={workspace.copied}
           copyText={workspace.copyText}
+          extendedJsonOutput={workspace.extendedJsonOutput}
           input={workspace.input}
+          inputDiagnostics={workspace.inputDiagnostics}
           inputHint={workspace.inputHint}
           liveStatus={workspace.liveStatus}
           output={workspace.output}
           runFormat={workspace.runFormat}
           setInput={workspace.setInput}
           stats={workspace.stats}
+          status={workspace.status}
+        />
+      ) : null}
+
+      {mode === 'repair' ? (
+        <RepairMode
+          copied={workspace.copied}
+          copyText={workspace.copyText}
+          inputHint={workspace.inputHint}
+          inputDiagnostics={workspace.inputDiagnostics}
+          liveStatus={workspace.liveStatus}
+          repairInput={workspace.repairInput}
+          repairOutput={workspace.repairOutput}
+          runRepair={workspace.runRepair}
+          setRepairInput={workspace.setRepairInput}
           status={workspace.status}
         />
       ) : null}
@@ -91,6 +109,7 @@ export function MongoJsonWorkspace() {
           copyText={workspace.copyText}
           input={workspace.input}
           inputHint={workspace.inputHint}
+          inputDiagnostics={workspace.inputDiagnostics}
           liveStatus={workspace.liveStatus}
           generatedSchema={workspace.generatedSchema}
           generatedSchemaTarget={workspace.generatedSchemaTarget}
@@ -140,6 +159,7 @@ export function MongoJsonWorkspace() {
           escapeInput={workspace.escapeInput}
           escapeOutput={workspace.escapeOutput}
           inputHint={workspace.inputHint}
+          inputDiagnostics={workspace.inputDiagnostics}
           liveStatus={workspace.liveStatus}
           mode={mode}
           runEscape={workspace.runEscape}

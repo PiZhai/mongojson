@@ -2,7 +2,7 @@
 
 ```yaml
 doc_type: agent_design_spec
-status: proposed
+status: implemented_with_fallback
 audience:
   - coding-agent
   - human-maintainer
@@ -52,6 +52,17 @@ markers, hover, actions, focus, theme, and keyboard behavior.
 
 Current implementation:
 
+- `frontend/src/lib/mongodb-core` is now the third-party parser facade. It wraps
+  `bson` / `EJSON`, `@mongodb-js/shell-bson-parser`, `jsonrepair`, and
+  `mongodb-query-parser`.
+- MongoDB JSON format mode validates through the facade and can produce Canonical
+  Extended JSON. Parsed BSON/JS values are converted into project `JsonNode`
+  values for shell-notation output and downstream table/diff/schema workflows.
+- Repair mode is explicit and outputs standard JSON through `jsonrepair`.
+- Shell mode keeps the project method-chain summarizer and now adds query-part
+  validation through `mongodb-query-parser`.
+- `CodeEditor` / `MonacoEditorHost` accept facade diagnostics and render Monaco
+  markers for parser, repair, and query-validation issues.
 - `useMongoJsonWorkspaceState.ts` owns mode state, live validation, formatting
   actions, Shell checks, and risk inspection orchestration.
 - `jsonFormatter/parser.ts` is a hand-written tokenizer/parser for relaxed
@@ -62,11 +73,11 @@ Current implementation:
 - Monaco currently provides editor UI through `CodeEditor`, `MonacoEditorHost`,
   and `MONGO_LANGUAGE_ID`.
 
-Main issue:
+Remaining issue:
 
-- The self-maintained parser must keep up with MongoDB shell syntax, BSON types,
-  JavaScript expression edge cases, and repair behavior. That is not the product
-  differentiator and creates long-term maintenance risk.
+- The old parser is still retained as a compatibility fallback when the open
+  source parser rejects input that the existing UI has historically accepted.
+  Rich hover/actions and full fallback retirement remain future hardening work.
 
 ## 4. Layer Responsibilities
 

@@ -1,4 +1,5 @@
 import { MONGO_LANGUAGE_ID } from '../../../lib/editor/mongoLanguage'
+import type { MongoDiagnostic } from '../../../lib/mongodb-core'
 import type { ToolStatus } from '../../../types/tooling'
 import { InputHealthHint } from '../../common/InputHealthHint'
 import { Panel } from '../../common/Panel'
@@ -12,6 +13,7 @@ type EscapeModeProps = {
   escapeInput: string
   escapeOutput: string
   inputHint: InputHint | null
+  inputDiagnostics: MongoDiagnostic[]
   liveStatus: ToolStatus
   mode: Extract<MongoMode, 'escape' | 'unescape'>
   runEscape: () => void
@@ -25,6 +27,7 @@ export function EscapeMode({
   escapeInput,
   escapeOutput,
   inputHint,
+  inputDiagnostics,
   liveStatus,
   mode,
   runEscape,
@@ -53,7 +56,7 @@ export function EscapeMode({
               </button>
             </div>
           </div>
-          <CodeEditor language={MONGO_LANGUAGE_ID} onChange={setEscapeInput} value={escapeInput} />
+          <CodeEditor diagnostics={inputDiagnostics} language={MONGO_LANGUAGE_ID} onChange={setEscapeInput} value={escapeInput} />
           {inputHint ? <InputHealthHint text={inputHint.text} tone={inputHint.tone} /> : null}
         </div>
         <ResultPane
