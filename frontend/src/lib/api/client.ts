@@ -1,4 +1,4 @@
-import type { FileSummary, JobSummary, MemoRecord, PresetRecord } from '../../types/tooling'
+import type { FileSummary, JobSummary, MemoFloatingCardRecord, MemoRecord, PresetRecord } from '../../types/tooling'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
@@ -71,6 +71,7 @@ export async function saveMemo(payload: {
   title: string
   content_html: string
   content_text: string
+  floating_cards?: MemoFloatingCardRecord[]
 }) {
   return request<{ memo: MemoRecord }>(`${API_BASE}/memo`, {
     method: 'PUT',

@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { getFileDownloadUrl, getMemo, saveMemo, uploadFile } from '../../lib/api/client'
+import {
+  DEFAULT_FLOATING_CARD_COLOR,
+  createFloatingCard,
+  deserializeFloatingCards,
+  hasMeaningfulFloatingCards,
+  loadFloatingCardsFromStorage,
+  normalizeFloatingCardColor,
+  saveFloatingCardsToStorage,
+  serializeFloatingCards,
+  type FloatingCard,
+} from '../../lib/memo/floatingCards'
 import type { ToolStatus } from '../../types/tooling'
 import { StatusBanner } from '../common/StatusBanner'
 import {
@@ -12,16 +23,6 @@ import {
 } from '../editor/VditorMemoEditor'
 
 const MEMO_SLUG = 'inbox'
-const FLOATING_CARD_STORAGE_KEY = 'mongojson.memoDocs.floatingCard'
-const FLOATING_CARDS_STORAGE_KEY = 'mongojson.memoDocs.floatingCards'
-const FLOATING_CARDS_V2_STORAGE_KEY = 'mongojson.memoDocs.floatingCards.v2'
-
-type FloatingCard = {
-  color: string
-  content: string
-  createdAt: string
-  id: string
-}
 
 type FloatingCardDropPosition = 'before' | 'after'
 type FloatingCardColorOption = {
@@ -29,9 +30,11 @@ type FloatingCardColorOption = {
   label: string
   value: string
 }
-
-const DEFAULT_FLOATING_CARD_COLOR = '#fff7d6'
-const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i
+type MemoSaveMessages = {
+  error: string
+  pending: string
+  success: string
+}
 
 const floatingCardColors: FloatingCardColorOption[] = [
   { label: '便签黄', value: '#fff7d6', border: '#f0dc91' },
@@ -117,13 +120,6 @@ function countImages(markdown: string) {
   return (markdown.match(/!\[[^\]]*\]\([^)]+\)/g) ?? []).length
 }
 
-function normalizeFloatingCardColor(value: unknown) {
-  if (typeof value === 'string' && HEX_COLOR_PATTERN.test(value)) {
-    return value.toLowerCase()
-  }
-  return DEFAULT_FLOATING_CARD_COLOR
-}
-
 function parseHexColor(value: string) {
   const normalized = normalizeFloatingCardColor(value).slice(1)
   return {
@@ -170,15 +166,6 @@ function getFloatingCardStyle(card: FloatingCard): CSSProperties {
   } as CSSProperties
 }
 
-function createFloatingCard(content = '', color = DEFAULT_FLOATING_CARD_COLOR): FloatingCard {
-  return {
-    color: normalizeFloatingCardColor(color),
-    content,
-    createdAt: new Date().toISOString(),
-    id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-  }
-}
-
 function formatCardCreatedAt(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) {
@@ -192,33 +179,6 @@ function formatCardCreatedAt(value: string) {
   const minute = pad(date.getMinutes())
   const second = pad(date.getSeconds())
   return `${year}-${month}-${day} ${hour}-${minute}-${second}`
-}
-
-function loadFloatingCards() {
-  window.localStorage.removeItem(FLOATING_CARD_STORAGE_KEY)
-  window.localStorage.removeItem(FLOATING_CARDS_STORAGE_KEY)
-
-  const storedCards = window.localStorage.getItem(FLOATING_CARDS_V2_STORAGE_KEY)
-  if (storedCards) {
-    try {
-      const parsed = JSON.parse(storedCards) as unknown
-      if (!Array.isArray(parsed)) {
-        return [createFloatingCard()]
-      }
-      return parsed
-        .filter((card) => typeof card?.id === 'string' && typeof card?.content === 'string')
-        .map((card) => ({
-          color: normalizeFloatingCardColor(card.color),
-          content: card.content,
-          createdAt: typeof card.createdAt === 'string' ? card.createdAt : new Date().toISOString(),
-          id: card.id,
-        }))
-    } catch {
-      window.localStorage.removeItem(FLOATING_CARDS_V2_STORAGE_KEY)
-    }
-  }
-
-  return [createFloatingCard()]
 }
 
 type FloatingCardColorPickerProps = {
@@ -271,9 +231,13 @@ function FloatingCardColorPicker({ id, label, onChange, value }: FloatingCardCol
 export function MemoDocsWorkspace() {
   const editorRef = useRef<VditorMemoEditorHandle | null>(null)
   const saveTimerRef = useRef<number | null>(null)
+  const hasLoadedRemoteMemoRef = useRef(false)
   const [title, setTitle] = useState('')
   const [editorMarkdown, setEditorMarkdown] = useState('')
-  const [floatingCards, setFloatingCards] = useState<FloatingCard[]>(loadFloatingCards)
+  const [floatingCards, setFloatingCards] = useState<FloatingCard[]>(() => loadFloatingCardsFromStorage())
+  const titleRef = useRef(title)
+  const editorMarkdownRef = useRef(editorMarkdown)
+  const floatingCardsRef = useRef(floatingCards)
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null)
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null)
   const [dragOverPosition, setDragOverPosition] = useState<FloatingCardDropPosition>('after')
@@ -294,21 +258,50 @@ export function MemoDocsWorkspace() {
   }, [editorMarkdown])
 
   useEffect(() => {
-    window.localStorage.setItem(FLOATING_CARDS_V2_STORAGE_KEY, JSON.stringify(floatingCards))
+    titleRef.current = title
+  }, [title])
+
+  useEffect(() => {
+    editorMarkdownRef.current = editorMarkdown
+  }, [editorMarkdown])
+
+  useEffect(() => {
+    floatingCardsRef.current = floatingCards
   }, [floatingCards])
 
   useEffect(() => {
     void (async () => {
       try {
+        const localCards = floatingCardsRef.current
         const response = await getMemo(MEMO_SLUG)
         const nextMarkdown =
           response.memo.content_text?.trim().length > 0
             ? response.memo.content_text
             : toMarkdown(response.memo.content_html)
+        const remoteCards = deserializeFloatingCards(response.memo.floating_cards)
+        const shouldUploadLocalCards = remoteCards.length === 0 && hasMeaningfulFloatingCards(localCards)
+
+        titleRef.current = response.memo.title
+        editorMarkdownRef.current = nextMarkdown
         setTitle(response.memo.title)
         setEditorMarkdown(nextMarkdown)
-        setStatus({ kind: 'success', message: '随手记已从云端加载。' })
         setLastSavedAt(response.memo.updated_at)
+        hasLoadedRemoteMemoRef.current = true
+
+        if (shouldUploadLocalCards) {
+          saveFloatingCardsToStorage(localCards)
+          await saveMemoNow(response.memo.title, nextMarkdown, localCards, response.memo.content_html, {
+            error: '悬浮卡片同步失败，本地已保留。',
+            pending: '正在把本地悬浮卡片同步到云端。',
+            success: '本地悬浮卡片已同步到云端。',
+          })
+          return
+        }
+
+        floatingCardsRef.current = remoteCards
+        setFloatingCards(remoteCards)
+        saveFloatingCardsToStorage(remoteCards)
+        setStatus({ kind: 'success', message: '随手记已从云端加载。' })
       } catch (error) {
         setStatus({ kind: 'error', message: error instanceof Error ? error.message : '加载随手记失败。' })
       }
@@ -323,39 +316,60 @@ export function MemoDocsWorkspace() {
     }
   }, [])
 
-  const scheduleSave = (nextTitle: string, nextMarkdown: string) => {
+  async function saveMemoNow(
+    nextTitle: string,
+    nextMarkdown: string,
+    nextFloatingCards: FloatingCard[],
+    contentHTML: string,
+    messages: MemoSaveMessages,
+  ) {
+    setIsSaving(true)
+    setStatus({ kind: 'idle', message: messages.pending })
+    try {
+      const response = await saveMemo({
+        slug: MEMO_SLUG,
+        title: nextTitle || '随手记',
+        content_html: contentHTML,
+        content_text: nextMarkdown,
+        floating_cards: serializeFloatingCards(nextFloatingCards),
+      })
+      setLastSavedAt(response.memo.updated_at)
+      setStatus({ kind: 'success', message: messages.success })
+    } catch (error) {
+      setStatus({ kind: 'error', message: error instanceof Error ? `${messages.error} ${error.message}` : messages.error })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  function scheduleSave(
+    nextTitle: string,
+    nextMarkdown: string,
+    nextFloatingCards = floatingCardsRef.current,
+    messages: MemoSaveMessages = {
+      error: '保存失败。',
+      pending: '正在自动保存。',
+      success: '已自动保存。',
+    },
+  ) {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current)
     }
     saveTimerRef.current = window.setTimeout(async () => {
-      setIsSaving(true)
-      try {
-        const response = await saveMemo({
-          slug: MEMO_SLUG,
-          title: nextTitle || '随手记',
-          content_html: editorRef.current?.getHtml() ?? '',
-          content_text: nextMarkdown,
-        })
-        setLastSavedAt(response.memo.updated_at)
-        setStatus({ kind: 'success', message: '已自动保存。' })
-      } catch (error) {
-        setStatus({ kind: 'error', message: error instanceof Error ? error.message : '保存失败。' })
-      } finally {
-        setIsSaving(false)
-      }
+      await saveMemoNow(nextTitle, nextMarkdown, nextFloatingCards, editorRef.current?.getHtml() ?? '', messages)
     }, 700)
   }
 
   const commitMarkdown = (nextMarkdown: string) => {
     setEditorMarkdown(nextMarkdown)
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
-    scheduleSave(title, nextMarkdown)
+    scheduleSave(title, nextMarkdown, floatingCardsRef.current)
   }
 
   const handleTitleChange = (value: string) => {
     setTitle(value)
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
-    scheduleSave(value, editorMarkdown)
+    scheduleSave(value, editorMarkdown, floatingCardsRef.current)
   }
 
   const handleUpload = async (file: File) => {
@@ -386,26 +400,46 @@ export function MemoDocsWorkspace() {
     setStatus({ kind: 'idle', message: `已切换到 ${codeThemes.find(([theme]) => theme === nextTheme)?.[1] ?? nextTheme} 代码主题。` })
   }
 
+  const persistFloatingCards = (updater: (cards: FloatingCard[]) => FloatingCard[]) => {
+    const nextCards = updater(floatingCardsRef.current)
+    floatingCardsRef.current = nextCards
+    setFloatingCards(nextCards)
+    saveFloatingCardsToStorage(nextCards)
+
+    if (!hasLoadedRemoteMemoRef.current) {
+      setStatus({ kind: 'warning', message: '悬浮卡片已保留在本地，云端随手记加载成功后再同步。' })
+      return
+    }
+
+    scheduleSave(titleRef.current, editorMarkdownRef.current, nextCards, {
+      error: '悬浮卡片同步失败，本地已保留。',
+      pending: '悬浮卡片正在同步。',
+      success: '悬浮卡片已同步。',
+    })
+  }
+
   const addFloatingCard = () => {
-    setFloatingCards((cards) => [...cards, createFloatingCard('', newFloatingCardColor)])
+    persistFloatingCards((cards) => [...cards, createFloatingCard('', newFloatingCardColor)])
   }
 
   const updateFloatingCard = (cardId: string, content: string) => {
-    setFloatingCards((cards) => cards.map((card) => (card.id === cardId ? { ...card, content } : card)))
+    const updatedAt = new Date().toISOString()
+    persistFloatingCards((cards) => cards.map((card) => (card.id === cardId ? { ...card, content, updatedAt } : card)))
   }
 
   const updateFloatingCardColor = (cardId: string, color: string) => {
-    setFloatingCards((cards) =>
-      cards.map((card) => (card.id === cardId ? { ...card, color: normalizeFloatingCardColor(color) } : card)),
+    const updatedAt = new Date().toISOString()
+    persistFloatingCards((cards) =>
+      cards.map((card) => (card.id === cardId ? { ...card, color: normalizeFloatingCardColor(color), updatedAt } : card)),
     )
   }
 
   const removeFloatingCard = (cardId: string) => {
-    setFloatingCards((cards) => cards.filter((card) => card.id !== cardId))
+    persistFloatingCards((cards) => cards.filter((card) => card.id !== cardId))
   }
 
   const reorderFloatingCard = (sourceCardId: string, targetCardId: string, position: FloatingCardDropPosition) => {
-    setFloatingCards((cards) => {
+    persistFloatingCards((cards) => {
       if (sourceCardId === targetCardId) {
         return cards
       }

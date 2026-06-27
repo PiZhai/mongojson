@@ -248,6 +248,15 @@ export type MemoRecord = {
   title: string
   content_html: string
   content_text: string
+  floating_cards: MemoFloatingCardRecord[]
+  created_at: string
+  updated_at: string
+}
+
+export type MemoFloatingCardRecord = {
+  id: string
+  content: string
+  color: string
   created_at: string
   updated_at: string
 }
