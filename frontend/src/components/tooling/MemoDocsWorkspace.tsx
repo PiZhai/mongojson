@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { getFileDownloadUrl, getMemo, saveMemo, uploadFile } from '../../lib/api/client'
 import type { ToolStatus } from '../../types/tooling'
 import { StatusBanner } from '../common/StatusBanner'
@@ -12,6 +12,18 @@ import {
 } from '../editor/VditorMemoEditor'
 
 const MEMO_SLUG = 'inbox'
+const FLOATING_CARD_STORAGE_KEY = 'mongojson.memoDocs.floatingCard'
+const FLOATING_CARDS_STORAGE_KEY = 'mongojson.memoDocs.floatingCards'
+const FLOATING_CARDS_V2_STORAGE_KEY = 'mongojson.memoDocs.floatingCards.v2'
+
+type FloatingCard = {
+  content: string
+  createdAt: string
+  id: string
+}
+
+type FloatingCardDropPosition = 'before' | 'after'
+
 const editorModes: Array<[VditorMemoMode, string]> = [
   ['wysiwyg', '所见即所得'],
   ['ir', '即时渲染'],
@@ -118,11 +130,64 @@ function countImages(markdown: string) {
   return (markdown.match(/!\[[^\]]*\]\([^)]+\)/g) ?? []).length
 }
 
+function createFloatingCard(content = ''): FloatingCard {
+  return {
+    content,
+    createdAt: new Date().toISOString(),
+    id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+  }
+}
+
+function formatCardCreatedAt(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return '---- -- -- -- -- --'
+  }
+  const pad = (nextValue: number) => String(nextValue).padStart(2, '0')
+  const year = String(date.getFullYear())
+  const month = pad(date.getMonth() + 1)
+  const day = pad(date.getDate())
+  const hour = pad(date.getHours())
+  const minute = pad(date.getMinutes())
+  const second = pad(date.getSeconds())
+  return `${year}-${month}-${day} ${hour}-${minute}-${second}`
+}
+
+function loadFloatingCards() {
+  window.localStorage.removeItem(FLOATING_CARD_STORAGE_KEY)
+  window.localStorage.removeItem(FLOATING_CARDS_STORAGE_KEY)
+
+  const storedCards = window.localStorage.getItem(FLOATING_CARDS_V2_STORAGE_KEY)
+  if (storedCards) {
+    try {
+      const parsed = JSON.parse(storedCards) as unknown
+      if (!Array.isArray(parsed)) {
+        return [createFloatingCard()]
+      }
+      return parsed
+        .filter((card) => typeof card?.id === 'string' && typeof card?.content === 'string')
+        .map((card) => ({
+          content: card.content,
+          createdAt: typeof card.createdAt === 'string' ? card.createdAt : new Date().toISOString(),
+          id: card.id,
+        }))
+    } catch {
+      window.localStorage.removeItem(FLOATING_CARDS_V2_STORAGE_KEY)
+    }
+  }
+
+  return [createFloatingCard()]
+}
+
 export function MemoDocsWorkspace() {
   const editorRef = useRef<VditorMemoEditorHandle | null>(null)
   const saveTimerRef = useRef<number | null>(null)
   const [title, setTitle] = useState('')
   const [editorMarkdown, setEditorMarkdown] = useState('')
+  const [floatingCards, setFloatingCards] = useState<FloatingCard[]>(loadFloatingCards)
+  const [draggingCardId, setDraggingCardId] = useState<string | null>(null)
+  const [dragOverCardId, setDragOverCardId] = useState<string | null>(null)
+  const [dragOverPosition, setDragOverPosition] = useState<FloatingCardDropPosition>('after')
   const [editorMode, setEditorMode] = useState<VditorMemoMode>('ir')
   const [editorTheme, setEditorTheme] = useState<VditorMemoTheme>('classic')
   const [contentTheme, setContentTheme] = useState<VditorMemoContentTheme>('light')
@@ -137,6 +202,10 @@ export function MemoDocsWorkspace() {
     const lines = editorMarkdown ? editorMarkdown.split('\n').length : 0
     return { chars, images, lines }
   }, [editorMarkdown])
+
+  useEffect(() => {
+    window.localStorage.setItem(FLOATING_CARDS_V2_STORAGE_KEY, JSON.stringify(floatingCards))
+  }, [floatingCards])
 
   useEffect(() => {
     void (async () => {
@@ -227,6 +296,76 @@ export function MemoDocsWorkspace() {
     setStatus({ kind: 'idle', message: `已切换到 ${codeThemes.find(([theme]) => theme === nextTheme)?.[1] ?? nextTheme} 代码主题。` })
   }
 
+  const addFloatingCard = () => {
+    setFloatingCards((cards) => [...cards, createFloatingCard()])
+  }
+
+  const updateFloatingCard = (cardId: string, content: string) => {
+    setFloatingCards((cards) => cards.map((card) => (card.id === cardId ? { ...card, content } : card)))
+  }
+
+  const removeFloatingCard = (cardId: string) => {
+    setFloatingCards((cards) => cards.filter((card) => card.id !== cardId))
+  }
+
+  const reorderFloatingCard = (sourceCardId: string, targetCardId: string, position: FloatingCardDropPosition) => {
+    setFloatingCards((cards) => {
+      if (sourceCardId === targetCardId) {
+        return cards
+      }
+      const currentIndex = cards.findIndex((card) => card.id === sourceCardId)
+      const targetIndex = cards.findIndex((card) => card.id === targetCardId)
+      if (currentIndex < 0 || targetIndex < 0) {
+        return cards
+      }
+
+      const nextCards = [...cards]
+      const [card] = nextCards.splice(currentIndex, 1)
+      const nextTargetIndex = nextCards.findIndex((nextCard) => nextCard.id === targetCardId)
+      const insertIndex = position === 'after' ? nextTargetIndex + 1 : nextTargetIndex
+      nextCards.splice(insertIndex, 0, card)
+      return nextCards
+    })
+  }
+
+  const handleFloatingCardDragStart = (cardId: string, event: DragEvent<HTMLDivElement>) => {
+    setDraggingCardId(cardId)
+    setDragOverCardId(null)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', cardId)
+  }
+
+  const handleFloatingCardDragOver = (cardId: string, event: DragEvent<HTMLElement>) => {
+    event.preventDefault()
+    if (!draggingCardId || draggingCardId === cardId) {
+      setDragOverCardId(null)
+      return
+    }
+
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const position = event.clientY - bounds.top < bounds.height / 2 ? 'before' : 'after'
+    setDragOverCardId(cardId)
+    setDragOverPosition(position)
+    event.dataTransfer.dropEffect = 'move'
+  }
+
+  const handleFloatingCardDrop = (targetCardId: string, event: DragEvent<HTMLElement>) => {
+    event.preventDefault()
+    const sourceCardId = draggingCardId ?? event.dataTransfer.getData('text/plain')
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const position = event.clientY - bounds.top < bounds.height / 2 ? 'before' : 'after'
+    if (sourceCardId) {
+      reorderFloatingCard(sourceCardId, targetCardId, position)
+    }
+    setDraggingCardId(null)
+    setDragOverCardId(null)
+  }
+
+  const handleFloatingCardDragEnd = () => {
+    setDraggingCardId(null)
+    setDragOverCardId(null)
+  }
+
   return (
     <div className="memo-focus-shell">
       <section className="memo-focus-header" aria-labelledby="memo-page-title">
@@ -242,93 +381,171 @@ export function MemoDocsWorkspace() {
         </div>
       </section>
 
-      <section className="memo-focus-card" aria-label="随手记编辑器">
-        <div className="memo-editor-shell">
-          <div className="memo-title-row">
-            <label className="sr-only" htmlFor="memo-title-input">标题</label>
-            <input
-              className="memo-title-input"
-              id="memo-title-input"
-              onChange={(event) => handleTitleChange(event.target.value)}
-              placeholder="写下今天要记住的事"
-              value={title}
+      <div className="memo-focus-body">
+        <section className="memo-focus-card" aria-label="随手记编辑器">
+          <div className="memo-editor-shell">
+            <div className="memo-title-row">
+              <label className="sr-only" htmlFor="memo-title-input">标题</label>
+              <input
+                className="memo-title-input"
+                id="memo-title-input"
+                onChange={(event) => handleTitleChange(event.target.value)}
+                placeholder="写下今天要记住的事"
+                value={title}
+              />
+            </div>
+
+            <div className="memo-editor-controls" aria-label="编辑器设置">
+              <div className="memo-control-group" role="tablist" aria-label="编辑模式">
+                {editorModes.map(([nextMode, label]) => (
+                  <button
+                    aria-selected={editorMode === nextMode}
+                    className={`memo-control-button${editorMode === nextMode ? ' memo-control-button-active' : ''}`}
+                    key={nextMode}
+                    onClick={() => handleModeChange(nextMode)}
+                    role="tab"
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="memo-control-group" role="tablist" aria-label="编辑器主题">
+                {editorThemes.map(([nextTheme, label]) => (
+                  <button
+                    aria-selected={editorTheme === nextTheme}
+                    className={`memo-control-button${editorTheme === nextTheme ? ' memo-control-button-active' : ''}`}
+                    key={nextTheme}
+                    onClick={() => handleThemeChange(nextTheme)}
+                    role="tab"
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <label className="memo-control-field">
+                <span>内容主题</span>
+                <select
+                  aria-label="内容主题"
+                  className="memo-control-select"
+                  onChange={(event) => handleContentThemeChange(event.target.value as VditorMemoContentTheme)}
+                  value={contentTheme}
+                >
+                  {contentThemes.map(([nextTheme, label]) => (
+                    <option key={nextTheme} value={nextTheme}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="memo-control-field">
+                <span>代码主题</span>
+                <select
+                  aria-label="代码主题"
+                  className="memo-control-select memo-control-select-wide"
+                  onChange={(event) => handleCodeThemeChange(event.target.value)}
+                  value={codeTheme}
+                >
+                  {codeThemes.map(([nextTheme, label]) => (
+                    <option key={nextTheme} value={nextTheme}>{label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <VditorMemoEditor
+              codeTheme={codeTheme}
+              contentTheme={contentTheme}
+              mode={editorMode}
+              onChange={commitMarkdown}
+              onUpload={handleUpload}
+              placeholder="从标题开始写，#、##、-、> 和图片链接都可以直接输入。"
+              ref={editorRef}
+              theme={editorTheme}
+              value={editorMarkdown}
             />
           </div>
-
-          <div className="memo-editor-controls" aria-label="编辑器设置">
-            <div className="memo-control-group" role="tablist" aria-label="编辑模式">
-              {editorModes.map(([nextMode, label]) => (
-                <button
-                  aria-selected={editorMode === nextMode}
-                  className={`memo-control-button${editorMode === nextMode ? ' memo-control-button-active' : ''}`}
-                  key={nextMode}
-                  onClick={() => handleModeChange(nextMode)}
-                  role="tab"
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="memo-control-group" role="tablist" aria-label="编辑器主题">
-              {editorThemes.map(([nextTheme, label]) => (
-                <button
-                  aria-selected={editorTheme === nextTheme}
-                  className={`memo-control-button${editorTheme === nextTheme ? ' memo-control-button-active' : ''}`}
-                  key={nextTheme}
-                  onClick={() => handleThemeChange(nextTheme)}
-                  role="tab"
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <label className="memo-control-field">
-              <span>内容主题</span>
-              <select
-                aria-label="内容主题"
-                className="memo-control-select"
-                onChange={(event) => handleContentThemeChange(event.target.value as VditorMemoContentTheme)}
-                value={contentTheme}
-              >
-                {contentThemes.map(([nextTheme, label]) => (
-                  <option key={nextTheme} value={nextTheme}>{label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="memo-control-field">
-              <span>代码主题</span>
-              <select
-                aria-label="代码主题"
-                className="memo-control-select memo-control-select-wide"
-                onChange={(event) => handleCodeThemeChange(event.target.value)}
-                value={codeTheme}
-              >
-                {codeThemes.map(([nextTheme, label]) => (
-                  <option key={nextTheme} value={nextTheme}>{label}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <VditorMemoEditor
-            codeTheme={codeTheme}
-            contentTheme={contentTheme}
-            mode={editorMode}
-            onChange={commitMarkdown}
-            onUpload={handleUpload}
-            placeholder="从标题开始写，#、##、-、> 和图片链接都可以直接输入。"
-            ref={editorRef}
-            theme={editorTheme}
-            value={editorMarkdown}
+          <StatusBanner
+            right={lastSavedAt ? `最后保存 ${formatDate(lastSavedAt)}` : '尚未保存'}
+            status={status}
           />
-        </div>
-        <StatusBanner
-          right={lastSavedAt ? `最后保存 ${formatDate(lastSavedAt)}` : '尚未保存'}
-          status={status}
-        />
-      </section>
+        </section>
+
+        <aside className="memo-floating-panel" aria-label="随手记悬浮卡片栏">
+          <button
+            aria-label="在悬浮卡片栏右侧添加卡片"
+            className="memo-floating-side-add"
+            onClick={addFloatingCard}
+            title="添加卡片"
+            type="button"
+          >
+            +
+          </button>
+          <div className="memo-floating-panel-header">
+            <span className="memo-floating-panel-title">悬浮卡片</span>
+            <button
+              aria-label="添加悬浮卡片"
+              className="memo-floating-icon-button"
+              onClick={addFloatingCard}
+              title="添加卡片"
+              type="button"
+            >
+              +
+            </button>
+          </div>
+          <div className="memo-floating-card-list">
+            {floatingCards.map((card, index) => {
+              const isDragging = draggingCardId === card.id
+              const isDropTarget = dragOverCardId === card.id
+              const cardClassName = [
+                'memo-floating-card',
+                isDragging ? 'memo-floating-card-dragging' : '',
+                isDropTarget ? `memo-floating-card-drop-${dragOverPosition}` : '',
+              ].filter(Boolean).join(' ')
+
+              return (
+                <article
+                  className={cardClassName}
+                  key={card.id}
+                  onDragOver={(event) => handleFloatingCardDragOver(card.id, event)}
+                  onDrop={(event) => handleFloatingCardDrop(card.id, event)}
+                >
+                  <div
+                    aria-label={`拖拽排序卡片 ${index + 1}`}
+                    className="memo-floating-card-toolbar"
+                    draggable
+                    onDragEnd={handleFloatingCardDragEnd}
+                    onDragStart={(event) => handleFloatingCardDragStart(card.id, event)}
+                    title="拖拽排序"
+                  >
+                    <span className="memo-floating-card-time">{formatCardCreatedAt(card.createdAt)}</span>
+                    <div className="memo-floating-card-actions">
+                      <button
+                        aria-label={`删除卡片 ${index + 1}`}
+                        className="memo-floating-delete-button"
+                        onClick={() => removeFloatingCard(card.id)}
+                        title="删除"
+                        type="button"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                  <label className="sr-only" htmlFor={`memo-floating-card-input-${card.id}`}>卡片内容</label>
+                  <textarea
+                    className="memo-floating-card-input"
+                    id={`memo-floating-card-input-${card.id}`}
+                    onChange={(event) => updateFloatingCard(card.id, event.target.value)}
+                    value={card.content}
+                  />
+                </article>
+              )
+            })}
+          </div>
+          <button className="memo-floating-bottom-add" onClick={addFloatingCard} type="button">
+            + 添加卡片
+          </button>
+        </aside>
+      </div>
     </div>
   )
 }
