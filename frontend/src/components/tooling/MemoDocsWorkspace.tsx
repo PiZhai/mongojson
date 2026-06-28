@@ -244,7 +244,7 @@ export function MemoDocsWorkspace() {
   const [editorMode, setEditorMode] = useState<VditorMemoMode>('ir')
   const [editorTheme, setEditorTheme] = useState<VditorMemoTheme>('classic')
   const [contentTheme, setContentTheme] = useState<VditorMemoContentTheme>('light')
-  const [codeTheme, setCodeTheme] = useState<VditorMemoCodeTheme>('github')
+  const [codeTheme, setCodeTheme] = useState<VditorMemoCodeTheme>('atom-one-light')
   const [newFloatingCardColor, setNewFloatingCardColor] = useState(DEFAULT_FLOATING_CARD_COLOR)
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
@@ -364,12 +364,6 @@ export function MemoDocsWorkspace() {
     setEditorMarkdown(nextMarkdown)
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
     scheduleSave(title, nextMarkdown, floatingCardsRef.current)
-  }
-
-  const handleTitleChange = (value: string) => {
-    setTitle(value)
-    setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
-    scheduleSave(value, editorMarkdown, floatingCardsRef.current)
   }
 
   const handleUpload = async (file: File) => {
@@ -498,31 +492,19 @@ export function MemoDocsWorkspace() {
 
   return (
     <div className="memo-focus-shell">
-      <section className="memo-focus-header" aria-labelledby="memo-page-title">
-        <div className="memo-focus-heading">
-          <p className="memo-focus-kicker">Cloud Memo</p>
-          <h2 className="memo-focus-title" id="memo-page-title">随手记</h2>
-        </div>
-        <div className="memo-focus-stats" aria-label="随手记状态">
-          <span>{memoStats.chars} 字</span>
-          <span>{memoStats.images} 图</span>
-          <span>{memoStats.lines} 行</span>
-          <span>{isSaving ? '保存中' : lastSavedAt ? formatDate(lastSavedAt) : '准备就绪'}</span>
-        </div>
-      </section>
-
       <div className="memo-focus-body">
-        <section className="memo-focus-card" aria-label="随手记编辑器">
+        <section className="memo-focus-card" aria-labelledby="memo-page-title">
           <div className="memo-editor-shell">
             <div className="memo-title-row">
-              <label className="sr-only" htmlFor="memo-title-input">标题</label>
-              <input
-                className="memo-title-input"
-                id="memo-title-input"
-                onChange={(event) => handleTitleChange(event.target.value)}
-                placeholder="写下今天要记住的事"
-                value={title}
-              />
+              <div className="memo-focus-heading">
+                <h2 className="memo-focus-title" id="memo-page-title">随手记</h2>
+              </div>
+              <div className="memo-focus-stats" aria-label="随手记状态">
+                <span>{memoStats.chars} 字</span>
+                <span>{memoStats.images} 图</span>
+                <span>{memoStats.lines} 行</span>
+                <span>{isSaving ? '保存中' : lastSavedAt ? formatDate(lastSavedAt) : '准备就绪'}</span>
+              </div>
             </div>
 
             <div className="memo-editor-controls" aria-label="编辑器设置">

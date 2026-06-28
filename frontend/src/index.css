@@ -267,7 +267,6 @@ a {
 .sidebar-toggle-button:focus-visible,
 .field-input:focus,
 .select:focus,
-.memo-title-input:focus,
 .path-chip:focus-visible,
 .path-link:focus-visible {
   outline: 2px solid var(--focus-ring);
@@ -334,8 +333,7 @@ a {
   background: var(--editor-bg);
 }
 
-.editor-host textarea,
-.memo-title-input {
+.editor-host textarea {
   caret-color: var(--accent);
 }
 
@@ -864,21 +862,17 @@ button.path-chip,
   background: transparent;
 }
 
-.memo-focus-header {
+.memo-title-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 46px;
-  padding: 0 8px;
+  min-height: 68px;
+  padding: 0 28px;
 }
 
 .memo-focus-heading {
   min-width: 0;
-}
-
-.memo-focus-kicker {
-  display: none;
 }
 
 .memo-focus-title {
@@ -922,15 +916,15 @@ button.path-chip,
   flex-direction: column;
   min-width: 0;
   min-height: calc(100vh - 132px);
-  border-color: var(--border);
-  border-radius: 8px;
-  box-shadow: var(--shadow-soft);
+  border-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
   overflow: visible;
 }
 
 .memo-focus-card .status-banner {
-  border-top: 1px solid var(--border);
-  background: rgba(248, 251, 255, 0.88);
+  border-top: none;
+  background: transparent;
 }
 
 .memo-editor-shell {
@@ -939,24 +933,7 @@ button.path-chip,
   flex: 1;
   min-height: calc(100vh - 174px);
   padding: 0;
-  background: rgba(255, 255, 255, 0.86);
-}
-
-.memo-title-input {
-  width: 100%;
-  min-height: 68px;
-  padding: 18px 28px 12px;
-  border: none;
-  background: transparent;
-  color: var(--text-strong);
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: 0;
-  outline: none;
-}
-
-.memo-title-input::placeholder {
-  color: var(--text-muted);
+  background: #fff;
 }
 
 .memo-editor-controls {
@@ -965,8 +942,8 @@ button.path-chip,
   flex-wrap: wrap;
   justify-content: flex-start;
   gap: 10px;
-  padding: 0 28px 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 0 28px 14px;
+  border-bottom: none;
 }
 
 .memo-control-group {
@@ -1049,35 +1026,65 @@ button.path-chip,
     var(--memo-editor-line-height, 1.65em) +
     var(--memo-editor-line-height, 1.65em)
   );
+  --textarea-background-color: #fff;
   flex: 0 0 auto;
   height: calc(100vh - 242px);
   min-height: 360px;
   max-height: calc(100vh - 242px);
-  background: var(--editor-bg);
+  background: #fff;
 }
 
 .memo-vditor-editor.vditor {
+  --textarea-background-color: #fff;
   height: calc(100vh - 242px) !important;
   min-height: 360px;
   max-height: calc(100vh - 242px);
   border: none;
   border-radius: 0;
-  background: var(--editor-bg);
+  background: #fff;
 }
 
 .memo-vditor-editor .vditor-content {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  background: #fff;
+}
+
+.memo-vditor-editor .vditor-ir,
+.memo-vditor-editor .vditor-wysiwyg,
+.memo-vditor-editor .vditor-preview,
+.memo-vditor-editor .vditor-ir > .vditor-reset,
+.memo-vditor-editor .vditor-wysiwyg > .vditor-reset,
+.memo-vditor-editor .vditor-sv,
+.memo-vditor-editor .vditor-preview > .vditor-reset {
+  background: #fff !important;
+  background-color: #fff !important;
 }
 
 .memo-vditor-editor .vditor-outline {
-  flex: 0 0 236px;
-  width: 236px;
-  border-right: 1px solid var(--border);
-  background: #f8fbff;
+  flex: 0 0 470px;
+  width: 470px;
+  border-right: none;
+  background: transparent;
   overscroll-behavior: contain;
   overflow-y: auto;
+}
+
+.memo-vditor-editor .vditor-toolbar {
+  justify-content: center;
+  min-height: 34px;
+  border-top: none;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.38);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.memo-vditor-editor .vditor-toolbar__item {
+  color: #6b7280;
+}
+
+.memo-vditor-editor .vditor-toolbar__divider {
+  opacity: 0.45;
 }
 
 .memo-vditor-editor .vditor-ir,
@@ -1099,37 +1106,64 @@ button.path-chip,
   overflow-y: auto;
 }
 
+.memo-vditor-editor .vditor-ir > .vditor-reset,
+.memo-vditor-editor .vditor-wysiwyg > .vditor-reset {
+  padding-inline: clamp(32px, 10vw, 65px) !important;
+}
+
+.memo-vditor-editor .vditor-ir > .vditor-reset > *,
+.memo-vditor-editor .vditor-wysiwyg > .vditor-reset > * {
+  max-width: 920px;
+  margin-inline: auto;
+}
+
+.memo-vditor-editor .vditor-ir > .vditor-reset > .vditor-ir__node,
+.memo-vditor-editor .vditor-wysiwyg > .vditor-reset > pre,
+.memo-vditor-editor .vditor-wysiwyg > .vditor-reset > .vditor-wysiwyg__pre,
+.memo-vditor-editor .vditor-ir > .vditor-reset > pre,
+.memo-vditor-editor .vditor-sv {
+  max-width: 920px;
+}
+
+.memo-vditor-editor .vditor-sv {
+  margin-inline: auto;
+  padding-inline: clamp(32px, 10vw, 65px) !important;
+}
+
 .memo-vditor-editor .vditor-outline__title {
   position: sticky;
   top: 0;
   z-index: 1;
   min-height: 38px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(248, 251, 255, 0.96);
+  padding: 10px 6px 10px 14px;
+  border-bottom: none;
+  background: rgba(255, 255, 255, 0.92);
   color: var(--text-strong);
   font-size: 13px;
   font-weight: 650;
 }
 
 .memo-vditor-editor .vditor-outline__content {
-  padding: 8px 0 14px;
+  padding: 8px 10px 14px 6px;
 }
 
 .memo-vditor-editor .vditor-outline li > span {
   min-height: 30px;
-  padding: 6px 12px;
-  color: var(--text-secondary);
+  padding: 5px 8px;
+  border-radius: 7px;
+  color: #5f6b7a;
   font-size: 13px;
   line-height: 1.35;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
 .memo-vditor-editor .vditor-outline li > span:hover {
-  background: #eef6ff;
+  background: rgba(0, 122, 255, 0.08);
   color: var(--accent);
 }
 
 .memo-vditor-editor .vditor-outline li > span.memo-outline-item-active {
+  background: transparent;
   color: var(--accent);
   font-weight: 650;
 }
@@ -1530,8 +1564,8 @@ button.path-chip,
   }
 
   .memo-vditor-editor .vditor-outline {
-    flex-basis: 200px;
-    width: 200px;
+    flex-basis: 470px;
+    width: 470px;
   }
 
   .editor-split,
@@ -1549,7 +1583,7 @@ button.path-chip,
 @media (max-width: 720px) {
   .panel-header,
   .status-banner,
-  .memo-focus-header {
+  .memo-title-row {
     align-items: stretch;
     flex-direction: column;
   }
