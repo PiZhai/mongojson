@@ -1042,6 +1042,13 @@ button.path-chip,
 }
 
 .memo-vditor-editor {
+  --memo-editor-line-height: 1.65em;
+  --memo-editor-tail-lines: 3;
+  --memo-editor-tail-padding: calc(
+    var(--memo-editor-line-height, 1.65em) +
+    var(--memo-editor-line-height, 1.65em) +
+    var(--memo-editor-line-height, 1.65em)
+  );
   flex: 0 0 auto;
   height: calc(100vh - 242px);
   min-height: 360px;
@@ -1088,6 +1095,7 @@ button.path-chip,
 .memo-vditor-editor .vditor-ir > .vditor-reset,
 .memo-vditor-editor .vditor-wysiwyg > .vditor-reset,
 .memo-vditor-editor .vditor-sv {
+  padding-bottom: var(--memo-editor-tail-padding) !important;
   overflow-y: auto;
 }
 

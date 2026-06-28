@@ -1,6 +1,7 @@
 import Vditor from 'vditor'
 import 'vditor/dist/index.css'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react'
+import { ensureTrailingNewlines, getTailClickLine } from '../../lib/memo/editorTail'
 
 export type VditorMemoEditorHandle = {
   focus: () => void
@@ -46,6 +47,7 @@ type MemoOutlineController = {
 
 const MEMO_OUTLINE_ACTIVE_CLASS = 'memo-outline-item-active'
 const MEMO_OUTLINE_SCROLL_OFFSET = 72
+const MEMO_TAIL_SINGLE_CLICK_DELAY = 180
 
 const vditorCodeLanguageAliases = [
   'abc',
@@ -116,6 +118,47 @@ function isHeadingElement(element: Element | null): element is HTMLElement {
 
 function getActiveEditorScrollElement(vditor: VditorRuntime) {
   return vditor[vditor.currentMode]?.element ?? null
+}
+
+function getEditorLineHeight(editorElement: HTMLElement) {
+  const styles = window.getComputedStyle(editorElement)
+  const lineHeight = Number.parseFloat(styles.lineHeight)
+  if (Number.isFinite(lineHeight) && lineHeight > 0) {
+    return lineHeight
+  }
+
+  const fontSize = Number.parseFloat(styles.fontSize)
+  return Number.isFinite(fontSize) && fontSize > 0 ? fontSize * 1.65 : 22
+}
+
+function getLastEditorContentBlock(editorElement: HTMLElement) {
+  const blocks = Array.from(editorElement.querySelectorAll<HTMLElement>('[data-block="0"]'))
+    .filter((block) => editorElement.contains(block))
+  return blocks.length > 0 ? blocks[blocks.length - 1] : null
+}
+
+function getEditorTailClickLine(vditor: VditorRuntime, event: MouseEvent) {
+  if (event.button !== 0) return null
+
+  const editorElement = getActiveEditorScrollElement(vditor)
+  if (!(event.target instanceof Node) || !editorElement?.contains(event.target)) return null
+
+  const lastBlock = getLastEditorContentBlock(editorElement)
+  const contentBottom = lastBlock?.getBoundingClientRect().bottom ?? editorElement.getBoundingClientRect().top
+  return getTailClickLine(event.clientY, contentBottom, getEditorLineHeight(editorElement))
+}
+
+function collapseSelectionToElementEnd(editorElement: HTMLElement) {
+  const selection = window.getSelection()
+  if (!selection) return
+
+  const range = document.createRange()
+  const lastBlock = getLastEditorContentBlock(editorElement)
+  const target = lastBlock ?? editorElement
+  range.selectNodeContents(target)
+  range.collapse(false)
+  selection.removeAllRanges()
+  selection.addRange(range)
 }
 
 function getOutlineContentElement(vditor: VditorRuntime) {
@@ -640,6 +683,7 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
     const outlineSyncTimerRef = useRef<number | null>(null)
     const pendingValueRef = useRef<string | null>(null)
     const suppressInputRef = useRef(false)
+    const tailClickTimerRef = useRef<number | null>(null)
     const themeRef = useRef(theme)
     const valueRef = useRef(value)
 
@@ -679,6 +723,47 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       }, 0)
     }, [syncOutlineController])
 
+    const clearTailClickTimer = useCallback(() => {
+      if (!tailClickTimerRef.current) return
+      window.clearTimeout(tailClickTimerRef.current)
+      tailClickTimerRef.current = null
+    }, [])
+
+    const focusEditorTail = useCallback((editor: Vditor) => {
+      window.requestAnimationFrame(() => {
+        if (editorRef.current !== editor || !isReadyRef.current) return
+        const editorElement = getActiveEditorScrollElement(editor.vditor)
+        if (!editorElement) return
+
+        editorElement.focus()
+        collapseSelectionToElementEnd(editorElement)
+      })
+    }, [])
+
+    const continueFromEditorTail = useCallback(
+      (targetLine: number) => {
+        const editor = editorRef.current
+        if (!editor || !isReadyRef.current) return
+
+        const currentMarkdown = getEditorMarkdown(editor)
+        const nextMarkdown = ensureTrailingNewlines(currentMarkdown, targetLine)
+
+        if (nextMarkdown !== currentMarkdown) {
+          suppressInputRef.current = true
+          editor.setValue(nextMarkdown, false)
+          window.setTimeout(() => {
+            suppressInputRef.current = false
+          }, 0)
+          valueRef.current = nextMarkdown
+          onChangeRef.current(nextMarkdown)
+          scheduleOutlineSync()
+        }
+
+        focusEditorTail(editor)
+      },
+      [focusEditorTail, scheduleOutlineSync],
+    )
+
     const applyEditorValue = useCallback((editor: Vditor, nextValue: string) => {
       suppressInputRef.current = true
       editor.setValue(nextValue, true)
@@ -708,6 +793,9 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       const host = hostRef.current
       let disposed = false
       let editor: Vditor | null = null
+      let tailRootElement: HTMLElement | null = null
+      let handleTailClick: ((event: MouseEvent) => void) | null = null
+      let handleTailDoubleClick: ((event: MouseEvent) => void) | null = null
 
       const initTimer = window.setTimeout(() => {
         if (disposed) return
@@ -780,11 +868,47 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         })
 
         editorRef.current = editor
+
+        tailRootElement = editor.vditor.element
+        handleTailClick = (event: MouseEvent) => {
+          if (!editor || editorRef.current !== editor || !isReadyRef.current) return
+
+          const targetLine = getEditorTailClickLine(editor.vditor, event)
+          if (!targetLine) return
+
+          event.preventDefault()
+          event.stopPropagation()
+          event.stopImmediatePropagation()
+          clearTailClickTimer()
+          tailClickTimerRef.current = window.setTimeout(() => {
+            tailClickTimerRef.current = null
+            continueFromEditorTail(1)
+          }, MEMO_TAIL_SINGLE_CLICK_DELAY)
+        }
+        handleTailDoubleClick = (event: MouseEvent) => {
+          if (!editor || editorRef.current !== editor || !isReadyRef.current) return
+
+          const targetLine = getEditorTailClickLine(editor.vditor, event)
+          if (!targetLine) return
+
+          event.preventDefault()
+          event.stopPropagation()
+          event.stopImmediatePropagation()
+          clearTailClickTimer()
+          continueFromEditorTail(targetLine)
+        }
+        tailRootElement.addEventListener('click', handleTailClick, true)
+        tailRootElement.addEventListener('dblclick', handleTailDoubleClick, true)
       }, 0)
 
       return () => {
         disposed = true
         window.clearTimeout(initTimer)
+        clearTailClickTimer()
+        if (tailRootElement && handleTailClick && handleTailDoubleClick) {
+          tailRootElement.removeEventListener('click', handleTailClick, true)
+          tailRootElement.removeEventListener('dblclick', handleTailDoubleClick, true)
+        }
         isReadyRef.current = false
         pendingValueRef.current = null
         disposeOutlineController()
@@ -797,7 +921,16 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
           editorRef.current = null
         }
       }
-    }, [applyEditorValue, disposeOutlineController, handleCodeLanguageChange, mode, placeholder, scheduleOutlineSync])
+    }, [
+      applyEditorValue,
+      clearTailClickTimer,
+      continueFromEditorTail,
+      disposeOutlineController,
+      handleCodeLanguageChange,
+      mode,
+      placeholder,
+      scheduleOutlineSync,
+    ])
 
     useEffect(() => {
       const editor = editorRef.current
