@@ -1269,16 +1269,6 @@ function renderCodeLanguageMenu(
   onLanguageChange: (blockIndex: number, language: string) => void,
 ) {
   const currentLanguage = getCodeLanguage(code)
-  const codeBlock = code.closest('pre')
-
-  menuElement.classList.add('memo-code-block-actions')
-
-  const title = document.createElement('span')
-  title.className = 'memo-code-block-title'
-  title.textContent = '代码块'
-
-  const toolbar = document.createElement('span')
-  toolbar.className = 'memo-code-block-toolbar'
 
   const details = document.createElement('details')
   details.className = 'memo-code-format-menu'
@@ -1326,39 +1316,9 @@ function renderCodeLanguageMenu(
   separator.setAttribute('aria-hidden', 'true')
   separator.textContent = '|'
 
-  const wrapButton = document.createElement('button')
-  wrapButton.className = 'memo-code-wrap-toggle'
-  wrapButton.type = 'button'
-  wrapButton.setAttribute('aria-label', '自动换行')
-  wrapButton.setAttribute('aria-pressed', 'false')
-  wrapButton.textContent = '自动换行'
-  wrapButton.onclick = (event) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (!codeBlock) return
-
-    const isWrapped = codeBlock.classList.toggle('memo-code-wrap-enabled')
-    wrapButton.setAttribute('aria-pressed', String(isWrapped))
-  }
-
-  const wrapSeparator = document.createElement('i')
-  wrapSeparator.className = 'memo-code-format-separator'
-  wrapSeparator.setAttribute('aria-hidden', 'true')
-  wrapSeparator.textContent = '|'
-
   const hiddenTextarea = menuElement.querySelector('textarea')
-  const copyButton = menuElement.querySelector('span')
-
-  toolbar.append(details, separator, wrapButton, wrapSeparator)
-  if (hiddenTextarea) {
-    toolbar.append(hiddenTextarea)
-  }
-  if (copyButton) {
-    copyButton.classList.add('memo-code-copy-action')
-    toolbar.append(copyButton)
-  }
-
-  menuElement.replaceChildren(title, toolbar)
+  hiddenTextarea?.insertAdjacentElement('beforebegin', details)
+  details.insertAdjacentElement('afterend', separator)
 }
 
 export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEditorProps>(
@@ -1604,7 +1564,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
               current: contentThemeRef.current,
             },
             hljs: {
-              lineNumber: true,
               style: codeThemeRef.current,
               renderMenu: (code, menuElement) => {
                 renderCodeLanguageMenu(code, menuElement, handleCodeLanguageChange)
