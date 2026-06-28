@@ -1101,8 +1101,9 @@ button.path-chip,
 
 .memo-vditor-editor .vditor-ir > .vditor-reset > *,
 .memo-vditor-editor .vditor-wysiwyg > .vditor-reset > * {
+  width: min(100%, 920px);
   max-width: 920px;
-  margin-inline: auto;
+  margin-inline: 0;
 }
 
 .memo-vditor-editor .vditor-ir > .vditor-reset > .vditor-ir__node,
@@ -1114,7 +1115,9 @@ button.path-chip,
 }
 
 .memo-vditor-editor .vditor-sv {
-  margin-inline: auto;
+  box-sizing: border-box;
+  width: min(100%, 920px);
+  margin-inline: 0;
   padding-inline: clamp(32px, 10vw, 65px) !important;
 }
 
