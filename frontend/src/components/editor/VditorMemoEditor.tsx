@@ -65,8 +65,9 @@ type MemoSelectionAction = {
 
 const MEMO_OUTLINE_ACTIVE_CLASS = 'memo-outline-item-active'
 const MEMO_OUTLINE_SCROLL_OFFSET = 72
-const MEMO_TAIL_SINGLE_CLICK_DELAY = 180
+const MEMO_TAIL_SINGLE_CLICK_DELAY = 260
 const MEMO_SELECTION_TOOLBAR_OFFSET = 12
+const MEMO_ZERO_WIDTH_SPACE = '\u200b'
 
 const memoSlashCommands: MemoSlashCommand[] = [
   {
@@ -269,11 +270,46 @@ function getLastEditorContentBlock(editorElement: HTMLElement) {
   return blocks.length > 0 ? blocks[blocks.length - 1] : null
 }
 
+function isEmptyEditorBlock(block: HTMLElement) {
+  return (block.textContent ?? '').replaceAll(MEMO_ZERO_WIDTH_SPACE, '').trim().length === 0
+}
+
+function getEditorTailBlocks(editorElement: HTMLElement) {
+  const blocks = Array.from(editorElement.children)
+    .filter((child): child is HTMLElement => {
+      return child instanceof HTMLElement && child.dataset.block === '0'
+    })
+  let firstTailIndex = blocks.length
+
+  while (firstTailIndex > 0 && isEmptyEditorBlock(blocks[firstTailIndex - 1])) {
+    firstTailIndex -= 1
+  }
+
+  return {
+    blocks,
+    tailBlocks: blocks.slice(firstTailIndex),
+    tailStartBlock: firstTailIndex > 0 ? blocks[firstTailIndex - 1] : null,
+  }
+}
+
 function getEditorTailClickLine(vditor: VditorRuntime, event: MouseEvent) {
   if (event.button !== 0) return null
 
   const editorElement = getActiveEditorScrollElement(vditor)
-  if (!(event.target instanceof Node) || !editorElement?.contains(event.target)) return null
+  if (!(event.target instanceof Node) || !editorElement) return null
+
+  const contentElement = vditor.element.querySelector<HTMLElement>('.vditor-content')
+  if (!editorElement.contains(event.target) && !contentElement?.contains(event.target)) return null
+
+  const editorRect = editorElement.getBoundingClientRect()
+  if (
+    event.clientX < editorRect.left ||
+    event.clientX > editorRect.right ||
+    event.clientY < editorRect.top ||
+    event.clientY > editorRect.bottom
+  ) {
+    return null
+  }
 
   const lastBlock = getLastEditorContentBlock(editorElement)
   const contentBottom = lastBlock?.getBoundingClientRect().bottom ?? editorElement.getBoundingClientRect().top
@@ -291,6 +327,89 @@ function collapseSelectionToElementEnd(editorElement: HTMLElement) {
   range.collapse(false)
   selection.removeAllRanges()
   selection.addRange(range)
+}
+
+function collapseSelectionToBlockStart(block: HTMLElement) {
+  const selection = window.getSelection()
+  if (!selection) return
+
+  const range = document.createRange()
+  const textNode = Array.from(block.childNodes).find((node) => node.nodeType === Node.TEXT_NODE)
+  if (textNode) {
+    range.setStart(textNode, 0)
+  } else {
+    range.setStart(block, 0)
+  }
+  range.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+function createEditableTailBlock() {
+  const paragraph = document.createElement('p')
+  paragraph.dataset.block = '0'
+  paragraph.appendChild(document.createTextNode(MEMO_ZERO_WIDTH_SPACE))
+  return paragraph
+}
+
+function placeCaretInBlockEditorTail(editorElement: HTMLElement, targetLine: number) {
+  const normalizedLine = Math.max(1, Math.floor(targetLine))
+  const { blocks, tailBlocks, tailStartBlock } = getEditorTailBlocks(editorElement)
+  let insertAfter = tailBlocks.length > 0
+    ? tailBlocks[tailBlocks.length - 1]
+    : tailStartBlock ?? blocks[blocks.length - 1] ?? null
+  const nextTailBlocks = [...tailBlocks]
+
+  while (nextTailBlocks.length < normalizedLine) {
+    const tailBlock = createEditableTailBlock()
+    if (insertAfter) {
+      insertAfter.insertAdjacentElement('afterend', tailBlock)
+    } else {
+      editorElement.appendChild(tailBlock)
+    }
+    nextTailBlocks.push(tailBlock)
+    insertAfter = tailBlock
+  }
+
+  const targetBlock = nextTailBlocks[normalizedLine - 1] ?? nextTailBlocks[nextTailBlocks.length - 1]
+  if (!targetBlock) {
+    editorElement.focus()
+    collapseSelectionToElementEnd(editorElement)
+    return
+  }
+
+  editorElement.focus()
+  collapseSelectionToBlockStart(targetBlock)
+}
+
+function placeCaretInSourceEditorTail(editor: Vditor, targetLine: number) {
+  const currentMarkdown = getEditorMarkdown(editor)
+  const nextMarkdown = ensureTrailingNewlines(currentMarkdown, targetLine)
+  const editorElement = getActiveEditorScrollElement(editor.vditor)
+  if (!editorElement) return nextMarkdown
+
+  if (nextMarkdown !== currentMarkdown) {
+    editor.setValue(nextMarkdown, false)
+  }
+
+  window.requestAnimationFrame(() => {
+    editorElement.focus()
+    collapseSelectionToElementEnd(editorElement)
+  })
+
+  return nextMarkdown
+}
+
+function placeCaretInEditorTail(editor: Vditor, targetLine: number) {
+  if (editor.vditor.currentMode === 'sv') {
+    return placeCaretInSourceEditorTail(editor, targetLine)
+  }
+
+  const editorElement = getActiveEditorScrollElement(editor.vditor)
+  if (!editorElement) return getEditorMarkdown(editor)
+
+  placeCaretInBlockEditorTail(editorElement, targetLine)
+  return getEditorMarkdown(editor)
 }
 
 function getOutlineContentElement(vditor: VditorRuntime) {
@@ -541,6 +660,11 @@ function createMemoSlashCommandController(
 
   const handleKeyDown = (event: KeyboardEvent) => {
     if (!menuElement.classList.contains('memo-slash-menu-visible')) return
+    if (!getSlashTriggerInside(rootElement)) {
+      hideMenu()
+      return
+    }
+
     if (event.key === 'ArrowDown') {
       event.preventDefault()
       event.stopPropagation()
@@ -1331,39 +1455,20 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       tailClickTimerRef.current = null
     }, [])
 
-    const focusEditorTail = useCallback((editor: Vditor) => {
-      window.requestAnimationFrame(() => {
-        if (editorRef.current !== editor || !isReadyRef.current) return
-        const editorElement = getActiveEditorScrollElement(editor.vditor)
-        if (!editorElement) return
-
-        editorElement.focus()
-        collapseSelectionToElementEnd(editorElement)
-      })
-    }, [])
-
     const continueFromEditorTail = useCallback(
       (targetLine: number) => {
         const editor = editorRef.current
         if (!editor || !isReadyRef.current) return
 
-        const currentMarkdown = getEditorMarkdown(editor)
-        const nextMarkdown = ensureTrailingNewlines(currentMarkdown, targetLine)
+        const nextMarkdown = placeCaretInEditorTail(editor, targetLine)
 
-        if (nextMarkdown !== currentMarkdown) {
-          suppressInputRef.current = true
-          editor.setValue(nextMarkdown, false)
-          window.setTimeout(() => {
-            suppressInputRef.current = false
-          }, 0)
+        if (nextMarkdown !== valueRef.current) {
           valueRef.current = nextMarkdown
           onChangeRef.current(nextMarkdown)
           scheduleOutlineSync()
         }
-
-        focusEditorTail(editor)
       },
-      [focusEditorTail, scheduleOutlineSync],
+      [scheduleOutlineSync],
     )
 
     const applyEditorValue = useCallback((editor: Vditor, nextValue: string) => {
@@ -1407,6 +1512,10 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         tailRootElement = runtime.element
         handleTailClick = (event: MouseEvent) => {
           if (!editor || editorRef.current !== editor || !isReadyRef.current) return
+          if (event.detail > 1) {
+            clearTailClickTimer()
+            return
+          }
 
           const targetLine = getEditorTailClickLine(editor.vditor, event)
           if (!targetLine) return

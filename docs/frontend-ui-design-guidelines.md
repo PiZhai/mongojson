@@ -93,11 +93,47 @@ Rules:
 - Preserve editor cursor, selection, line height, scroll behavior, and code font.
 - MemoDocs remains light-only. Do not restore dark editor/content/code theme
   entries unless the product direction changes.
+- MemoDocs Vditor tail editing must be model-driven, not repaint-driven. When
+  implementing the "click the blank tail after a final code block to continue
+  writing" interaction, IR/WYSIWYG modes should create Vditor-compatible empty
+  `data-block="0"` paragraph blocks and place the DOM selection directly in the
+  target block. Do not use a full `setValue(...)` rerender plus delayed DOM
+  patching to recover the cursor position; that can move the cursor to the first
+  line, break double-click target-line behavior, or interfere with Vditor's
+  native `ArrowDown` code-block escape behavior.
+- Slash-command keyboard handlers must only intercept `ArrowUp` / `ArrowDown`
+  while a valid slash trigger is still active. If the slash menu is visible from
+  stale state but the current selection is no longer inside a slash trigger,
+  hide the menu and allow Vditor's native key handling to continue.
 - Visualization pages should use multi-color series, light grid lines, readable
   axes, and hover affordances. Do not rely on a single `--accent` color for all
   chart data.
 - JSON/Mongo tool pages should prioritize compareability, parsing feedback,
   copy/export actions, and clear error states over decorative layout.
+
+### MemoDocs Vditor Tail Editing Lessons
+
+本项目经验：
+
+- MemoDocs 当前默认使用 Vditor IR 模式，实际可编辑节点是
+  `.memo-vditor-editor .vditor-ir > .vditor-reset`，不是外层
+  `.vditor-ir` 容器；光标、点击、尾部空白和滚动验证都要落在真实
+  contenteditable 节点上。
+- 代码块尾部续写的单击、双击和 `ArrowDown` 不能分别用三套逻辑实现。
+  IR/WYSIWYG 应共用「尾部空块 + 选区落点」模型；SV 源码模式再单独按
+  Markdown 文本换行处理。
+- Vditor 自身已经有从代码块末尾按下方向键跳出并创建空段落的机制。
+  项目自定义 `/` 菜单、尾部点击和选择工具栏都不能在无效状态下抢占
+  方向键事件。
+
+通用开发经验：
+
+- 富文本/Markdown 编辑器交互优先使用编辑器认可的数据模型和选区模型，
+  避免用「延迟、重渲染、手动补 DOM」串联出看似可用的行为。
+- 修复光标类问题时，应同时验证 DOM 结构、序列化后的 Markdown、当前
+  selection 位置和真实键盘输入后的结果；只看截图或只看节点存在都不够。
+- 当一个补丁影响单击、双击、键盘和自动保存等多条链路时，优先抽出单一
+  交互入口，让不同事件传入目标语义，避免互相叠加兜底逻辑。
 
 ## Typography And Icons
 
