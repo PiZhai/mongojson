@@ -74,98 +74,98 @@ const memoSlashCommands: MemoSlashCommand[] = [
     icon: 'T',
     keywords: ['text', 'paragraph', 'wenben', 'duanluo'],
     label: '文本',
-    value: '段落',
+    value: '段落\n',
   },
   {
     category: '基础',
     icon: 'H1',
     keywords: ['h1', 'heading1', 'title', 'biaoti', 'yiji'],
     label: '一级标题',
-    value: '# 一级标题',
+    value: '# 一级标题\n',
   },
   {
     category: '基础',
     icon: 'H2',
     keywords: ['h2', 'heading2', 'title', 'biaoti', 'erji'],
     label: '二级标题',
-    value: '## 二级标题',
+    value: '## 二级标题\n',
   },
   {
     category: '基础',
     icon: 'H3',
     keywords: ['h3', 'heading3', 'title', 'biaoti', 'sanji'],
     label: '三级标题',
-    value: '### 三级标题',
+    value: '### 三级标题\n',
   },
   {
     category: '基础',
     icon: 'H4',
     keywords: ['h4', 'heading4', 'title', 'biaoti', 'siji'],
     label: '四级标题',
-    value: '#### 四级标题',
+    value: '#### 四级标题\n',
   },
   {
     category: '基础',
     icon: '1.',
     keywords: ['ordered', 'number', 'list', 'youxu', 'liebiao'],
     label: '有序列表',
-    value: '1. 列表项',
+    value: '1. 列表项\n',
   },
   {
     category: '基础',
     icon: '-',
     keywords: ['bullet', 'unordered', 'list', 'wuxu', 'liebiao'],
     label: '无序列表',
-    value: '- 列表项',
+    value: '- 列表项\n',
   },
   {
     category: '基础',
     icon: '{}',
     keywords: ['code', 'block', 'daima'],
     label: '代码块',
-    value: '```\n代码\n```',
+    value: '```\n代码\n```\n',
   },
   {
     category: '基础',
     icon: '>',
     keywords: ['quote', 'blockquote', 'yinyong'],
     label: '引用',
-    value: '> 引用',
+    value: '> 引用\n',
   },
   {
     category: '基础',
     icon: '--',
     keywords: ['line', 'divider', 'hr', 'fengexian'],
     label: '分割线',
-    value: '---',
+    value: '---\n',
   },
   {
     category: '常用',
     icon: '[ ]',
     keywords: ['task', 'todo', 'check', 'renwu'],
     label: '任务',
-    value: '- [ ] 任务',
+    value: '- [ ] 任务\n',
   },
   {
     category: '常用',
     icon: 'url',
     keywords: ['link', 'url', 'lianjie'],
     label: '链接',
-    value: '[链接文本](https://)',
+    value: '[链接文本](https://)\n',
   },
   {
     category: '常用',
     icon: 'img',
     keywords: ['image', 'photo', 'tupian'],
     label: '图片',
-    value: '![图片描述]()',
+    value: '![图片描述]()\n',
   },
   {
     category: '常用',
     icon: 'tbl',
     keywords: ['table', 'biaoge'],
     label: '表格',
-    value: '| 列 A | 列 B |\n| --- | --- |\n| 内容 | 内容 |',
+    value: '| 列 A | 列 B |\n| --- | --- |\n| 内容 | 内容 |\n',
   },
 ]
 
@@ -374,6 +374,28 @@ function restoreSelectionRange(range: Range) {
   selection.addRange(range)
 }
 
+function focusEditorEnd(editor: Vditor) {
+  window.requestAnimationFrame(() => {
+    const editorElement = getActiveEditorScrollElement(editor.vditor)
+    if (!editorElement) return
+
+    editorElement.focus()
+    collapseSelectionToElementEnd(editorElement)
+  })
+}
+
+function replaceTrailingSlashCommand(
+  markdown: string,
+  triggerToken: string,
+  commandMarkdown: string,
+) {
+  if (!triggerToken || !markdown.endsWith(triggerToken)) return null
+
+  const baseMarkdown = markdown.slice(0, -triggerToken.length)
+  const separator = baseMarkdown.length > 0 && !baseMarkdown.endsWith('\n') ? '\n' : ''
+  return `${baseMarkdown}${separator}${commandMarkdown}`
+}
+
 function getSlashTriggerInside(rootElement: HTMLElement) {
   const selection = window.getSelection()
   if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return null
@@ -385,9 +407,6 @@ function getSlashTriggerInside(rootElement: HTMLElement) {
   const currentLineValue = startContainer.textContent?.substring(0, range.startOffset) ?? ''
   const slashIndex = currentLineValue.lastIndexOf('/')
   if (slashIndex < 0) return null
-
-  const previousChar = currentLineValue[slashIndex - 1]
-  if (previousChar && !/\s/.test(previousChar)) return null
 
   const keyword = currentLineValue.slice(slashIndex + 1)
   if (keyword.length > 32 || /\s/.test(keyword)) return null
@@ -434,13 +453,26 @@ function createMemoSlashCommandController(
   const applyCommand = (command: MemoSlashCommand) => {
     if (!savedTriggerRange) return
 
+    const triggerToken = savedTriggerRange.toString()
+    const currentMarkdown = getEditorMarkdown(editor)
+    const nextMarkdown = replaceTrailingSlashCommand(currentMarkdown, triggerToken, command.value)
+
+    if (nextMarkdown !== null) {
+      editor.setValue(nextMarkdown, false)
+      onCommandExecuted()
+      hideMenu()
+      focusEditorEnd(editor)
+      return
+    }
+
     restoreSelectionRange(savedTriggerRange)
     savedTriggerRange.deleteContents()
     savedTriggerRange.collapse(false)
     restoreSelectionRange(savedTriggerRange)
-    editor.insertValue(command.value)
+    editor.insertMD(command.value)
     onCommandExecuted()
     hideMenu()
+    focusEditorEnd(editor)
   }
 
   const renderMenu = (commands: MemoSlashCommand[]) => {
