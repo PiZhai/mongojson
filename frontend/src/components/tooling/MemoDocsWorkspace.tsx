@@ -231,9 +231,11 @@ function FloatingCardColorPicker({ id, label, onChange, value }: FloatingCardCol
 export function MemoDocsWorkspace() {
   const editorRef = useRef<VditorMemoEditorHandle | null>(null)
   const saveTimerRef = useRef<number | null>(null)
+  const statsTimerRef = useRef<number | null>(null)
   const hasLoadedRemoteMemoRef = useRef(false)
   const [title, setTitle] = useState('')
   const [editorMarkdown, setEditorMarkdown] = useState('')
+  const [documentRevision, setDocumentRevision] = useState('')
   const [floatingCards, setFloatingCards] = useState<FloatingCard[]>(() => loadFloatingCardsFromStorage())
   const titleRef = useRef(title)
   const editorMarkdownRef = useRef(editorMarkdown)
@@ -262,10 +264,6 @@ export function MemoDocsWorkspace() {
   }, [title])
 
   useEffect(() => {
-    editorMarkdownRef.current = editorMarkdown
-  }, [editorMarkdown])
-
-  useEffect(() => {
     floatingCardsRef.current = floatingCards
   }, [floatingCards])
 
@@ -285,6 +283,7 @@ export function MemoDocsWorkspace() {
         editorMarkdownRef.current = nextMarkdown
         setTitle(response.memo.title)
         setEditorMarkdown(nextMarkdown)
+        setDocumentRevision(response.memo.updated_at)
         setLastSavedAt(response.memo.updated_at)
         hasLoadedRemoteMemoRef.current = true
 
@@ -312,6 +311,9 @@ export function MemoDocsWorkspace() {
     return () => {
       if (saveTimerRef.current) {
         window.clearTimeout(saveTimerRef.current)
+      }
+      if (statsTimerRef.current) {
+        window.clearTimeout(statsTimerRef.current)
       }
     }
   }, [])
@@ -360,10 +362,19 @@ export function MemoDocsWorkspace() {
     }, 700)
   }
 
+  const scheduleStatsRefresh = () => {
+    if (statsTimerRef.current) return
+    statsTimerRef.current = window.setTimeout(() => {
+      statsTimerRef.current = null
+      setEditorMarkdown(editorMarkdownRef.current)
+    }, 400)
+  }
+
   const commitMarkdown = (nextMarkdown: string) => {
-    setEditorMarkdown(nextMarkdown)
+    editorMarkdownRef.current = nextMarkdown
+    scheduleStatsRefresh()
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
-    scheduleSave(title, nextMarkdown, floatingCardsRef.current)
+    scheduleSave(titleRef.current, nextMarkdown, floatingCardsRef.current)
   }
 
   const handleUpload = async (file: File) => {
@@ -567,13 +578,14 @@ export function MemoDocsWorkspace() {
             <VditorMemoEditor
               codeTheme={codeTheme}
               contentTheme={contentTheme}
+              documentRevision={documentRevision}
+              initialValue={editorMarkdown}
               mode={editorMode}
               onChange={commitMarkdown}
               onUpload={handleUpload}
               placeholder="从标题开始写，#、##、-、> 和图片链接都可以直接输入。"
               ref={editorRef}
               theme={editorTheme}
-              value={editorMarkdown}
             />
           </div>
           <StatusBanner

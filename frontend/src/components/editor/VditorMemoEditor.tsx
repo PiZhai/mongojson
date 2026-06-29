@@ -1,5 +1,5 @@
-import Vditor from 'vditor'
-import 'vditor/dist/index.css'
+import Vditor from '@mongojson/vditor-core'
+import type { VditorMode, VditorOutlineEntry } from '@mongojson/vditor-core'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react'
 import { ensureTrailingNewlines, getTailClickLine } from '../../lib/memo/editorTail'
 
@@ -19,12 +19,13 @@ export type VditorMemoCodeTheme = string
 type VditorMemoEditorProps = {
   codeTheme?: VditorMemoCodeTheme
   contentTheme?: VditorMemoContentTheme
+  documentRevision?: string
+  initialValue: string
   mode?: VditorMemoMode
   onChange: (value: string) => void
   onUpload?: (file: File) => Promise<string>
   placeholder?: string
   theme?: VditorMemoTheme
-  value: string
 }
 
 type WindowWithHljs = Window & {
@@ -36,8 +37,15 @@ type WindowWithHljs = Window & {
 type VditorRuntime = Vditor['vditor']
 type MemoOutlineEntry = {
   heading?: HTMLElement
+  index: number
+  line: number
   outlineItem: HTMLElement
   top: number
+  targetId: string
+}
+type MemoOutlineNode = VditorOutlineEntry & {
+  children: MemoOutlineNode[]
+  index: number
   targetId: string
 }
 type MemoOutlineController = {
@@ -75,98 +83,98 @@ const memoSlashCommands: MemoSlashCommand[] = [
     icon: 'T',
     keywords: ['text', 'paragraph', 'wenben', 'duanluo'],
     label: '文本',
-    value: '段落\n',
+    value: '段落',
   },
   {
     category: '基础',
     icon: 'H1',
     keywords: ['h1', 'heading1', 'title', 'biaoti', 'yiji'],
     label: '一级标题',
-    value: '# 一级标题\n',
+    value: '# 一级标题',
   },
   {
     category: '基础',
     icon: 'H2',
     keywords: ['h2', 'heading2', 'title', 'biaoti', 'erji'],
     label: '二级标题',
-    value: '## 二级标题\n',
+    value: '## 二级标题',
   },
   {
     category: '基础',
     icon: 'H3',
     keywords: ['h3', 'heading3', 'title', 'biaoti', 'sanji'],
     label: '三级标题',
-    value: '### 三级标题\n',
+    value: '### 三级标题',
   },
   {
     category: '基础',
     icon: 'H4',
     keywords: ['h4', 'heading4', 'title', 'biaoti', 'siji'],
     label: '四级标题',
-    value: '#### 四级标题\n',
+    value: '#### 四级标题',
   },
   {
     category: '基础',
     icon: '1.',
     keywords: ['ordered', 'number', 'list', 'youxu', 'liebiao'],
     label: '有序列表',
-    value: '1. 列表项\n',
+    value: '1. 列表项',
   },
   {
     category: '基础',
     icon: '-',
     keywords: ['bullet', 'unordered', 'list', 'wuxu', 'liebiao'],
     label: '无序列表',
-    value: '- 列表项\n',
+    value: '- 列表项',
   },
   {
     category: '基础',
     icon: '{}',
     keywords: ['code', 'block', 'daima'],
     label: '代码块',
-    value: '```\n代码\n```\n',
+    value: '```\n```',
   },
   {
     category: '基础',
     icon: '>',
     keywords: ['quote', 'blockquote', 'yinyong'],
     label: '引用',
-    value: '> 引用\n',
+    value: '> 引用',
   },
   {
     category: '基础',
     icon: '--',
     keywords: ['line', 'divider', 'hr', 'fengexian'],
     label: '分割线',
-    value: '---\n',
+    value: '---',
   },
   {
     category: '常用',
     icon: '[ ]',
     keywords: ['task', 'todo', 'check', 'renwu'],
     label: '任务',
-    value: '- [ ] 任务\n',
+    value: '- [ ] 任务',
   },
   {
     category: '常用',
     icon: 'url',
     keywords: ['link', 'url', 'lianjie'],
     label: '链接',
-    value: '[链接文本](https://)\n',
+    value: '[链接文本](https://)',
   },
   {
     category: '常用',
     icon: 'img',
     keywords: ['image', 'photo', 'tupian'],
     label: '图片',
-    value: '![图片描述]()\n',
+    value: '![图片描述]()',
   },
   {
     category: '常用',
     icon: 'tbl',
     keywords: ['table', 'biaoge'],
     label: '表格',
-    value: '| 列 A | 列 B |\n| --- | --- |\n| 内容 | 内容 |\n',
+    value: '| 列 A | 列 B |\n| --- | --- |\n| 内容 | 内容 |',
   },
 ]
 
@@ -493,28 +501,6 @@ function restoreSelectionRange(range: Range) {
   selection.addRange(range)
 }
 
-function focusEditorEnd(editor: Vditor) {
-  window.requestAnimationFrame(() => {
-    const editorElement = getActiveEditorScrollElement(editor.vditor)
-    if (!editorElement) return
-
-    editorElement.focus()
-    collapseSelectionToElementEnd(editorElement)
-  })
-}
-
-function replaceTrailingSlashCommand(
-  markdown: string,
-  triggerToken: string,
-  commandMarkdown: string,
-) {
-  if (!triggerToken || !markdown.endsWith(triggerToken)) return null
-
-  const baseMarkdown = markdown.slice(0, -triggerToken.length)
-  const separator = baseMarkdown.length > 0 && !baseMarkdown.endsWith('\n') ? '\n' : ''
-  return `${baseMarkdown}${separator}${commandMarkdown}`
-}
-
 function getSlashTriggerInside(rootElement: HTMLElement) {
   const selection = window.getSelection()
   if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return null
@@ -572,18 +558,6 @@ function createMemoSlashCommandController(
   const applyCommand = (command: MemoSlashCommand) => {
     if (!savedTriggerRange) return
 
-    const triggerToken = savedTriggerRange.toString()
-    const currentMarkdown = getEditorMarkdown(editor)
-    const nextMarkdown = replaceTrailingSlashCommand(currentMarkdown, triggerToken, command.value)
-
-    if (nextMarkdown !== null) {
-      editor.setValue(nextMarkdown, false)
-      onCommandExecuted()
-      hideMenu()
-      focusEditorEnd(editor)
-      return
-    }
-
     restoreSelectionRange(savedTriggerRange)
     savedTriggerRange.deleteContents()
     savedTriggerRange.collapse(false)
@@ -591,7 +565,6 @@ function createMemoSlashCommandController(
     editor.insertMD(command.value)
     onCommandExecuted()
     hideMenu()
-    focusEditorEnd(editor)
   }
 
   const renderMenu = (commands: MemoSlashCommand[]) => {
@@ -856,35 +829,28 @@ function getSvLineTop(vditor: VditorRuntime, lineIndex: number) {
   return paddingTop + lineIndex * lineHeight
 }
 
-function renderSvFallbackOutline(vditor: VditorRuntime) {
-  const svElement = vditor.sv?.element
-  const outlineContent = vditor.outline?.element.querySelector<HTMLElement>('.vditor-outline__content')
-  if (!svElement || !outlineContent) return
+function getMemoOutlineTargetId(entry: VditorOutlineEntry, index: number) {
+  return `memo-outline-${entry.line}-${index}-${entry.id}`
+}
 
-  type SvOutlineNode = {
-    children: SvOutlineNode[]
-    level: number
-    lineIndex: number
-    targetId: string
-    text: string
-    top: number
+function buildMemoOutlineTree(outline: VditorOutlineEntry[]) {
+  const root: MemoOutlineNode = {
+    children: [],
+    id: '',
+    index: -1,
+    level: 0,
+    line: 0,
+    targetId: '',
+    text: '',
   }
-
-  const root: SvOutlineNode = { children: [], level: 0, lineIndex: 0, targetId: '', text: '', top: 0 }
   const stack = [root]
-  const lines = (svElement.textContent ?? '').split('\n')
 
-  lines.forEach((line, lineIndex) => {
-    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line)
-    if (!match) return
-
-    const node: SvOutlineNode = {
+  outline.forEach((entry, index) => {
+    const node: MemoOutlineNode = {
+      ...entry,
       children: [],
-      level: match[1].length,
-      lineIndex,
-      targetId: `memo-sv-heading-${lineIndex}`,
-      text: match[2],
-      top: getSvLineTop(vditor, lineIndex),
+      index,
+      targetId: getMemoOutlineTargetId(entry, index),
     }
 
     while (stack.length > 1 && stack[stack.length - 1].level >= node.level) {
@@ -894,61 +860,74 @@ function renderSvFallbackOutline(vditor: VditorRuntime) {
     stack.push(node)
   })
 
-  const renderNodes = (nodes: SvOutlineNode[]): string => {
-    if (nodes.length === 0) return ''
-    return `<ul>${nodes.map((node) => {
-      return [
-        '<li>',
-        `<span data-memo-outline-source="sv" data-memo-outline-top="${node.top}" data-target-id="${node.targetId}">`,
-        '<svg></svg>',
-        `<span>${escapeHTML(node.text)}</span>`,
-        '</span>',
-        renderNodes(node.children),
-        '</li>',
-      ].join('')
-    }).join('')}</ul>`
-  }
-
-  outlineContent.innerHTML = renderNodes(root.children)
+  return root.children
 }
 
-function collectMemoOutlineEntries(vditor: VditorRuntime) {
+function renderMemoOutlineNodes(nodes: MemoOutlineNode[]): string {
+  if (nodes.length === 0) return ''
+  return `<ul>${nodes.map((node) => {
+    const actionIcon = node.children.length > 0
+      ? '<svg class="vditor-outline__action" viewBox="0 0 32 32"><path d="M3.76 6.12l12.24 12.213 12.24-12.213 3.76 3.76-16 16-16-16 3.76-3.76z"></path></svg>'
+      : '<svg></svg>'
+
+    return [
+      '<li>',
+      `<span data-memo-outline-index="${node.index}" data-memo-outline-line="${node.line}" data-target-id="${escapeHTML(node.targetId)}">`,
+      actionIcon,
+      `<span>${escapeHTML(node.text)}</span>`,
+      '</span>',
+      renderMemoOutlineNodes(node.children),
+      '</li>',
+    ].join('')
+  }).join('')}</ul>`
+}
+
+function renderMemoOutline(editor: Vditor) {
+  const outlineContent = editor.vditor.outline?.element.querySelector<HTMLElement>('.vditor-outline__content')
+  if (!outlineContent) return
+
+  const outline = editor.getOutlineModel()
+  outlineContent.innerHTML = renderMemoOutlineNodes(buildMemoOutlineTree(outline))
+}
+
+function getRenderedHeadingElements(vditor: VditorRuntime) {
+  const contentElement = getOutlineContentElement(vditor)
+  if (!contentElement) return []
+  return Array.from(contentElement.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6'))
+}
+
+function collectMemoOutlineEntries(editor: Vditor, shouldRender = false) {
+  const vditor = editor.vditor
   const contentElement = getOutlineContentElement(vditor)
   const outlineElement = vditor.outline?.element
   if (!contentElement || !outlineElement) return []
+  if (shouldRender) {
+    renderMemoOutline(editor)
+  }
 
-  let entries = Array.from(outlineElement.querySelectorAll<HTMLElement>('[data-target-id]'))
+  const headings = getRenderedHeadingElements(vditor)
+  const entries = Array.from(outlineElement.querySelectorAll<HTMLElement>('[data-target-id]'))
     .map((outlineItem): MemoOutlineEntry | null => {
       const targetId = outlineItem.getAttribute('data-target-id')
       if (!targetId) return null
-      if (outlineItem.dataset.memoOutlineSource === 'sv') {
+      const index = Number.parseInt(outlineItem.dataset.memoOutlineIndex ?? '', 10)
+      const line = Number.parseInt(outlineItem.dataset.memoOutlineLine ?? '', 10)
+      if (!Number.isFinite(index) || !Number.isFinite(line)) return null
+      if (vditor.currentMode === 'sv') {
         return {
+          index,
+          line,
           outlineItem,
           targetId,
-          top: Number.parseFloat(outlineItem.dataset.memoOutlineTop ?? '0') || 0,
+          top: getSvLineTop(vditor, line),
         }
       }
 
-      const heading = document.getElementById(targetId)
+      const heading = headings[index]
       if (!heading || !contentElement.contains(heading)) return null
-      return { heading, outlineItem, targetId, top: getHeadingTop(heading) }
+      return { heading, index, line, outlineItem, targetId, top: getHeadingTop(heading) }
     })
     .filter((entry): entry is MemoOutlineEntry => Boolean(entry))
-
-  if (entries.length === 0 && vditor.currentMode === 'sv') {
-    renderSvFallbackOutline(vditor)
-    entries = Array.from(outlineElement.querySelectorAll<HTMLElement>('[data-memo-outline-source="sv"][data-target-id]'))
-      .map((outlineItem): MemoOutlineEntry | null => {
-        const targetId = outlineItem.getAttribute('data-target-id')
-        if (!targetId) return null
-        return {
-          outlineItem,
-          targetId,
-          top: Number.parseFloat(outlineItem.dataset.memoOutlineTop ?? '0') || 0,
-        }
-      })
-      .filter((entry): entry is MemoOutlineEntry => Boolean(entry))
-  }
 
   return entries
 }
@@ -1031,8 +1010,6 @@ function createMemoOutlineController(editor: Vditor): MemoOutlineController {
   const vditor = editor.vditor
   const rootElement = vditor.element
   let activeTargetId: string | null = null
-  let outlineRetryCount = 0
-  let previewRenderRetryId = 0
   let scrollElement: HTMLElement | null = null
   let scrollRafId = 0
 
@@ -1057,26 +1034,7 @@ function createMemoOutlineController(editor: Vditor): MemoOutlineController {
   }
 
   const syncOutlineState = () => {
-    const entries = collectMemoOutlineEntries(vditor)
-    if (entries.length > 0 && previewRenderRetryId) {
-      window.clearTimeout(previewRenderRetryId)
-      previewRenderRetryId = 0
-    }
-    if (entries.length > 0) {
-      outlineRetryCount = 0
-    }
-
-    if (entries.length === 0 && outlineRetryCount < 8 && !previewRenderRetryId) {
-      outlineRetryCount += 1
-      const currentMarkdown = getEditorMarkdown(editor)
-      editor.renderPreview(currentMarkdown)
-      vditor.preview?.render(vditor, currentMarkdown)
-      previewRenderRetryId = window.setTimeout(() => {
-        previewRenderRetryId = 0
-        vditor.outline.render(vditor)
-        syncOutlineState()
-      }, 120)
-    }
+    const entries = collectMemoOutlineEntries(editor, true)
 
     const nextScrollElement = entries[0]?.heading ? getScrollElementForHeading(vditor, entries[0].heading) : getActiveEditorScrollElement(vditor)
     if (nextScrollElement !== scrollElement) {
@@ -1101,7 +1059,7 @@ function createMemoOutlineController(editor: Vditor): MemoOutlineController {
     if (scrollRafId) return
     scrollRafId = window.requestAnimationFrame(() => {
       scrollRafId = 0
-      const entries = collectMemoOutlineEntries(vditor)
+      const entries = collectMemoOutlineEntries(editor)
       const activeEntry = findActiveEntryForScroll(entries, scrollElement?.scrollTop ?? 0)
       setActiveOutlineTarget(activeEntry?.targetId ?? null)
     })
@@ -1112,7 +1070,7 @@ function createMemoOutlineController(editor: Vditor): MemoOutlineController {
   }
 
   const scrollToHeading = (targetId: string) => {
-    const entries = collectMemoOutlineEntries(vditor)
+    const entries = collectMemoOutlineEntries(editor)
     const entry = entries.find((item) => item.targetId === targetId)
     if (!entry) return
 
@@ -1131,7 +1089,18 @@ function createMemoOutlineController(editor: Vditor): MemoOutlineController {
 
     const outlineElement = vditor.outline?.element
     const outlineAction = target.closest('.vditor-outline__action')
-    if (outlineAction && outlineElement?.contains(outlineAction)) return
+    if (outlineAction && outlineElement?.contains(outlineAction)) {
+      const actionElement = outlineAction as HTMLElement
+      const childList = actionElement.parentElement?.nextElementSibling
+      if (childList instanceof HTMLElement) {
+        const isClosed = actionElement.classList.toggle('vditor-outline__action--close')
+        childList.style.display = isClosed ? 'none' : 'block'
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      return
+    }
 
     const outlineTarget = target.closest<HTMLElement>('.vditor-outline [data-target-id]')
     if (outlineTarget) {
@@ -1145,7 +1114,7 @@ function createMemoOutlineController(editor: Vditor): MemoOutlineController {
       return
     }
 
-    const entries = collectMemoOutlineEntries(vditor)
+    const entries = collectMemoOutlineEntries(editor)
     const contentElement = getOutlineContentElementFromEntries(entries)
     if (!contentElement?.contains(target)) return
 
@@ -1162,9 +1131,6 @@ function createMemoOutlineController(editor: Vditor): MemoOutlineController {
       scrollElement?.removeEventListener('scroll', handleScroll)
       if (scrollRafId) {
         window.cancelAnimationFrame(scrollRafId)
-      }
-      if (previewRenderRetryId) {
-        window.clearTimeout(previewRenderRetryId)
       }
     },
     sync: syncOutlineState,
@@ -1325,12 +1291,13 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
   function VditorMemoEditor({
     codeTheme = 'github',
     contentTheme = 'light',
+    documentRevision = '',
+    initialValue,
     mode = 'ir',
     onChange,
     onUpload,
     placeholder = '',
     theme = 'classic',
-    value,
   }, ref) {
     const hostRef = useRef<HTMLDivElement | null>(null)
     const editorRef = useRef<Vditor | null>(null)
@@ -1347,11 +1314,13 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
     const suppressInputRef = useRef(false)
     const tailClickTimerRef = useRef<number | null>(null)
     const themeRef = useRef(theme)
-    const valueRef = useRef(value)
+    const initialValueRef = useRef(initialValue)
+    const initialModeRef = useRef<VditorMode>(mode)
+    const valueRef = useRef(initialValue)
 
-    valueRef.current = value
     codeThemeRef.current = codeTheme
     contentThemeRef.current = contentTheme
+    initialValueRef.current = initialValue
     onChangeRef.current = onChange
     onUploadRef.current = onUpload
     themeRef.current = theme
@@ -1433,7 +1402,7 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
 
     const applyEditorValue = useCallback((editor: Vditor, nextValue: string) => {
       suppressInputRef.current = true
-      editor.setValue(nextValue, true)
+      editor.setDocument(nextValue, { clearStack: true })
       window.setTimeout(() => {
         suppressInputRef.current = false
       }, 0)
@@ -1463,6 +1432,7 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       let tailRootElement: HTMLElement | null = null
       let handleTailClick: ((event: MouseEvent) => void) | null = null
       let handleTailDoubleClick: ((event: MouseEvent) => void) | null = null
+      let unsubscribeTransaction: (() => void) | null = null
 
       const attachTailClickHandlers = () => {
         if (!editor || tailRootElement) return
@@ -1527,6 +1497,16 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
                 handleSelectionToolbarCommand,
               )
             }
+            if (!unsubscribeTransaction) {
+              unsubscribeTransaction = editor.onTransaction((transaction) => {
+                valueRef.current = transaction.markdown
+                if (suppressInputRef.current) return
+                if (transaction.source === 'input') {
+                  onChangeRef.current(transaction.markdown)
+                  scheduleOutlineSync()
+                }
+              })
+            }
             attachTailClickHandlers()
             const pendingValue = pendingValueRef.current
             const nextValue = pendingValue ?? valueRef.current
@@ -1541,14 +1521,8 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
             scheduleOutlineSync()
           },
           height: 'calc(100vh - 242px)',
-          input: (nextValue: string) => {
-            valueRef.current = nextValue
-            if (suppressInputRef.current) return
-            onChangeRef.current(nextValue)
-            scheduleOutlineSync()
-          },
           lang: 'zh_CN',
-          mode,
+          mode: initialModeRef.current,
           outline: {
             enable: true,
             position: 'left',
@@ -1608,6 +1582,7 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         disposeSlashCommandController()
         disposeSelectionToolbarController()
         disposeOutlineController()
+        unsubscribeTransaction?.()
         if (editor) {
           destroyEditor(editor, host)
         } else {
@@ -1626,7 +1601,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       disposeSlashCommandController,
       handleCodeLanguageChange,
       handleSelectionToolbarCommand,
-      mode,
       placeholder,
       scheduleOutlineSync,
     ])
@@ -1640,19 +1614,27 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
 
     useEffect(() => {
       const editor = editorRef.current
+      if (!editor || !isReadyRef.current) return
+      editor.setMode(mode)
+      scheduleOutlineSync()
+    }, [mode, scheduleOutlineSync])
+
+    useEffect(() => {
+      const editor = editorRef.current
+      const nextValue = initialValueRef.current
+      valueRef.current = nextValue
       if (!editor) return
-      valueRef.current = value
       if (!isReadyRef.current) {
-        pendingValueRef.current = value
+        pendingValueRef.current = nextValue
         return
       }
-      if (value === getEditorMarkdown(editor)) return
+      if (nextValue === getEditorMarkdown(editor)) return
       window.requestAnimationFrame(() => {
         if (editorRef.current !== editor || !isReadyRef.current) return
-        if (value === getEditorMarkdown(editor)) return
-        applyEditorValue(editor, value)
+        if (nextValue === getEditorMarkdown(editor)) return
+        applyEditorValue(editor, nextValue)
       })
-    }, [applyEditorValue, value])
+    }, [applyEditorValue, documentRevision])
 
     useEffect(() => {
       return () => {

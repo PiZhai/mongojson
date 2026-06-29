@@ -9,6 +9,11 @@ lerna-debug.log*
 
 node_modules
 dist
+!packages/vditor-core/dist/
+!packages/vditor-core/dist/**/
+!packages/vditor-core/dist/**/*.d.ts
+!public/vendor/vditor/dist/
+!public/vendor/vditor/dist/**
 dist-ssr
 *.local
 

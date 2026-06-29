@@ -1,0 +1,22 @@
+{
+  "name": "@mongojson/vditor-core",
+  "version": "3.11.2-mongojson.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "sideEffects": [
+    "./src/assets/less/index.less",
+    "./src/js/i18n/zh_CN.js"
+  ],
+  "dependencies": {
+    "diff-match-patch": "^1.0.5"
+  }
+}
