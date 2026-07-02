@@ -23,6 +23,7 @@ import {
     hasClosestByTag,
 } from "../util/hasClosestByHeadings";
 import {processCodeRender} from "../util/processCode";
+import {getFilteredCodeLanguages} from "../util/codeLanguage";
 import {
     getEditorRange,
     selectIsEditor,
@@ -225,8 +226,6 @@ export const highlightToolbarWYSIWYG = (vditor: IVditor) => {
 
         // table popover
         if (tableElement) {
-            const lang: keyof II18n | "" = vditor.options.lang;
-            const options: IOptions = vditor.options;
             vditor.wysiwyg.popover.innerHTML = "";
             const updateTable = () => {
                 const oldRow = tableElement.rows.length;
@@ -565,8 +564,6 @@ export const highlightToolbarWYSIWYG = (vditor: IVditor) => {
         // footnote popover
         const footnotesRefElement = hasClosestByAttribute(typeElement, "data-type", "footnotes-ref");
         if (footnotesRefElement) {
-            const lang: keyof II18n | "" = vditor.options.lang;
-            const options: IOptions = vditor.options;
             vditor.wysiwyg.popover.innerHTML = "";
 
             const inputWrap = document.createElement("span");
@@ -689,13 +686,11 @@ export const highlightToolbarWYSIWYG = (vditor: IVditor) => {
                     }
                     const matchLangData: IHintData[] = [];
                     const key = language.value.substring(0, language.selectionStart);
-                    (vditor.options.preview.hljs.langs || Constants.ALIAS_CODE_LANGUAGES.concat((window.hljs?.listLanguages() ?? []).sort())).forEach((keyName) => {
-                        if (keyName.indexOf(key.toLowerCase()) > -1) {
-                            matchLangData.push({
-                                html: keyName,
-                                value: keyName,
-                            });
-                        }
+                    getFilteredCodeLanguages(key, vditor.options.preview.hljs).forEach((keyName) => {
+                        matchLangData.push({
+                            html: keyName,
+                            value: keyName,
+                        });
                     });
                     vditor.hint.genHTML(matchLangData, key, vditor);
                     event.preventDefault();

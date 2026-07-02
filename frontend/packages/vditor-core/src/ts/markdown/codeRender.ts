@@ -1,7 +1,8 @@
 import {code160to32} from "../util/code160to32";
 import {Constants} from "../constants";
+import {renderCodeLanguageMenu} from "./codeLanguageMenu";
 
-export const codeRender = (element: HTMLElement, option?: IHljs) => {
+export const codeRender = (element: HTMLElement, option?: IHljs, vditor?: IVditor) => {
     Array.from<HTMLElement>(element.querySelectorAll("pre > code")).filter((e, index) => {
         if (e.parentElement.classList.contains("vditor-wysiwyg__pre") ||
             e.parentElement.classList.contains("vditor-ir__marker--pre")) {
@@ -49,6 +50,9 @@ onclick="event.stopPropagation();this.previousElementSibling.select();document.e
         const textarea = document.createElement("textarea");
         textarea.value = code160to32(codeText);
         divElement.insertAdjacentElement("afterbegin", textarea);
+        if (option?.codeLanguageMenu?.enable && vditor) {
+            renderCodeLanguageMenu(e, divElement, option, vditor);
+        }
         if (option && option.renderMenu) {
             option.renderMenu(e, divElement);
         }

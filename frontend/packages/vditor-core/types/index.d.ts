@@ -481,6 +481,10 @@ interface IHljs {
     enable?: boolean;
     /** 自定义指定语言: CODE_LANGUAGES */
     langs?: string[];
+    /** 代码块右上角语言选择菜单 */
+    codeLanguageMenu?: {
+        enable?: boolean;
+    };
 
     /** 渲染右上角菜单按钮 */
     renderMenu?(element: HTMLElement, menuElement: HTMLElement): void;
@@ -647,6 +651,17 @@ interface ISelectionToolbar {
     destroy(): void;
 }
 
+interface IEditorTailConfig {
+    enable?: boolean;
+    lines?: number;
+    singleClickDelay?: number;
+    ignoreSelector?: string;
+}
+
+interface IEditorTail {
+    destroy(): void;
+}
+
 interface IEditorCommandContext {
     key: string;
     splitChar: string;
@@ -750,6 +765,12 @@ interface IOutline {
     enable: boolean;
     /** 大纲位置：'left', 'right'。默认值: 'left' */
     position: "left" | "right";
+    /** 是否启用滚动高亮、点击定位等增强行为。默认值: false */
+    enhanced?: boolean;
+    /** 滚动高亮偏移。默认值: 72 */
+    scrollOffset?: number;
+    /** 当前大纲项 class。默认值: 'vditor-outline__item--active' */
+    activeClass?: string;
 }
 
 interface IResize {
@@ -909,6 +930,9 @@ interface IOptions {
     /** 文本选择态工具条 */
     selectionToolbar?: ISelectionToolbarConfig;
 
+    /** 编辑区尾部空白点击续写 */
+    editorTail?: IEditorTailConfig;
+
     /** 编辑器命令执行前后回调 */
     onEditorCommandExecuted?(
         command: IEditorCommand | null,
@@ -937,6 +961,7 @@ interface IVditor {
         element: HTMLElement,
         render(vditor: IVditor): string,
         toggle(vditor: IVditor, show?: boolean, focus?: boolean): void,
+        destroy(): void,
     };
     toolbar?: {
         elements?: {[key: string]: HTMLElement},
@@ -954,6 +979,7 @@ interface IVditor {
         render(vditor: IVditor, mdText?: string): void,
     };
     selectionToolbar?: ISelectionToolbar;
+    editorTail?: IEditorTail;
     resize?: {
         element: HTMLElement,
     };

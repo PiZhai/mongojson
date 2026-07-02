@@ -5,6 +5,7 @@ import {accessLocalStorage} from "../util/compatibility";
 import {setContentTheme} from "./setContentTheme";
 import {setTheme} from "./setTheme";
 import {SelectionToolbar} from "../selectionToolbar";
+import {EditorTail} from "../editorTail";
 
 export const initUI = (vditor: IVditor) => {
   vditor.element.innerHTML = "";
@@ -67,6 +68,9 @@ export const initUI = (vditor: IVditor) => {
 
   contentElement.appendChild(vditor.tip.element);
   vditor.selectionToolbar = new SelectionToolbar(vditor);
+  if (vditor.options.editorTail?.enable) {
+    vditor.editorTail = new EditorTail(vditor);
+  }
 
   vditor.element.appendChild(contentElement);
 

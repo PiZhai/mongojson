@@ -7,6 +7,7 @@ import {hasClosestBlock, hasClosestByAttribute, hasClosestByClassName, hasCloses
 import {getEditorRange, getSelectPosition, setRangeByWbr, setSelectionFocus} from "../util/selection";
 import {highlightToolbarIR} from "./highlightToolbarIR";
 import {input} from "./input";
+import {getFilteredCodeLanguages} from "../util/codeLanguage";
 
 export const processHint = (vditor: IVditor) => {
     vditor.hint.render(vditor);
@@ -23,13 +24,11 @@ export const processHint = (vditor: IVditor) => {
             const key =
                 preBeforeElement.textContent.substring(0, getSelectPosition(preBeforeElement, vditor.ir.element).start)
                     .replace(Constants.ZWSP, "");
-            (vditor.options.preview.hljs.langs || Constants.ALIAS_CODE_LANGUAGES.concat((window.hljs?.listLanguages() ?? []).sort())).forEach((keyName) => {
-                if (keyName.indexOf(key.toLowerCase()) > -1) {
-                    matchLangData.push({
-                        html: keyName,
-                        value: keyName,
-                    });
-                }
+            getFilteredCodeLanguages(key, vditor.options.preview.hljs).forEach((keyName) => {
+                matchLangData.push({
+                    html: keyName,
+                    value: keyName,
+                });
             });
             vditor.hint.genHTML(matchLangData, key, vditor);
         }

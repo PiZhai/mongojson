@@ -6,7 +6,6 @@ import {DevTools} from "./ts/devtools/index";
 import {Hint} from "./ts/hint/index";
 import {IR} from "./ts/ir/index";
 import {input as irInput} from "./ts/ir/input";
-import {processAfterRender} from "./ts/ir/process";
 import {getHTML} from "./ts/markdown/getHTML";
 import {getMarkdown} from "./ts/markdown/getMarkdown";
 import {setLute} from "./ts/markdown/setLute";
@@ -15,7 +14,7 @@ import {Preview} from "./ts/preview/index";
 import {Resize} from "./ts/resize/index";
 import {Editor} from "./ts/sv/index";
 import {inputEvent} from "./ts/sv/inputEvent";
-import {processAfterRender as processSVAfterRender, processPaste} from "./ts/sv/process";
+import {processPaste} from "./ts/sv/process";
 import {Tip} from "./ts/tip/index";
 import {setEditMode} from "./ts/toolbar/EditMode";
 import {Toolbar} from "./ts/toolbar/index";
@@ -32,14 +31,13 @@ import {Upload} from "./ts/upload/index";
 import {addScript, addScriptSync} from "./ts/util/addScript";
 import {getSelectText} from "./ts/util/getSelectText";
 import {Options} from "./ts/util/Options";
-import {processCodeRender} from "./ts/util/processCode";
 import {getCursorPosition, getEditorRange, insertHTML} from "./ts/util/selection";
 import {afterRenderEvent} from "./ts/wysiwyg/afterRenderEvent";
 import {WYSIWYG} from "./ts/wysiwyg/index";
 import {input} from "./ts/wysiwyg/input";
-import {renderDomByMd} from "./ts/wysiwyg/renderDomByMd";
 import {execAfterRender, insertEmptyBlock} from "./ts/util/fixBrowserBehavior";
 import {accessLocalStorage} from "./ts/util/compatibility";
+import {setMarkdown} from "./ts/util/setMarkdown";
 
 export type VditorMode = "wysiwyg" | "sv" | "ir";
 
@@ -540,34 +538,11 @@ class Vditor extends VditorMethod {
 
     /** 设置编辑器内容 */
     public setValue(markdown: string, clearStack = false) {
-        if (this.vditor.currentMode === "sv") {
-            this.vditor.sv.element.innerHTML = `<div data-block='0'>${this.vditor.lute.SpinVditorSVDOM(markdown)}</div>`;
-            processSVAfterRender(this.vditor, {
-                enableAddUndoStack: true,
-                enableHint: false,
-                enableInput: false,
-            });
-        } else if (this.vditor.currentMode === "wysiwyg") {
-            renderDomByMd(this.vditor, markdown, {
-                enableAddUndoStack: true,
-                enableHint: false,
-                enableInput: false,
-            });
-        } else {
-            this.vditor.ir.element.innerHTML = this.vditor.lute.Md2VditorIRDOM(markdown);
-            this.vditor.ir.element
-                .querySelectorAll(".vditor-ir__preview[data-render='2']")
-                .forEach((item: HTMLElement) => {
-                    processCodeRender(item, this.vditor);
-                });
-            processAfterRender(this.vditor, {
-                enableAddUndoStack: true,
-                enableHint: false,
-                enableInput: false,
-            });
-        }
-
-        this.vditor.outline.render(this.vditor);
+        setMarkdown(this.vditor, markdown, {
+            enableAddUndoStack: true,
+            enableHint: false,
+            enableInput: false,
+        });
 
         if (!markdown) {
             hidePanel(this.vditor, ["emoji", "headings", "submenu", "hint"]);
@@ -613,6 +588,11 @@ class Vditor extends VditorMethod {
             this.vditor.selectionToolbar.destroy();
             this.vditor.selectionToolbar = undefined;
         }
+        if (this.vditor.editorTail) {
+            this.vditor.editorTail.destroy();
+            this.vditor.editorTail = undefined;
+        }
+        this.vditor.outline?.destroy();
         this.clearCache();
 
         UIUnbindListener();

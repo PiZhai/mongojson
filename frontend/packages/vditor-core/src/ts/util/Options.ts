@@ -43,6 +43,9 @@ export class Options {
             parse: true,
         },
         command: [],
+        editorTail: {
+            enable: false,
+        },
         icon: "ant",
         lang: "zh_CN",
         mode: "ir",
