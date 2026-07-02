@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { MusicMiniPlayer } from '../music/MusicPlayerProvider'
 
 type NavItem = {
   to: string
   title: string
-  icon: 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo'
+  icon: 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'music'
 }
 
 const navGroups: Array<{ label: string; items: NavItem[] }> = [
@@ -43,6 +44,16 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
       },
     ],
   },
+  {
+    label: '媒体工具',
+    items: [
+      {
+        to: '/tools/music',
+        title: '音乐播放器',
+        icon: 'music',
+      },
+    ],
+  },
 ]
 
 const pageMeta: Record<string, { title: string }> = {
@@ -60,6 +71,9 @@ const pageMeta: Record<string, { title: string }> = {
   },
   '/tools/memo-docs': {
     title: '在线备忘录',
+  },
+  '/tools/music': {
+    title: '音乐播放器',
   },
 }
 
@@ -113,6 +127,16 @@ function NavIcon({ icon }: Pick<NavItem, 'icon'>) {
         <path d="M7 4.5h8.2L19 8.3V19.5H7z" />
         <path d="M15 4.5v4h4" />
         <path d="M10 12h6M10 15h6M10 18h3.5" />
+      </svg>
+    )
+  }
+
+  if (icon === 'music') {
+    return (
+      <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">
+        <path d="M9 18V6l9-2v12" />
+        <circle cx="6.5" cy="18" r="2.5" />
+        <circle cx="15.5" cy="16" r="2.5" />
       </svg>
     )
   }
@@ -228,6 +252,7 @@ export function AppShell() {
         <div className="app-content">
           <Outlet />
         </div>
+        <MusicMiniPlayer />
       </main>
     </div>
   )

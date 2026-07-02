@@ -207,6 +207,32 @@ export type PipelineInspectionResult = {
 
 export type ChartSeriesRow = Record<string, string | number | null>
 
+export type MusicTrackSource = 'remote' | 'local'
+
+export type PlaybackMode = 'order' | 'repeat-one' | 'repeat-all'
+
+export type MusicTrack = {
+  id: string
+  source: MusicTrackSource
+  title: string
+  artist?: string
+  note?: string
+  remoteUrl?: string
+  localHandleId?: string
+  fileName?: string
+  mimeType?: string
+  duration?: number
+  addedAt: string
+}
+
+export type MusicLibraryState = {
+  tracks: MusicTrack[]
+  queue: string[]
+  currentTrackId?: string
+  volume: number
+  mode: PlaybackMode
+}
+
 export type JobStatus = 'pending' | 'running' | 'success' | 'failed' | 'expired'
 
 export type JobSummary = {

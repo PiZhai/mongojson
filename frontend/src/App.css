@@ -305,7 +305,7 @@
   display: flex;
   flex: 1;
   min-width: 0;
-  min-height: calc(100vh - 58px);
+  min-height: 0;
   overflow: visible;
   padding: 14px;
 }
