@@ -125,18 +125,18 @@ a {
 }
 
 .page-shell > .panel {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  min-height: auto;
 }
 
 .page-shell > .panel > .editor-split {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  min-height: clamp(300px, 38vh, 520px);
 }
 
 .page-shell > .panel > .workspace-grid {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  min-height: auto;
 }
 
 .inspect-page-shell {
@@ -162,6 +162,7 @@ a {
 
 .panel-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -282,17 +283,19 @@ a {
 
 .editor-split {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  min-height: clamp(300px, 38vh, 520px);
 }
 
 .workspace-grid {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: stretch;
+  flex: 0 0 auto;
 }
 
 .card-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  flex: 0 0 auto;
 }
 
 .editor-pane {
@@ -533,6 +536,7 @@ a {
 
 .summary-strip {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
