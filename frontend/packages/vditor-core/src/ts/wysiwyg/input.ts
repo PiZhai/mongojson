@@ -1,3 +1,6 @@
+import {getMarkdown} from "../markdown/getMarkdown";
+import {Constants} from "../constants";
+import {getCodeFenceOpeningBlockMD, isCodeFenceOpeningMD} from "../util/fixBrowserBehavior";
 import {
     getTopList,
     hasClosestBlock, hasClosestByAttribute, hasTopClosestByTag,
@@ -5,10 +8,32 @@ import {
 import {hasClosestByTag} from "../util/hasClosestByHeadings";
 import {log} from "../util/log";
 import {processCodeRender} from "../util/processCode";
-import {setRangeByWbr} from "../util/selection";
+import {setRangeByWbr, setSelectionFocus} from "../util/selection";
 import {renderToc} from "../util/toc";
 import {afterRenderEvent} from "./afterRenderEvent";
 import {previoueIsEmptyA} from "./inlineTag";
+
+const restorePendingCodeFenceCaret = (blockElement: HTMLElement, range: Range) => {
+    blockElement.querySelectorAll("wbr").forEach((wbr) => {
+        wbr.remove();
+    });
+    const nextElement = blockElement.nextElementSibling;
+    if (nextElement?.tagName === "P" && nextElement.textContent.replace(Constants.ZWSP, "").trim() === "") {
+        nextElement.remove();
+    }
+    blockElement.childNodes.forEach((node) => {
+        if (node.nodeType === 3) {
+            node.nodeValue = node.nodeValue.replace(new RegExp(Constants.ZWSP, "g"), "");
+        }
+    });
+
+    if (!blockElement.lastChild || blockElement.lastChild.nodeType !== 3) {
+        blockElement.appendChild(document.createTextNode(""));
+    }
+    range.setStart(blockElement.lastChild, blockElement.lastChild.textContent.length);
+    range.collapse(true);
+    setSelectionFocus(range);
+};
 
 export const input = (vditor: IVditor, range: Range, event?: InputEvent) => {
     let blockElement = hasClosestBlock(range.startContainer);
@@ -16,6 +41,66 @@ export const input = (vditor: IVditor, range: Range, event?: InputEvent) => {
     if (!blockElement) {
         // 使用顶级块元素，应使用 innerHTML
         blockElement = vditor.wysiwyg.element;
+    }
+
+    if (blockElement &&
+        event?.inputType === "insertParagraph" &&
+        blockElement.tagName === "P" &&
+        blockElement.textContent.replace(Constants.ZWSP, "").trim() === "") {
+        let fenceElement = blockElement.previousElementSibling as HTMLElement;
+        let emptyElement: Element | null = null;
+        if (fenceElement?.tagName === "P" &&
+            fenceElement.textContent.replace(Constants.ZWSP, "").trim() === "" &&
+            fenceElement.previousElementSibling?.tagName === "P") {
+            emptyElement = fenceElement;
+            fenceElement = fenceElement.previousElementSibling as HTMLElement;
+        }
+        if (fenceElement?.tagName === "P" && isCodeFenceOpeningMD(fenceElement.textContent || "")) {
+            const codeBlockMarkdown = getCodeFenceOpeningBlockMD(fenceElement.textContent || "");
+            fenceElement.outerHTML = vditor.lute.SpinVditorDOM(codeBlockMarkdown);
+            emptyElement?.remove();
+            blockElement.remove();
+            setRangeByWbr(vditor.wysiwyg.element, range);
+            vditor.wysiwyg.element.querySelectorAll(".vditor-wysiwyg__preview[data-render='2']")
+                .forEach((item: HTMLElement) => {
+                    processCodeRender(item, vditor);
+                });
+            renderToc(vditor);
+            afterRenderEvent(vditor, {
+                enableAddUndoStack: true,
+                enableHint: true,
+                enableInput: true,
+            });
+            return;
+        }
+    }
+
+    if (blockElement &&
+        event?.inputType === "insertText" &&
+        blockElement.tagName === "P" &&
+        blockElement.textContent.replace(Constants.ZWSP, "").trim() !== "") {
+        const previousElement = blockElement.previousElementSibling as HTMLElement;
+        if (previousElement?.tagName === "P" && isCodeFenceOpeningMD(previousElement.textContent || "")) {
+            previousElement.textContent = previousElement.textContent.replace(Constants.ZWSP, "") +
+                blockElement.textContent.replace(Constants.ZWSP, "");
+            blockElement.remove();
+            if (typeof vditor.options.input === "function") {
+                vditor.options.input(getMarkdown(vditor));
+            }
+            restorePendingCodeFenceCaret(previousElement, range);
+            return;
+        }
+    }
+
+    if (blockElement &&
+        blockElement.getAttribute("data-type") !== "code-block" &&
+        event?.inputType !== "insertParagraph" &&
+        isCodeFenceOpeningMD(blockElement.textContent || "")) {
+        if (typeof vditor.options.input === "function") {
+            vditor.options.input(getMarkdown(vditor));
+        }
+        restorePendingCodeFenceCaret(blockElement, range);
+        return;
     }
 
     if (event && event.inputType !== "formatItalic"

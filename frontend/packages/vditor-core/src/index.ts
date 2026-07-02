@@ -21,6 +21,7 @@ import {setEditMode} from "./ts/toolbar/EditMode";
 import {Toolbar} from "./ts/toolbar/index";
 import {disableToolbar, hidePanel} from "./ts/toolbar/setToolbar";
 import {enableToolbar} from "./ts/toolbar/setToolbar";
+import {CommandBus} from "./ts/command";
 import {initUI, UIUnbindListener} from "./ts/ui/initUI";
 import {setCodeTheme} from "./ts/ui/setCodeTheme";
 import {setContentTheme} from "./ts/ui/setContentTheme";
@@ -209,7 +210,7 @@ class Vditor extends VditorMethod {
                 });
                 addScript(`${mergedOptions.cdn}/dist/js/i18n/${mergedOptions.lang}.js`, i18nScriptID).then(() => {
                     this.init(id as HTMLElement, mergedOptions);
-                }).catch(error => {
+                }).catch(() => {
                     this.showErrorTip(`GET ${mergedOptions.cdn}/dist/js/i18n/${mergedOptions.lang}.js net::ERR_ABORTED 404 (Not Found)`);
                 });
             }
@@ -268,6 +269,82 @@ class Vditor extends VditorMethod {
         return () => {
             this.transactionListeners.delete(listener);
         };
+    }
+
+    public registerCommand(command: IEditorCommand | IEditorCommand[]) {
+        if (!this.vditor?.commandBus) {
+            return;
+        }
+        this.vditor.commandBus.register(command);
+    }
+
+    public unregisterCommand(commandId: string) {
+        if (!this.vditor?.commandBus) {
+            return;
+        }
+        this.vditor.commandBus.unregister(commandId);
+    }
+
+    public resetCommands(commands: IEditorCommand[]) {
+        if (!this.vditor?.commandBus) {
+            return;
+        }
+        this.vditor.commandBus.reset(commands);
+    }
+
+    public getCommand(commandId: string) {
+        if (!this.vditor?.commandBus) {
+            return;
+        }
+        return this.vditor.commandBus.getById(commandId);
+    }
+
+    public getAllCommands() {
+        if (!this.vditor?.commandBus) {
+            return [];
+        }
+        return this.vditor.commandBus.getAll();
+    }
+
+    public executeCommand(
+        value: string,
+        commandId: string,
+        context?: IEditorCommandContext,
+    ) {
+        if (!this.vditor?.commandBus) {
+            return false;
+        }
+
+        const command = this.vditor.commandBus.getById(commandId);
+        if (!command) {
+            return false;
+        }
+        const executionContext = context || this.getDefaultCommandContext(command);
+        if (!executionContext) {
+            return false;
+        }
+
+        if (typeof this.vditor.options.onEditorCommandExecuted === "function") {
+            this.vditor.options.onEditorCommandExecuted(command || null, {
+                ...executionContext,
+                phase: "before",
+                value,
+                command: command || null,
+            });
+        }
+
+        const executed = this.vditor.commandBus.execute(value, command, this.vditor, executionContext);
+
+        if (executed && typeof this.vditor.options.onEditorCommandExecuted === "function") {
+            this.vditor.options.onEditorCommandExecuted(command || null, {
+                ...executionContext,
+                phase: "after",
+                value,
+                command: command || null,
+            });
+        }
+
+        return executed;
     }
 
     public getOutlineModel() {
@@ -532,6 +609,10 @@ class Vditor extends VditorMethod {
         if (iconScript) {
             iconScript.remove();
         }
+        if (this.vditor.selectionToolbar) {
+            this.vditor.selectionToolbar.destroy();
+            this.vditor.selectionToolbar = undefined;
+        }
         this.clearCache();
 
         UIUnbindListener();
@@ -643,14 +724,39 @@ class Vditor extends VditorMethod {
         });
     }
 
+    private getDefaultCommandContext(command: IEditorCommand | undefined | null): IEditorCommandContext | null {
+        const selection = window.getSelection();
+        if (!selection || !selection.rangeCount) {
+            return null;
+        }
+
+        const range = selection.getRangeAt(0);
+        const lineValue = range.startContainer.textContent.substring(0, range.startOffset) || "";
+        const splitChar = command?.trigger || "";
+        const lastIndex = splitChar ? lineValue.lastIndexOf(splitChar) : -1;
+        const keyword = lastIndex > -1
+            ? lineValue.substring(Math.max(0, lastIndex + splitChar.length))
+            : "";
+
+        return {
+            key: splitChar,
+            splitChar,
+            keyword,
+            lineValue,
+            range,
+        };
+    }
+
     private init(id: HTMLElement, mergedOptions: IOptions) {
         if (this.isDestroyed) {
             return;
         }
+        const commandBus = new CommandBus(mergedOptions.command);
         this.vditor = {
             currentMode: mergedOptions.mode,
             element: id,
-            hint: new Hint(mergedOptions.hint.extend),
+            commandBus,
+            hint: new Hint(mergedOptions.hint.extend, commandBus),
             lute: undefined,
             options: mergedOptions,
             originalInnerHTML: id.innerHTML,
@@ -734,3 +840,4 @@ class Vditor extends VditorMethod {
 }
 
 export default Vditor;
+export {memoSlashCommandDefinitions} from "./ts/command";

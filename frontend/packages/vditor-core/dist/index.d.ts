@@ -44,6 +44,12 @@ declare class Vditor extends VditorMethod {
     getCurrentMode(): "sv" | "wysiwyg" | "ir";
     setMode(mode: VditorMode): void;
     onTransaction(listener: VditorTransactionListener): () => void;
+    registerCommand(command: IEditorCommand | IEditorCommand[]): void;
+    unregisterCommand(commandId: string): void;
+    resetCommands(commands: IEditorCommand[]): void;
+    getCommand(commandId: string): IEditorCommand | undefined;
+    getAllCommands(): IEditorCommand[];
+    executeCommand(value: string, commandId: string, context?: IEditorCommandContext): boolean;
     getOutlineModel(): VditorOutlineEntry[];
     getSnapshot(): VditorDocumentSnapshot;
     /** 聚焦到编辑器 */
@@ -109,4 +115,5 @@ declare class Vditor extends VditorMethod {
     removeCommentIds(removeIds: string[]): void;
     private init;
 }
+export declare const memoSlashCommandDefinitions: IEditorCommand[];
 export default Vditor;

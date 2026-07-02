@@ -8,7 +8,7 @@ import {hasClosestBlock} from "../util/hasClosest";
 import {modifyPre} from "../wysiwyg/inlineTag";
 
 export class Emoji extends MenuItem {
-    public element: HTMLElement;
+    declare public element: HTMLElement;
 
     constructor(vditor: IVditor, menuItem: IMenuItem) {
         super(vditor, menuItem);

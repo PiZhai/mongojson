@@ -8,7 +8,7 @@ import {MenuItem} from "./MenuItem";
 import {hidePanel} from "./setToolbar";
 
 export class Headings extends MenuItem {
-    public element: HTMLElement;
+    declare public element: HTMLElement;
 
     constructor(vditor: IVditor, menuItem: IMenuItem) {
         super(vditor, menuItem);

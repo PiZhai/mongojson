@@ -610,12 +610,97 @@ interface IPreviewOptions {
 interface IHintData {
     html: string;
     value: string;
+    icon?: string;
+    keywords?: string[];
+    description?: string;
+    detail?: string;
+}
+
+interface ISelectionToolbarAction {
+    id?: string;
+    command: string;
+    label: string;
+    title?: string;
+    icon?: string;
+}
+
+interface ISelectionToolbarContext {
+    mode: "sv" | "wysiwyg" | "ir";
+    editorElement: HTMLPreElement;
+    selection: string;
+    range: Range;
+    action?: ISelectionToolbarAction;
+}
+
+interface ISelectionToolbarConfig {
+    enable?: boolean;
+    offset?: number;
+    actions?: ISelectionToolbarAction[];
+    canInvoke?: (context: ISelectionToolbarContext, vditor: IVditor, action: ISelectionToolbarAction) => boolean;
+    onAction?: (action: ISelectionToolbarAction, context: ISelectionToolbarContext, vditor: IVditor) => void;
+}
+
+interface ISelectionToolbar {
+    element: HTMLDivElement;
+    update(): void;
+    hide(): void;
+    destroy(): void;
+}
+
+interface IEditorCommandContext {
+    key: string;
+    splitChar: string;
+    keyword: string;
+    lineValue: string;
+    range: Range;
+}
+
+interface IHintActionContext extends IEditorCommandContext {
+    phase: "before" | "after";
+    value: string;
+    command?: IEditorCommand;
+}
+
+interface IEditorCommand {
+    id: string;
+    trigger: string;
+    keywords: string[];
+    value?: string;
+    icon?: string;
+    description?: string;
+    detail?: string;
+
+    matcher?(keyword: string, vditor: IVditor, context: IEditorCommandContext): boolean;
+    canInvoke?(context: IEditorCommandContext, vditor: IVditor): boolean;
+    visible?(context: IEditorCommandContext, vditor: IVditor): boolean;
+
+    execute?(value: string, vditor: IVditor, context: IEditorCommandContext): void | boolean;
+    onEnter?(vditor: IVditor, context: IEditorCommandContext, event: KeyboardEvent): boolean | void;
+    onBackspace?(vditor: IVditor, context: IEditorCommandContext, event: KeyboardEvent): boolean | void;
+    hint?: IHintData;
+}
+
+interface IEditorCommandBus {
+    register(command: IEditorCommand | IEditorCommand[]): void;
+    unregister(commandId: string): void;
+    reset(commands: IEditorCommand[]): void;
+    getAll(): IEditorCommand[];
+    getById(commandId: string): IEditorCommand | undefined;
+    resolve(context: IEditorCommandContext, vditor: IVditor): IEditorCommand[];
+    execute(
+        value: string,
+        command: IEditorCommand | null | undefined,
+        vditor: IVditor,
+        context: IEditorCommandContext,
+    ): boolean;
 }
 
 interface IHintExtend {
     key: string;
+    canInvoke?(context: IHintActionContext, vditor: IVditor): boolean;
 
-    hint?(value: string): IHintData[] | Promise<IHintData[]>;
+    hint?(value: string, vditor: IVditor, context?: IHintActionContext): IHintData[] | Promise<IHintData[]>;
+    onSelect?(value: string, vditor: IVditor, context?: IHintActionContext): void;
 }
 
 /** @link https://ld246.com/article/1549638745630#options-hint */
@@ -817,6 +902,18 @@ interface IOptions {
 
     /** 对 wysiwyg 模式下的工具栏进行自定义 */
     customWysiwygToolbar?(type: TWYSISYGToolbar, element: HTMLElement): void
+
+    /** 编辑器命令配置 */
+    command?: IEditorCommand[];
+
+    /** 文本选择态工具条 */
+    selectionToolbar?: ISelectionToolbarConfig;
+
+    /** 编辑器命令执行前后回调 */
+    onEditorCommandExecuted?(
+        command: IEditorCommand | null,
+        context: IHintActionContext,
+    ): void;
 }
 
 interface IEChart {
@@ -831,6 +928,7 @@ interface IVditor {
     originalInnerHTML: string;
     lute: Lute;
     currentMode: "sv" | "wysiwyg" | "ir";
+    commandBus?: IEditorCommandBus;
     devtools?: {
         element: HTMLDivElement,
         renderEchart(vditor: IVditor): void,
@@ -855,6 +953,7 @@ interface IVditor {
         element: HTMLElement
         render(vditor: IVditor, mdText?: string): void,
     };
+    selectionToolbar?: ISelectionToolbar;
     resize?: {
         element: HTMLElement,
     };

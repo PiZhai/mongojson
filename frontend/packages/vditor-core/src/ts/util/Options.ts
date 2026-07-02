@@ -42,6 +42,7 @@ export class Options {
             extend: [],
             parse: true,
         },
+        command: [],
         icon: "ant",
         lang: "zh_CN",
         mode: "ir",

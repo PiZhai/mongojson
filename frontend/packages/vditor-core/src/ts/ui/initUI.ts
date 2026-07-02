@@ -4,6 +4,7 @@ import {hidePanel} from "../toolbar/setToolbar";
 import {accessLocalStorage} from "../util/compatibility";
 import {setContentTheme} from "./setContentTheme";
 import {setTheme} from "./setTheme";
+import {SelectionToolbar} from "../selectionToolbar";
 
 export const initUI = (vditor: IVditor) => {
   vditor.element.innerHTML = "";
@@ -65,11 +66,13 @@ export const initUI = (vditor: IVditor) => {
   contentElement.appendChild(vditor.hint.element);
 
   contentElement.appendChild(vditor.tip.element);
+  vditor.selectionToolbar = new SelectionToolbar(vditor);
 
   vditor.element.appendChild(contentElement);
 
   contentElement.addEventListener("click", () => {
     hidePanel(vditor, ["subToolbar"]);
+    vditor.selectionToolbar?.hide();
   });
 
   if (vditor.toolbar.elements.export) {
@@ -85,7 +88,7 @@ export const initUI = (vditor: IVditor) => {
   if (navigator.userAgent.indexOf("iPhone") > -1 && typeof window.visualViewport !== "undefined") {
     // https://github.com/Vanessa219/vditor/issues/379
     let pendingUpdate = false;
-    const viewportHandler = (event: Event) => {
+    const viewportHandler = () => {
       if (pendingUpdate) {
         return;
       }
@@ -133,7 +136,7 @@ export const setTypewriterPosition = (vditor: IVditor) => {
   if (!vditor.options.typewriterMode) {
     return;
   }
-  let height: number = window.innerHeight;
+  let height: number;
   if (typeof vditor.options.height === "number") {
     height = vditor.options.height;
     if (typeof vditor.options.minHeight === "number") {

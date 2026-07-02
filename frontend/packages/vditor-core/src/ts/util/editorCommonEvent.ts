@@ -23,6 +23,7 @@ export const focusEvent = (vditor: IVditor, editorElement: HTMLElement) => {
             vditor.options.focus(getMarkdown(vditor));
         }
         hidePanel(vditor, ["subToolbar", "hint"]);
+        vditor.selectionToolbar?.hide();
     });
 };
 
@@ -49,6 +50,7 @@ export const blurEvent = (vditor: IVditor, editorElement: HTMLElement) => {
             !vditor.wysiwyg.selectPopover.contains(event.relatedTarget as HTMLElement)) {
             vditor.wysiwyg.hideComment();
         }
+        vditor.selectionToolbar?.hide();
         vditor[vditor.currentMode].range = getEditorRange(vditor);
         if (vditor.options.blur) {
             vditor.options.blur(getMarkdown(vditor));
@@ -165,6 +167,7 @@ export const hotkeyEvent = (vditor: IVditor, editorElement: HTMLElement) => {
 
         // esc
         if (event.key === "Escape") {
+            vditor.selectionToolbar?.hide();
             if (vditor.hint.element.style.display === "block") {
                 vditor.hint.element.style.display = "none";
             } else if (vditor.options.esc && !event.isComposing) {
@@ -250,12 +253,18 @@ export const selectEvent = (vditor: IVditor, editorElement: HTMLElement) => {
                     if (vditor.options.select) {
                         vditor.options.select(selectText);
                     }
+                    if (vditor.selectionToolbar) {
+                        vditor.selectionToolbar.update();
+                    }
                 } else {
                     if (vditor.currentMode === "wysiwyg" && vditor.options.comment.enable) {
                         vditor.wysiwyg.hideComment();
                     }
-                    if (typeof vditor.options.unSelect === 'function') {
+                    if (typeof vditor.options.unSelect === "function") {
                         vditor.options.unSelect();
+                    }
+                    if (vditor.selectionToolbar) {
+                        vditor.selectionToolbar.hide();
                     }
                 }
             });

@@ -5,7 +5,7 @@ import {MenuItem} from "./MenuItem";
 import {hidePanel, toggleSubMenu} from "./setToolbar";
 
 export class CodeTheme extends MenuItem {
-    public element: HTMLElement;
+    declare public element: HTMLElement;
 
     constructor(vditor: IVditor, menuItem: IMenuItem) {
         super(vditor, menuItem);

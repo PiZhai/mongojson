@@ -6,74 +6,127 @@ import {execAfterRender} from "../util/fixBrowserBehavior";
 import {hasClosestByAttribute, hasClosestByClassName} from "../util/hasClosest";
 import {processCodeRender} from "../util/processCode";
 import {getCursorPosition, insertHTML, setSelectionFocus} from "../util/selection";
+import {CommandBus} from "../command";
+
+interface IHintRenderItem {
+    command?: IEditorCommand;
+    hintData: IHintData;
+}
+
+type HintRenderInput = IHintRenderItem | IHintData;
+
+const escapeHTML = (value: string) => value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
 export class Hint {
     public timeId: number;
     public element: HTMLDivElement;
     public recentLanguage: string;
+    private hintExtends: IHintExtend[];
+    private commandBus: CommandBus;
     private splitChar = "";
     private lastIndex = -1;
+    private renderItems: IHintRenderItem[] = [];
+    private commandContext: IEditorCommandContext | null = null;
 
-    constructor(hintExtends: IHintExtend[]) {
+    constructor(hintExtends: IHintExtend[], commandsOrBus: IEditorCommand[] | CommandBus = []) {
         this.timeId = -1;
         this.element = document.createElement("div");
         this.element.className = "vditor-hint";
         this.recentLanguage = "";
-        hintExtends.push({key: ":"});
+        this.hintExtends = hintExtends.slice(0);
+        if (commandsOrBus instanceof CommandBus) {
+            this.commandBus = commandsOrBus;
+        } else {
+            this.commandBus = new CommandBus(commandsOrBus);
+        }
+        if (!this.hintExtends.find((item) => item.key === ":")) {
+            this.hintExtends.push({key: ":"});
+        }
     }
 
     public render(vditor: IVditor) {
         if (!window.getSelection().focusNode) {
             return;
         }
-        let currentLineValue: string;
         const range = getSelection().getRangeAt(0);
-        currentLineValue = range.startContainer.textContent.substring(0, range.startOffset) || "";
+        const currentLineValue = range.startContainer.textContent.substring(0, range.startOffset) || "";
 
-        const key = this.getKey(currentLineValue, vditor.options.hint.extend);
+        const key = this.getKey(currentLineValue, this.hintExtends);
+        this.commandContext = key === undefined ? null : this.getCommandContext(key, currentLineValue, range);
+        this.renderItems = [];
 
         if (typeof key === "undefined") {
             this.element.style.display = "none";
             clearTimeout(this.timeId);
-        } else {
-            if (this.splitChar === ":") {
-                const emojiHint = key === "" ? vditor.options.hint.emoji : vditor.lute.GetEmojis();
-                const matchEmojiData: IHintData[] = [];
-                Object.keys(emojiHint).forEach((keyName) => {
-                    if (keyName.indexOf(key.toLowerCase()) === 0) {
-                        if (emojiHint[keyName].indexOf(".") > -1) {
-                            matchEmojiData.push({
+            return;
+        }
+
+        if (this.splitChar === ":") {
+            const emojiHint = key === "" ? vditor.options.hint.emoji : vditor.lute.GetEmojis();
+            const matchEmojiData: IHintRenderItem[] = [];
+            Object.keys(emojiHint).forEach((keyName) => {
+                if (keyName.indexOf(key.toLowerCase()) === 0) {
+                    if (emojiHint[keyName].indexOf(".") > -1) {
+                        matchEmojiData.push({
+                            hintData: {
                                 html: `<img src="${emojiHint[keyName]}" title=":${keyName}:"/> :${keyName}:`,
                                 value: `:${keyName}:`,
-                            });
-                        } else {
-                            matchEmojiData.push({
+                            },
+                        });
+                    } else {
+                        matchEmojiData.push({
+                            hintData: {
                                 html: `<span class="vditor-hint__emoji">${emojiHint[keyName]}</span>${keyName}`,
                                 value: emojiHint[keyName],
-                            });
-                        }
+                            },
+                        });
                     }
-                });
-                this.genHTML(matchEmojiData, key, vditor);
-            } else {
-                vditor.options.hint.extend.forEach((item) => {
-                    if (item.key === this.splitChar) {
-                        clearTimeout(this.timeId);
-                        this.timeId = window.setTimeout(async () => {
-                            this.genHTML(await item.hint(key), key, vditor);
-                        }, vditor.options.hint.delay);
-                    }
-                });
-            }
+                }
+            });
+            this.genHTML(matchEmojiData, key, vditor);
+            return;
         }
+
+        this.hintExtends.forEach((item) => {
+            if (item.key === this.splitChar) {
+                clearTimeout(this.timeId);
+                this.timeId = window.setTimeout(async () => {
+                    const commandHintData = this.getCommandHintData(vditor, key, this.commandContext);
+                    if (commandHintData.length > 0) {
+                        this.genHTML(commandHintData, key, vditor);
+                        return;
+                    }
+
+                    const hintContext = this.createActionContext(key, undefined, this.commandContext);
+                    if (item.canInvoke && hintContext && !item.canInvoke(hintContext, vditor)) {
+                        this.element.style.display = "none";
+                        return;
+                    }
+
+                    const finalHintContext = hintContext || this.createActionContext(key, undefined, this.commandContext);
+                    const hintData = item.hint ? await item.hint(key, vditor, finalHintContext) : [];
+                    if (!hintData || hintData.length === 0) {
+                        this.element.style.display = "none";
+                        return;
+                    }
+                    this.genHTML(hintData.map((item) => ({hintData: item})), key, vditor);
+                }, vditor.options.hint.delay);
+            }
+        });
     }
 
-    public genHTML(data: IHintData[], key: string, vditor: IVditor) {
+    public genHTML(data: HintRenderInput[], key: string, vditor: IVditor) {
         if (data.length === 0) {
             this.element.style.display = "none";
             return;
         }
 
+        const renderItems = data.map((item) => this.normalizeRenderItem(item));
+        this.renderItems = renderItems;
         const editorElement = vditor[vditor.currentMode].element;
         const textareaPosition = getCursorPosition(editorElement);
         const x = textareaPosition.left +
@@ -81,10 +134,11 @@ export class Hint {
         const y = textareaPosition.top;
         let hintsHTML = "";
 
-        data.forEach((hintData, i) => {
+        renderItems.forEach((hintItem, i) => {
             if (i > 7) {
                 return;
             }
+            const hintData = hintItem.hintData;
             // process high light
             let html = hintData.html;
             if (key !== "") {
@@ -98,8 +152,8 @@ export class Hint {
                     html = html.substr(0, lastIndex) + replaceHtml;
                 }
             }
-            hintsHTML += `<button type="button" data-value="${encodeURIComponent(hintData.value)} "
-${i === 0 ? "class='vditor-hint--current'" : ""}> ${html}</button>`;
+            hintsHTML += `<button type="button" data-hint-index="${i}" data-value="${encodeURIComponent(hintData.value)}" ${
+                i === 0 ? "class='vditor-hint--current'" : ""}> ${html}</button>`;
         });
 
         this.element.innerHTML = hintsHTML;
@@ -128,12 +182,30 @@ ${i === 0 ? "class='vditor-hint--current'" : ""}> ${html}</button>`;
 
     public fillEmoji = (element: HTMLElement, vditor: IVditor) => {
         this.element.style.display = "none";
+        const selectedItem = this.getHintItemByIndex(element);
+        const value = decodeURIComponent(element.getAttribute("data-value") || selectedItem?.hintData.value || "");
+        const selection = window.getSelection();
+        if (!selection || !selection.rangeCount) {
+            return;
+        }
+        const command = selectedItem?.command;
+        const commandContext = this.getActiveCommandContext(selection.getRangeAt(0));
+        const range = commandContext.range.cloneRange();
+        const finalize = () => {
+            this.dispatchCommandExecuted(value, command ?? null, vditor, actionContext, "after");
+            this.dispatchOnSelect(value, vditor, actionContext ? {
+                ...actionContext,
+                phase: "after",
+            } : null);
+        };
 
-        const value = decodeURIComponent(element.getAttribute("data-value"));
-        const range: Range = window.getSelection().getRangeAt(0);
+        const actionContext = this.createActionContext(value, command, this.commandContext, "before");
+        this.dispatchOnSelect(value, vditor, actionContext);
+        this.dispatchCommandExecuted(value, command ?? null, vditor, actionContext, "before");
 
-        // 代码提示
-        if (vditor.currentMode === "ir") {
+        if (this.commandBus.execute(value, command, vditor, commandContext)) {
+            finalize();
+        } else {
             const preBeforeElement = hasClosestByAttribute(range.startContainer, "data-type", "code-block-info");
             if (preBeforeElement) {
                 preBeforeElement.textContent = Constants.ZWSP + value.trimRight();
@@ -145,73 +217,81 @@ ${i === 0 ? "class='vditor-hint--current'" : ""}> ${html}</button>`;
                 });
                 processCodeRender(preBeforeElement.parentElement.querySelector(".vditor-ir__preview"), vditor);
                 this.recentLanguage = value.trimRight();
-                return;
-            }
-        }
-        if (vditor.currentMode === "wysiwyg" && range.startContainer.nodeType !== 3 ) {
-            const startContainer = range.startContainer as HTMLElement;
-            let inputElement: HTMLInputElement;
-            if (startContainer.classList.contains("vditor-input")) {
-                inputElement = startContainer as HTMLInputElement;
+                finalize();
             } else {
-                inputElement = startContainer.firstElementChild as HTMLInputElement;
-            }
-            if (inputElement && inputElement.classList.contains("vditor-input")) {
-                inputElement.value = value.trimRight();
-                range.selectNodeContents(inputElement);
+                if (vditor.currentMode === "wysiwyg" && range.startContainer.nodeType !== 3) {
+                    const startContainer = range.startContainer as HTMLElement;
+                    let inputElement: HTMLInputElement;
+                    if (startContainer.classList.contains("vditor-input")) {
+                        inputElement = startContainer as HTMLInputElement;
+                    } else {
+                        inputElement = startContainer.firstElementChild as HTMLInputElement;
+                    }
+                    if (inputElement && inputElement.classList.contains("vditor-input")) {
+                        inputElement.value = value.trimRight();
+                        range.selectNodeContents(inputElement);
+                        range.collapse(false);
+                        // {detail: 1}用于标识这个自定义事件是在编程语言选择后触发的
+                        // 用于在鼠标选择语言后，自动聚焦到代码输入框
+                        inputElement.dispatchEvent(new CustomEvent("input", {detail: 1}));
+                        this.recentLanguage = value.trimRight();
+                        finalize();
+                        return;
+                    }
+                }
+
+                const triggerStartOffset = this.getTriggerStartOffset(commandContext);
+                if (triggerStartOffset < 0) {
+                    return;
+                }
+                range.setStart(range.startContainer, triggerStartOffset);
+                range.deleteContents();
+                if (vditor.options.hint.parse) {
+                    if (vditor.currentMode === "sv") {
+                        insertHTML(vditor.lute.SpinVditorSVDOM(value), vditor);
+                    } else if (vditor.currentMode === "wysiwyg") {
+                        insertHTML(vditor.lute.SpinVditorDOM(value), vditor);
+                    } else {
+                        insertHTML(vditor.lute.SpinVditorIRDOM(value), vditor);
+                    }
+                } else {
+                    insertHTML(value, vditor);
+                }
+                if (this.splitChar === ":" && value.indexOf(":") > -1 && vditor.currentMode !== "sv") {
+                    range.insertNode(document.createTextNode(" "));
+                }
                 range.collapse(false);
-                // {detail: 1}用于标识这个自定义事件是在编程语言选择后触发的
-                // 用于在鼠标选择语言后，自动聚焦到代码输入框
-                inputElement.dispatchEvent(new CustomEvent("input", {detail: 1}));
-                this.recentLanguage = value.trimRight();
-                return;
-            }
-        }
+                setSelectionFocus(range);
 
-        range.setStart(range.startContainer, this.lastIndex);
-        range.deleteContents();
-
-        if (vditor.options.hint.parse) {
-            if (vditor.currentMode === "sv") {
-                insertHTML(vditor.lute.SpinVditorSVDOM(value), vditor);
-            } else if (vditor.currentMode === "wysiwyg") {
-                insertHTML(vditor.lute.SpinVditorDOM(value), vditor);
-            } else {
-                insertHTML(vditor.lute.SpinVditorIRDOM(value), vditor);
+                if (vditor.currentMode === "wysiwyg") {
+                    const preElement = hasClosestByClassName(range.startContainer, "vditor-wysiwyg__block");
+                    if (preElement && preElement.lastElementChild.classList.contains("vditor-wysiwyg__preview")) {
+                        preElement.lastElementChild.innerHTML = preElement.firstElementChild.innerHTML;
+                        processCodeRender(preElement.lastElementChild as HTMLElement, vditor);
+                    }
+                } else if (vditor.currentMode === "ir") {
+                    const preElement = hasClosestByClassName(range.startContainer, "vditor-ir__marker--pre");
+                    if (preElement && preElement.nextElementSibling.classList.contains("vditor-ir__preview")) {
+                        preElement.nextElementSibling.innerHTML = preElement.innerHTML;
+                        processCodeRender(preElement.nextElementSibling as HTMLElement, vditor);
+                    }
+                }
+                execAfterRender(vditor);
             }
-        } else {
-            insertHTML(value, vditor);
+            finalize();
         }
-        if (this.splitChar === ":" && value.indexOf(":") > -1 && vditor.currentMode !== "sv") {
-            range.insertNode(document.createTextNode(" "));
-        }
-        range.collapse(false);
-        setSelectionFocus(range);
-
-        if (vditor.currentMode === "wysiwyg") {
-            const preElement = hasClosestByClassName(range.startContainer, "vditor-wysiwyg__block");
-            if (preElement && preElement.lastElementChild.classList.contains("vditor-wysiwyg__preview")) {
-                preElement.lastElementChild.innerHTML = preElement.firstElementChild.innerHTML;
-                processCodeRender(preElement.lastElementChild as HTMLElement, vditor);
-            }
-        } else if (vditor.currentMode === "ir") {
-            const preElement = hasClosestByClassName(range.startContainer, "vditor-ir__marker--pre");
-            if (preElement && preElement.nextElementSibling.classList.contains("vditor-ir__preview")) {
-                preElement.nextElementSibling.innerHTML = preElement.innerHTML;
-                processCodeRender(preElement.nextElementSibling as HTMLElement, vditor);
-            }
-        }
-        execAfterRender(vditor);
     }
 
     public select(event: KeyboardEvent, vditor: IVditor) {
-
         if (this.element.querySelectorAll("button").length === 0 ||
             this.element.style.display === "none") {
             return false;
         }
 
         const currentHintElement: HTMLElement = this.element.querySelector(".vditor-hint--current");
+        if (!currentHintElement) {
+            return false;
+        }
 
         if (event.key === "ArrowDown") {
             event.preventDefault();
@@ -272,5 +352,140 @@ ${i === 0 ? "class='vditor-hint--current'" : ""}> ${html}</button>`;
             }
         }
         return key;
+    }
+
+    private getCommandContext(keyword: string, currentLineValue: string, range: Range): IEditorCommandContext {
+        return {
+            key: this.splitChar,
+            splitChar: this.splitChar,
+            keyword,
+            lineValue: currentLineValue,
+            range: range.cloneRange(),
+        };
+    }
+
+    private getCommandContextBySelection(range: Range) {
+        const lineContainer = range.startContainer;
+        const currentLineValue = lineContainer.textContent.substring(0, range.startOffset) || "";
+        const keyword = this.getKey(currentLineValue, this.hintExtends);
+        return this.getCommandContext(keyword ?? "", currentLineValue, range);
+    }
+
+    private getActiveCommandContext(range: Range) {
+        if (this.commandContext) {
+            return {
+                ...this.commandContext,
+                range: this.commandContext.range.cloneRange(),
+            };
+        }
+        return this.getCommandContextBySelection(range);
+    }
+
+    private getTriggerStartOffset(context: IEditorCommandContext) {
+        return context.range.startOffset - context.key.length - context.keyword.length;
+    }
+
+    private getCommandHintData(
+        vditor: IVditor,
+        keyword: string,
+        context: IEditorCommandContext | null,
+    ) {
+        if (!context) {
+            return [];
+        }
+        if (!context.splitChar) {
+            return [];
+        }
+
+        const commandContext = {
+            ...context,
+            keyword,
+        };
+        const matchedCommands = this.commandBus.resolve(commandContext, vditor);
+
+        return matchedCommands.map((command) => ({
+            command,
+            hintData: {
+                html: command.hint?.html || this.getDefaultCommandHTML(command),
+                value: command.hint?.value || command.value || command.id,
+                icon: command.icon,
+                keywords: command.keywords,
+                description: command.description,
+                detail: command.detail,
+            },
+        }));
+    }
+
+    private getDefaultCommandHTML(command: IEditorCommand) {
+        const leftText = command.icon ? `<span class="memo-slash-command-icon">${escapeHTML(command.icon)}</span>` : "";
+        return `<span class="memo-slash-command">${leftText}<span class="memo-slash-command-text">` +
+            `<span class="memo-slash-command-category">${escapeHTML(command.detail || "")}</span>` +
+            `<span class="memo-slash-command-label">${escapeHTML(command.description || command.id)}</span>` +
+            `</span></span>`;
+    }
+
+    private createActionContext(
+        value: string,
+        command: IEditorCommand | undefined,
+        context: IEditorCommandContext | null,
+        phase: "before" | "after" = "before",
+    ): IHintActionContext | null {
+        if (!context) {
+            return null;
+        }
+
+        return {
+            phase,
+            value,
+            command,
+            splitChar: context.splitChar,
+            key: context.key,
+            keyword: context.keyword,
+            lineValue: context.lineValue,
+            range: context.range,
+        };
+    }
+
+    private dispatchOnSelect(value: string, vditor: IVditor, context: IHintActionContext | null) {
+        if (!context) {
+            return;
+        }
+        const hintItem = this.hintExtends.find((item) => item.key === this.splitChar);
+        hintItem?.onSelect?.(value, vditor, context);
+    }
+
+    private dispatchCommandExecuted(
+        value: string,
+        command: IEditorCommand | null,
+        vditor: IVditor,
+        context: IHintActionContext | null,
+        phase: "before" | "after" = "before",
+    ) {
+        if (!context || typeof vditor.options.onEditorCommandExecuted !== "function") {
+            return;
+        }
+        vditor.options.onEditorCommandExecuted(command, {
+            ...context,
+            phase,
+            value,
+            command,
+        });
+    }
+
+    private getHintItemByIndex(element: HTMLElement) {
+        const hintIndex = Number(element.getAttribute("data-hint-index"));
+        if (!Number.isFinite(hintIndex) || hintIndex < 0) {
+            return null;
+        }
+        return this.renderItems[hintIndex] || null;
+    }
+
+    private normalizeRenderItem(item: HintRenderInput): IHintRenderItem {
+        if ("hintData" in item) {
+            return item;
+        }
+        return {
+            hintData: item,
+        };
     }
 }

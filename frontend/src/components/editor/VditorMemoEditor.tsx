@@ -1,4 +1,4 @@
-import Vditor from '@mongojson/vditor-core'
+import Vditor, { memoSlashCommandDefinitions } from '@mongojson/vditor-core'
 import type { VditorMode, VditorOutlineEntry } from '@mongojson/vditor-core'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react'
 import { ensureTrailingNewlines, getTailClickLine } from '../../lib/memo/editorTail'
@@ -52,143 +52,10 @@ type MemoOutlineController = {
   dispose: () => void
   sync: () => void
 }
-type MemoSlashCommandController = {
-  dispose: () => void
-}
-type MemoSelectionToolbarController = {
-  dispose: () => void
-}
-type MemoSlashCommand = {
-  category: '基础' | '常用'
-  icon: string
-  keywords: string[]
-  label: string
-  value: string
-}
-type MemoSelectionAction = {
-  command: string
-  label: string
-  title: string
-}
-
 const MEMO_OUTLINE_ACTIVE_CLASS = 'memo-outline-item-active'
 const MEMO_OUTLINE_SCROLL_OFFSET = 72
 const MEMO_TAIL_SINGLE_CLICK_DELAY = 260
-const MEMO_SELECTION_TOOLBAR_OFFSET = 12
 const MEMO_ZERO_WIDTH_SPACE = '\u200b'
-
-const memoSlashCommands: MemoSlashCommand[] = [
-  {
-    category: '基础',
-    icon: 'T',
-    keywords: ['text', 'paragraph', 'wenben', 'duanluo'],
-    label: '文本',
-    value: '段落',
-  },
-  {
-    category: '基础',
-    icon: 'H1',
-    keywords: ['h1', 'heading1', 'title', 'biaoti', 'yiji'],
-    label: '一级标题',
-    value: '# 一级标题',
-  },
-  {
-    category: '基础',
-    icon: 'H2',
-    keywords: ['h2', 'heading2', 'title', 'biaoti', 'erji'],
-    label: '二级标题',
-    value: '## 二级标题',
-  },
-  {
-    category: '基础',
-    icon: 'H3',
-    keywords: ['h3', 'heading3', 'title', 'biaoti', 'sanji'],
-    label: '三级标题',
-    value: '### 三级标题',
-  },
-  {
-    category: '基础',
-    icon: 'H4',
-    keywords: ['h4', 'heading4', 'title', 'biaoti', 'siji'],
-    label: '四级标题',
-    value: '#### 四级标题',
-  },
-  {
-    category: '基础',
-    icon: '1.',
-    keywords: ['ordered', 'number', 'list', 'youxu', 'liebiao'],
-    label: '有序列表',
-    value: '1. 列表项',
-  },
-  {
-    category: '基础',
-    icon: '-',
-    keywords: ['bullet', 'unordered', 'list', 'wuxu', 'liebiao'],
-    label: '无序列表',
-    value: '- 列表项',
-  },
-  {
-    category: '基础',
-    icon: '{}',
-    keywords: ['code', 'block', 'daima'],
-    label: '代码块',
-    value: '```\n```',
-  },
-  {
-    category: '基础',
-    icon: '>',
-    keywords: ['quote', 'blockquote', 'yinyong'],
-    label: '引用',
-    value: '> 引用',
-  },
-  {
-    category: '基础',
-    icon: '--',
-    keywords: ['line', 'divider', 'hr', 'fengexian'],
-    label: '分割线',
-    value: '---',
-  },
-  {
-    category: '常用',
-    icon: '[ ]',
-    keywords: ['task', 'todo', 'check', 'renwu'],
-    label: '任务',
-    value: '- [ ] 任务',
-  },
-  {
-    category: '常用',
-    icon: 'url',
-    keywords: ['link', 'url', 'lianjie'],
-    label: '链接',
-    value: '[链接文本](https://)',
-  },
-  {
-    category: '常用',
-    icon: 'img',
-    keywords: ['image', 'photo', 'tupian'],
-    label: '图片',
-    value: '![图片描述]()',
-  },
-  {
-    category: '常用',
-    icon: 'tbl',
-    keywords: ['table', 'biaoge'],
-    label: '表格',
-    value: '| 列 A | 列 B |\n| --- | --- |\n| 内容 | 内容 |',
-  },
-]
-
-const memoSelectionActions: MemoSelectionAction[] = [
-  { command: 'bold', label: 'B', title: '粗体' },
-  { command: 'italic', label: 'I', title: '斜体' },
-  { command: 'strike', label: 'S', title: '删除线' },
-  { command: 'link', label: 'url', title: '链接' },
-  { command: 'inline-code', label: '</>', title: '行内代码' },
-  { command: 'list', label: '-', title: '无序列表' },
-  { command: 'ordered-list', label: '1.', title: '有序列表' },
-  { command: 'check', label: '[ ]', title: '任务' },
-  { command: 'quote', label: '>', title: '引用' },
-]
 
 const vditorCodeLanguageAliases = [
   'abc',
@@ -438,387 +305,17 @@ function getScrollElementForHeading(vditor: VditorRuntime, heading: HTMLElement)
   return activeEditor
 }
 
-function escapeHTML(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function renderSlashCommand(command: MemoSlashCommand) {
-  return [
-    '<span class="memo-slash-command">',
-    `<span class="memo-slash-command-icon">${escapeHTML(command.icon)}</span>`,
-    '<span class="memo-slash-command-text">',
-    `<span class="memo-slash-command-category">${escapeHTML(command.category)}</span>`,
-    `<span class="memo-slash-command-label">${escapeHTML(command.label)}</span>`,
-    '</span>',
-    '</span>',
-  ].join('')
-}
-
-function getMemoSlashCommands(keyword: string) {
-  const normalizedKeyword = keyword.trim().toLowerCase()
-  return normalizedKeyword
-    ? memoSlashCommands.filter((command) => {
-        const searchText = [
-          command.category,
-          command.label,
-          command.icon,
-          ...command.keywords,
-        ].join(' ').toLowerCase()
-        return searchText.includes(normalizedKeyword)
-      })
-    : memoSlashCommands
-}
-
-function getSelectionRangeInside(rootElement: HTMLElement) {
-  const selection = window.getSelection()
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null
-
-  const anchorNode = selection.anchorNode
-  const focusNode = selection.focusNode
-  if (!anchorNode || !focusNode) return null
-  if (!rootElement.contains(anchorNode) || !rootElement.contains(focusNode)) return null
-
-  return selection.getRangeAt(0).cloneRange()
-}
-
-function getRangeAnchorRect(range: Range) {
-  const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 || rect.height > 0)
-  if (rects.length > 0) return rects[0]
-
-  const rect = range.getBoundingClientRect()
-  return rect.width > 0 || rect.height > 0 ? rect : null
-}
-
-function restoreSelectionRange(range: Range) {
-  const selection = window.getSelection()
-  if (!selection) return
-
-  selection.removeAllRanges()
-  selection.addRange(range)
-}
-
-function getSlashTriggerInside(rootElement: HTMLElement) {
-  const selection = window.getSelection()
-  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return null
-
-  const range = selection.getRangeAt(0)
-  const startContainer = range.startContainer
-  if (!rootElement.contains(startContainer) || startContainer.nodeType !== Node.TEXT_NODE) return null
-
-  const currentLineValue = startContainer.textContent?.substring(0, range.startOffset) ?? ''
-  const slashIndex = currentLineValue.lastIndexOf('/')
-  if (slashIndex < 0) return null
-
-  const keyword = currentLineValue.slice(slashIndex + 1)
-  if (keyword.length > 32 || /\s/.test(keyword)) return null
-
-  const slashRange = range.cloneRange()
-  slashRange.setStart(startContainer, slashIndex)
-
-  return { keyword, range: slashRange }
-}
-
-function createMemoSlashCommandController(
-  editor: Vditor,
-  onCommandExecuted: () => void,
-): MemoSlashCommandController {
-  const rootElement = editor.vditor.element
-  const menuElement = document.createElement('div')
-  let activeIndex = 0
-  let currentCommands: MemoSlashCommand[] = []
-  let savedTriggerRange: Range | null = null
-  let updateRafId = 0
-
-  menuElement.className = 'memo-slash-menu'
-  menuElement.setAttribute('role', 'listbox')
-  menuElement.setAttribute('aria-label', '插入命令')
-  document.body.appendChild(menuElement)
-
-  const hideMenu = () => {
-    menuElement.classList.remove('memo-slash-menu-visible')
-    menuElement.replaceChildren()
-    currentCommands = []
-    savedTriggerRange = null
-    activeIndex = 0
-  }
-
-  const setActiveIndex = (nextIndex: number) => {
-    if (currentCommands.length === 0) return
-    activeIndex = (nextIndex + currentCommands.length) % currentCommands.length
-    Array.from(menuElement.querySelectorAll<HTMLElement>('.memo-slash-menu-item')).forEach((item, index) => {
-      item.classList.toggle('memo-slash-menu-item-active', index === activeIndex)
-      item.setAttribute('aria-selected', String(index === activeIndex))
-    })
-  }
-
-  const applyCommand = (command: MemoSlashCommand) => {
-    if (!savedTriggerRange) return
-
-    restoreSelectionRange(savedTriggerRange)
-    savedTriggerRange.deleteContents()
-    savedTriggerRange.collapse(false)
-    restoreSelectionRange(savedTriggerRange)
-    editor.insertMD(command.value)
-    onCommandExecuted()
-    hideMenu()
-  }
-
-  const renderMenu = (commands: MemoSlashCommand[]) => {
-    menuElement.replaceChildren()
-    commands.forEach((command, index) => {
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'memo-slash-menu-item'
-      button.setAttribute('role', 'option')
-      button.innerHTML = renderSlashCommand(command)
-      button.addEventListener('mousedown', (event) => {
-        event.preventDefault()
-      })
-      button.addEventListener('click', (event) => {
-        event.preventDefault()
-        event.stopPropagation()
-        applyCommand(command)
-      })
-      menuElement.appendChild(button)
-      if (index === activeIndex) {
-        button.classList.add('memo-slash-menu-item-active')
-        button.setAttribute('aria-selected', 'true')
-      } else {
-        button.setAttribute('aria-selected', 'false')
-      }
-    })
-  }
-
-  const updateMenu = () => {
-    updateRafId = 0
-    const trigger = getSlashTriggerInside(rootElement)
-    if (!trigger) {
-      hideMenu()
-      return
-    }
-
-    const commands = getMemoSlashCommands(trigger.keyword)
-    if (commands.length === 0) {
-      hideMenu()
-      return
-    }
-
-    savedTriggerRange = trigger.range
-    currentCommands = commands
-    activeIndex = Math.min(activeIndex, commands.length - 1)
-    renderMenu(commands)
-
-    const rect = getRangeAnchorRect(trigger.range)
-    const rootRect = rootElement.getBoundingClientRect()
-    const anchorLeft = rect?.left ?? rootRect.left + 24
-    const anchorBottom = rect?.bottom ?? rootRect.top + 48
-
-    menuElement.classList.add('memo-slash-menu-visible')
-    const menuRect = menuElement.getBoundingClientRect()
-    const left = Math.min(Math.max(8, anchorLeft), window.innerWidth - menuRect.width - 8)
-    const top = Math.min(anchorBottom + 8, window.innerHeight - menuRect.height - 8)
-
-    menuElement.style.left = `${left}px`
-    menuElement.style.top = `${Math.max(8, top)}px`
-  }
-
-  const scheduleMenuUpdate = () => {
-    if (updateRafId) return
-    updateRafId = window.requestAnimationFrame(updateMenu)
-  }
-
-  const handleKeyDown = (event: KeyboardEvent) => {
-    if (!menuElement.classList.contains('memo-slash-menu-visible')) return
-    if (!getSlashTriggerInside(rootElement)) {
-      hideMenu()
-      return
-    }
-
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      event.stopPropagation()
-      setActiveIndex(activeIndex + 1)
-      return
-    }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      event.stopPropagation()
-      setActiveIndex(activeIndex - 1)
-      return
-    }
-    if (event.key === 'Enter' && currentCommands[activeIndex]) {
-      event.preventDefault()
-      event.stopPropagation()
-      applyCommand(currentCommands[activeIndex])
-      return
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      hideMenu()
-    }
-  }
-
-  const handleDocumentMouseDown = (event: MouseEvent) => {
-    const target = event.target
-    if (!(target instanceof Node)) {
-      hideMenu()
-      return
-    }
-    if (menuElement.contains(target) || rootElement.contains(target)) return
-    hideMenu()
-  }
-
-  document.addEventListener('selectionchange', scheduleMenuUpdate)
-  document.addEventListener('mousedown', handleDocumentMouseDown, true)
-  rootElement.addEventListener('input', scheduleMenuUpdate, true)
-  rootElement.addEventListener('keyup', scheduleMenuUpdate, true)
-  rootElement.addEventListener('keydown', handleKeyDown, true)
-  window.addEventListener('scroll', scheduleMenuUpdate, true)
-  window.addEventListener('resize', scheduleMenuUpdate)
-
-  return {
-    dispose() {
-      document.removeEventListener('selectionchange', scheduleMenuUpdate)
-      document.removeEventListener('mousedown', handleDocumentMouseDown, true)
-      rootElement.removeEventListener('input', scheduleMenuUpdate, true)
-      rootElement.removeEventListener('keyup', scheduleMenuUpdate, true)
-      rootElement.removeEventListener('keydown', handleKeyDown, true)
-      window.removeEventListener('scroll', scheduleMenuUpdate, true)
-      window.removeEventListener('resize', scheduleMenuUpdate)
-      if (updateRafId) {
-        window.cancelAnimationFrame(updateRafId)
-      }
-      menuElement.remove()
-    },
-  }
-}
-
-function dispatchVditorToolbarCommand(editor: Vditor, command: string) {
-  const toolbarItem = editor.vditor.toolbar?.elements?.[command]
-  const commandElement = toolbarItem?.children[0]
-  if (!(commandElement instanceof HTMLElement)) return false
-
-  commandElement.dispatchEvent(new CustomEvent('click', { bubbles: true, cancelable: true }))
-  return true
-}
-
-function createMemoSelectionToolbarController(
-  editor: Vditor,
-  onCommandExecuted: () => void,
-): MemoSelectionToolbarController {
-  const rootElement = editor.vditor.element
-  const toolbarElement = document.createElement('div')
-  let savedRange: Range | null = null
-  let updateRafId = 0
-
-  toolbarElement.className = 'memo-selection-toolbar'
-  toolbarElement.setAttribute('role', 'toolbar')
-  toolbarElement.setAttribute('aria-label', '文本格式工具')
-
-  const hideToolbar = () => {
-    toolbarElement.classList.remove('memo-selection-toolbar-visible')
-    savedRange = null
-  }
-
-  memoSelectionActions.forEach((action) => {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'memo-selection-toolbar-button'
-    button.dataset.command = action.command
-    button.setAttribute('aria-label', action.title)
-    button.title = action.title
-    button.textContent = action.label
-    button.addEventListener('mousedown', (event) => {
-      event.preventDefault()
-    })
-    button.addEventListener('click', (event) => {
-      event.preventDefault()
-      event.stopPropagation()
-      if (!savedRange) return
-
-      restoreSelectionRange(savedRange)
-      if (dispatchVditorToolbarCommand(editor, action.command)) {
-        onCommandExecuted()
-      }
-      hideToolbar()
-    })
-    toolbarElement.appendChild(button)
-  })
-
-  document.body.appendChild(toolbarElement)
-
-  const updateToolbar = () => {
-    updateRafId = 0
-    const range = getSelectionRangeInside(rootElement)
-    if (!range) {
-      hideToolbar()
-      return
-    }
-
-    const rect = getRangeAnchorRect(range)
-    if (!rect) {
-      hideToolbar()
-      return
-    }
-
-    savedRange = range
-    toolbarElement.classList.add('memo-selection-toolbar-visible')
-
-    const toolbarRect = toolbarElement.getBoundingClientRect()
-    const left = Math.min(
-      Math.max(8, rect.left + rect.width / 2 - toolbarRect.width / 2),
-      window.innerWidth - toolbarRect.width - 8,
-    )
-    const top = rect.top - toolbarRect.height - MEMO_SELECTION_TOOLBAR_OFFSET
-    const fallbackTop = rect.bottom + MEMO_SELECTION_TOOLBAR_OFFSET
-
-    toolbarElement.style.left = `${left}px`
-    toolbarElement.style.top = `${Math.max(8, top > 8 ? top : fallbackTop)}px`
-  }
-
-  const scheduleToolbarUpdate = () => {
-    if (updateRafId) return
-    updateRafId = window.requestAnimationFrame(updateToolbar)
-  }
-
-  const handleDocumentMouseDown = (event: MouseEvent) => {
-    const target = event.target
-    if (!(target instanceof Node)) {
-      hideToolbar()
-      return
-    }
-    if (toolbarElement.contains(target) || rootElement.contains(target)) return
-    hideToolbar()
-  }
-
-  const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') hideToolbar()
-  }
-
-  document.addEventListener('selectionchange', scheduleToolbarUpdate)
-  document.addEventListener('mousedown', handleDocumentMouseDown, true)
-  document.addEventListener('keydown', handleKeyDown, true)
-  window.addEventListener('scroll', scheduleToolbarUpdate, true)
-  window.addEventListener('resize', scheduleToolbarUpdate)
-
-  return {
-    dispose() {
-      document.removeEventListener('selectionchange', scheduleToolbarUpdate)
-      document.removeEventListener('mousedown', handleDocumentMouseDown, true)
-      document.removeEventListener('keydown', handleKeyDown, true)
-      window.removeEventListener('scroll', scheduleToolbarUpdate, true)
-      window.removeEventListener('resize', scheduleToolbarUpdate)
-      if (updateRafId) {
-        window.cancelAnimationFrame(updateRafId)
-      }
-      toolbarElement.remove()
-    },
-  }
-}
+const memoSelectionToolbarActions = [
+  {command: 'bold', label: 'B', title: '粗体'},
+  {command: 'italic', label: 'I', title: '斜体'},
+  {command: 'strike', label: 'S', title: '删除线'},
+  {command: 'link', label: 'url', title: '链接'},
+  {command: 'inline-code', label: '</>', title: '行内代码'},
+  {command: 'list', label: '-', title: '无序列表'},
+  {command: 'ordered-list', label: '1.', title: '有序列表'},
+  {command: 'check', label: '[ ]', title: '任务'},
+  {command: 'quote', label: '>', title: '引用'},
+]
 
 function getSvLineTop(vditor: VditorRuntime, lineIndex: number) {
   const svElement = vditor.sv?.element
@@ -831,6 +328,14 @@ function getSvLineTop(vditor: VditorRuntime, lineIndex: number) {
 
 function getMemoOutlineTargetId(entry: VditorOutlineEntry, index: number) {
   return `memo-outline-${entry.line}-${index}-${entry.id}`
+}
+
+function escapeHTML(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 function buildMemoOutlineTree(outline: VditorOutlineEntry[]) {
@@ -1086,6 +591,7 @@ function createMemoOutlineController(editor: Vditor): MemoOutlineController {
   const handleRootClick = (event: MouseEvent) => {
     const target = event.target
     if (!(target instanceof HTMLElement)) return
+    if (isCodeFormatMenuTarget(target)) return
 
     const outlineElement = vditor.outline?.element
     const outlineAction = target.closest('.vditor-outline__action')
@@ -1164,6 +670,15 @@ function getLanguageLabel(language: string) {
   return language === 'plaintext' ? 'text' : language
 }
 
+function isCodeFormatMenuTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement && Boolean(target.closest('.memo-code-format-menu'))
+}
+
+function getCodeLanguageValue(value: string) {
+  const language = value.trim().toLowerCase()
+  return language === '' || language === 'text' ? 'plaintext' : language
+}
+
 function getAvailableCodeLanguages(currentLanguage: string) {
   const hljsLanguages = ((window as WindowWithHljs).hljs?.listLanguages?.() ?? []).filter(Boolean)
   const languages = new Set<string>([
@@ -1235,10 +750,15 @@ function renderCodeLanguageMenu(
   onLanguageChange: (blockIndex: number, language: string) => void,
 ) {
   const currentLanguage = getCodeLanguage(code)
+  const stopMenuEvent = (event: Event) => {
+    event.stopPropagation()
+  }
 
   const details = document.createElement('details')
   details.className = 'memo-code-format-menu'
-  details.onclick = (event) => event.stopPropagation()
+  details.onclick = stopMenuEvent
+  details.onkeydown = stopMenuEvent
+  details.onmousedown = stopMenuEvent
 
   const summary = document.createElement('summary')
   summary.className = 'memo-code-format-trigger'
@@ -1246,14 +766,56 @@ function renderCodeLanguageMenu(
   summary.textContent = getLanguageLabel(currentLanguage)
   details.appendChild(summary)
 
+  const panel = document.createElement('div')
+  panel.className = 'memo-code-format-panel'
+  panel.onmousedown = stopMenuEvent
+  panel.onclick = stopMenuEvent
+  details.appendChild(panel)
+
+  const searchInput = document.createElement('input')
+  searchInput.className = 'memo-code-format-search'
+  searchInput.type = 'text'
+  searchInput.autocomplete = 'off'
+  searchInput.spellcheck = false
+  searchInput.setAttribute('aria-label', '搜索或输入代码块格式')
+  searchInput.placeholder = '搜索或输入格式'
+  searchInput.value = currentLanguage === 'plaintext' ? '' : currentLanguage
+  searchInput.addEventListener('beforeinput', stopMenuEvent)
+  searchInput.addEventListener('compositionstart', stopMenuEvent)
+  searchInput.addEventListener('compositionend', stopMenuEvent)
+  searchInput.addEventListener('focus', stopMenuEvent)
+  searchInput.addEventListener('focusin', stopMenuEvent)
+  searchInput.addEventListener('keyup', stopMenuEvent)
+  searchInput.addEventListener('paste', stopMenuEvent)
+  panel.appendChild(searchInput)
+
   const list = document.createElement('div')
   list.className = 'memo-code-format-list'
   list.setAttribute('role', 'listbox')
-  details.appendChild(list)
+  panel.appendChild(list)
 
   const renderOptions = () => {
     list.replaceChildren()
-    getAvailableCodeLanguages(getCodeLanguage(code)).forEach((language) => {
+    const searchValue = searchInput.value.trim().toLowerCase()
+    const availableLanguages = getAvailableCodeLanguages(getCodeLanguage(code))
+    const filteredLanguages = availableLanguages.filter((language) => {
+      if (!searchValue) return true
+      return language.includes(searchValue) || getLanguageLabel(language).includes(searchValue)
+    })
+    const typedLanguage = getCodeLanguageValue(searchInput.value)
+    const visibleLanguages = typedLanguage && !filteredLanguages.includes(typedLanguage)
+      ? [typedLanguage, ...filteredLanguages]
+      : filteredLanguages
+
+    if (visibleLanguages.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'memo-code-format-empty'
+      empty.textContent = '回车使用当前输入'
+      list.appendChild(empty)
+      return
+    }
+
+    visibleLanguages.forEach((language) => {
       const item = document.createElement('button')
       item.className = `memo-code-format-option${language === currentLanguage ? ' memo-code-format-option-active' : ''}`
       item.setAttribute('role', 'option')
@@ -1263,18 +825,60 @@ function renderCodeLanguageMenu(
       item.onclick = (event) => {
         event.preventDefault()
         event.stopPropagation()
-        const blockIndex = getRenderedCodeBlockIndex(code)
-        if (blockIndex >= 0) {
-          onLanguageChange(blockIndex, language)
-        }
+        applyLanguage(language)
         details.open = false
       }
       list.appendChild(item)
     })
   }
 
-  summary.onclick = () => {
+  const applyLanguage = (language: string) => {
+    const blockIndex = getRenderedCodeBlockIndex(code)
+    if (blockIndex >= 0) {
+      onLanguageChange(blockIndex, language)
+    }
+  }
+
+  details.ontoggle = () => {
+    menuElement.classList.toggle('memo-code-format-menu-active', details.open)
+    if (!details.open) return
+    searchInput.value = currentLanguage === 'plaintext' ? '' : currentLanguage
     renderOptions()
+    window.requestAnimationFrame(() => {
+      searchInput.focus()
+      searchInput.select()
+    })
+  }
+
+  searchInput.oninput = (event) => {
+    event.stopPropagation()
+    renderOptions()
+  }
+  searchInput.onkeydown = (event) => {
+    event.stopPropagation()
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const currentOption = list.querySelector<HTMLButtonElement>('.memo-code-format-option')
+      const nextLanguage = currentOption?.textContent
+        ? getCodeLanguageValue(currentOption.textContent)
+        : getCodeLanguageValue(searchInput.value)
+      applyLanguage(nextLanguage)
+      details.open = false
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      details.open = false
+      summary.focus()
+      return
+    }
+    if (event.key === 'ArrowDown') {
+      const currentOption = list.querySelector<HTMLButtonElement>('.memo-code-format-option')
+      if (currentOption) {
+        event.preventDefault()
+        currentOption.focus()
+      }
+    }
   }
 
   const separator = document.createElement('i')
@@ -1309,8 +913,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
     const outlineControllerRef = useRef<MemoOutlineController | null>(null)
     const outlineSyncTimerRef = useRef<number | null>(null)
     const pendingValueRef = useRef<string | null>(null)
-    const selectionToolbarControllerRef = useRef<MemoSelectionToolbarController | null>(null)
-    const slashCommandControllerRef = useRef<MemoSlashCommandController | null>(null)
     const suppressInputRef = useRef(false)
     const tailClickTimerRef = useRef<number | null>(null)
     const themeRef = useRef(theme)
@@ -1334,16 +936,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       }
     }, [])
 
-    const disposeSelectionToolbarController = useCallback(() => {
-      selectionToolbarControllerRef.current?.dispose()
-      selectionToolbarControllerRef.current = null
-    }, [])
-
-    const disposeSlashCommandController = useCallback(() => {
-      slashCommandControllerRef.current?.dispose()
-      slashCommandControllerRef.current = null
-    }, [])
-
     const syncOutlineController = useCallback(() => {
       const editor = editorRef.current
       if (!editor || !isReadyRef.current) return
@@ -1364,7 +956,14 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       }, 0)
     }, [syncOutlineController])
 
-    const handleSelectionToolbarCommand = useCallback(() => {
+    const handleEditorCommandExecuted = useCallback((
+      _command: unknown,
+      context: { phase?: "before" | "after" },
+    ) => {
+      if (!isReadyRef.current || context.phase !== "after") {
+        return
+      }
+
       window.setTimeout(() => {
         const editor = editorRef.current
         if (!editor || !isReadyRef.current) return
@@ -1442,6 +1041,7 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         tailRootElement = runtime.element
         handleTailClick = (event: MouseEvent) => {
           if (!editor || editorRef.current !== editor || !isReadyRef.current) return
+          if (isCodeFormatMenuTarget(event.target)) return
           if (event.detail > 1) {
             clearTailClickTimer()
             return
@@ -1461,6 +1061,7 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         }
         handleTailDoubleClick = (event: MouseEvent) => {
           if (!editor || editorRef.current !== editor || !isReadyRef.current) return
+          if (isCodeFormatMenuTarget(event.target)) return
 
           const targetLine = getEditorTailClickLine(editor.vditor, event)
           if (!targetLine) return
@@ -1485,18 +1086,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
           after: () => {
             if (disposed || !editor) return
             isReadyRef.current = true
-            if (!slashCommandControllerRef.current) {
-              slashCommandControllerRef.current = createMemoSlashCommandController(
-                editor,
-                handleSelectionToolbarCommand,
-              )
-            }
-            if (!selectionToolbarControllerRef.current) {
-              selectionToolbarControllerRef.current = createMemoSelectionToolbarController(
-                editor,
-                handleSelectionToolbarCommand,
-              )
-            }
             if (!unsubscribeTransaction) {
               unsubscribeTransaction = editor.onTransaction((transaction) => {
                 valueRef.current = transaction.markdown
@@ -1527,12 +1116,20 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
             enable: true,
             position: 'left',
           },
+          command: memoSlashCommandDefinitions,
           placeholder,
           theme: themeRef.current,
+          hint: {
+            extend: [{key: '/'}],
+          },
           toolbarConfig: {
             hide: true,
             pin: false,
           },
+          selectionToolbar: {
+            actions: memoSelectionToolbarActions,
+          },
+          onEditorCommandExecuted: handleEditorCommandExecuted,
           preview: {
             theme: {
               current: contentThemeRef.current,
@@ -1579,8 +1176,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         }
         isReadyRef.current = false
         pendingValueRef.current = null
-        disposeSlashCommandController()
-        disposeSelectionToolbarController()
         disposeOutlineController()
         unsubscribeTransaction?.()
         if (editor) {
@@ -1597,10 +1192,8 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       clearTailClickTimer,
       continueFromEditorTail,
       disposeOutlineController,
-      disposeSelectionToolbarController,
-      disposeSlashCommandController,
       handleCodeLanguageChange,
-      handleSelectionToolbarCommand,
+      handleEditorCommandExecuted,
       placeholder,
       scheduleOutlineSync,
     ])
@@ -1638,11 +1231,9 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
 
     useEffect(() => {
       return () => {
-        disposeSlashCommandController()
-        disposeSelectionToolbarController()
         disposeOutlineController()
       }
-    }, [disposeOutlineController, disposeSelectionToolbarController, disposeSlashCommandController])
+    }, [disposeOutlineController])
 
     useImperativeHandle(ref, () => ({
       focus() {

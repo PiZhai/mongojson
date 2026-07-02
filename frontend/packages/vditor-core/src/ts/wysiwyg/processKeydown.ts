@@ -2,7 +2,8 @@ import {Constants} from "../constants";
 import {isCtrl, isFirefox} from "../util/compatibility";
 import {scrollCenter} from "../util/editorCommonEvent";
 import {
-    fixBlockquote, fixCJKPosition,
+    continueCodeFenceOpeningLanguage,
+    fixBlockquote, fixCJKPosition, fixCodeFenceOpeningFromTrailingParagraph,
     fixCodeBlock, fixCursorDownInlineMath, fixDelete, fixFirefoxArrowUpTable, fixGSKeyBackspace, fixHR,
     fixList,
     fixMarkdown,
@@ -26,6 +27,71 @@ import {nextIsCode} from "./inlineTag";
 import {removeHeading, setHeading} from "./setHeading";
 import {showCode} from "./showCode";
 
+const getBlockCommandIdByRange = (range: Range): string | undefined => {
+    if (hasClosestByMatchTag(range.startContainer, "TD") ||
+        hasClosestByMatchTag(range.startContainer, "TH")) {
+        return "table";
+    }
+
+    if (hasClosestByMatchTag(range.startContainer, "BLOCKQUOTE")) {
+        return "quote";
+    }
+
+    const listElement = hasClosestByMatchTag(range.startContainer, "LI");
+    if (!listElement) {
+        return;
+    }
+
+    if (listElement.classList.contains("vditor-task")) {
+        return "todo";
+    }
+
+    if (listElement.parentElement?.tagName === "OL") {
+        return "ordered-list";
+    }
+
+    if (listElement.parentElement?.tagName === "UL") {
+        return "bullet-list";
+    }
+
+    return "bullet-list";
+};
+
+const dispatchBlockCommandBehavior = (vditor: IVditor, range: Range, event: KeyboardEvent): boolean => {
+    if (event.key !== "Enter" && event.key !== "Backspace") {
+        return false;
+    }
+
+    const commandId = getBlockCommandIdByRange(range);
+    if (!commandId || !vditor.commandBus) {
+        return false;
+    }
+
+    const command = vditor.commandBus.getById(commandId);
+    if (!command) {
+        return false;
+    }
+
+    const commandContext: IEditorCommandContext = {
+        key: "",
+        splitChar: "",
+        keyword: "",
+        lineValue: range.startContainer.textContent.substring(0, range.startOffset) || "",
+        range,
+    };
+
+    const handler = event.key === "Enter" ? command.onEnter : command.onBackspace;
+    if (typeof handler !== "function") {
+        return false;
+    }
+
+    const handled = handler(vditor, commandContext, event);
+    if (handled === undefined) {
+        return false;
+    }
+    return handled;
+};
+
 export const processKeydown = (vditor: IVditor, event: KeyboardEvent) => {
     // Chrome firefox 触发 compositionend 机制不一致 https://github.com/Vanessa219/vditor/issues/188
     vditor.wysiwyg.composingLock = event.isComposing;
@@ -41,6 +107,9 @@ export const processKeydown = (vditor: IVditor, event: KeyboardEvent) => {
 
     const range = getEditorRange(vditor);
     const startContainer = range.startContainer;
+    if (!vditor.wysiwyg.element.contains(startContainer)) {
+        return false;
+    }
 
     if (!fixGSKeyBackspace(event, vditor, startContainer)) {
         return false;
@@ -50,6 +119,11 @@ export const processKeydown = (vditor: IVditor, event: KeyboardEvent) => {
 
     fixHR(range);
 
+    const pElement = hasClosestByMatchTag(startContainer, "P");
+    if (continueCodeFenceOpeningLanguage(event, pElement, range)) {
+        return true;
+    }
+
     // 仅处理以下快捷键操作
     if (event.key !== "Enter" && event.key !== "Tab" && event.key !== "Backspace" && event.key.indexOf("Arrow") === -1
         && !isCtrl(event) && event.key !== "Escape" && event.key !== "Delete") {
@@ -57,10 +131,16 @@ export const processKeydown = (vditor: IVditor, event: KeyboardEvent) => {
     }
 
     const blockElement = hasClosestBlock(startContainer);
-    const pElement = hasClosestByMatchTag(startContainer, "P");
 
     // md 处理
+    if (fixCodeFenceOpeningFromTrailingParagraph(event, vditor, pElement, range)) {
+        return true;
+    }
     if (fixMarkdown(event, vditor, pElement, range)) {
+        return true;
+    }
+
+    if (dispatchBlockCommandBehavior(vditor, range, event)) {
         return true;
     }
 

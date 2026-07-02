@@ -553,6 +553,83 @@ export const fixTab = (vditor: IVditor, range: Range, event: KeyboardEvent) => {
     }
 };
 
+export const isCodeFenceOpeningMD = (text: string) => {
+    const normalizedText = text.replace(Constants.ZWSP, "").trim();
+    return /^(`{3,}|~{3,})([^`~\n]*)$/.test(normalizedText);
+};
+
+export const getCodeFenceOpeningBlockMD = (text: string) => {
+    const normalizedText = text.replace(Constants.ZWSP, "").trim();
+    const fenceMarker = normalizedText.match(/^(`{3,}|~{3,})/)[0];
+    return `${normalizedText}\n<wbr>\n${fenceMarker}`;
+};
+
+const getPreviousCodeFenceOpeningElement = (pElement: HTMLElement | false) => {
+    if (!pElement ||
+        pElement.tagName !== "P" ||
+        pElement.textContent.replace(Constants.ZWSP, "").trim() !== "") {
+        return false;
+    }
+
+    const previousElement = pElement.previousElementSibling as HTMLElement;
+    if (previousElement?.tagName === "P" && isCodeFenceOpeningMD(previousElement.textContent || "")) {
+        return previousElement;
+    }
+    return false;
+};
+
+export const continueCodeFenceOpeningLanguage = (
+    event: KeyboardEvent,
+    pElement: HTMLElement | false,
+    range: Range,
+) => {
+    if (isCtrl(event) || event.altKey || event.key.length !== 1) {
+        return false;
+    }
+
+    const previousElement = getPreviousCodeFenceOpeningElement(pElement);
+    if (!previousElement) {
+        return false;
+    }
+
+    previousElement.textContent = previousElement.textContent.replace(Constants.ZWSP, "") + event.key;
+    pElement.remove();
+    range.selectNodeContents(previousElement);
+    range.collapse(false);
+    setSelectionFocus(range);
+    event.preventDefault();
+    return true;
+};
+
+export const fixCodeFenceOpeningFromTrailingParagraph = (
+    event: KeyboardEvent,
+    vditor: IVditor,
+    pElement: HTMLElement | false,
+    range: Range,
+) => {
+    if (isCtrl(event) || event.altKey || event.key !== "Enter") {
+        return false;
+    }
+
+    const previousElement = getPreviousCodeFenceOpeningElement(pElement);
+    if (!previousElement) {
+        return false;
+    }
+
+    const codeBlockMarkdown = getCodeFenceOpeningBlockMD(previousElement.textContent || "");
+    if (vditor.currentMode === "wysiwyg") {
+        previousElement.outerHTML = vditor.lute.SpinVditorDOM(codeBlockMarkdown);
+    } else {
+        previousElement.outerHTML = vditor.lute.SpinVditorIRDOM(codeBlockMarkdown);
+    }
+    pElement.remove();
+    setRangeByWbr(vditor[vditor.currentMode].element, range);
+    execAfterRender(vditor);
+    scrollCenter(vditor);
+    event.preventDefault();
+    return true;
+};
+
 export const fixMarkdown = (event: KeyboardEvent, vditor: IVditor, pElement: HTMLElement | false, range: Range) => {
     if (!pElement) {
         return;
@@ -599,6 +676,20 @@ export const fixMarkdown = (event: KeyboardEvent, vditor: IVditor, pElement: HTM
                 pElement.outerHTML = vditor.lute.SpinVditorDOM(pElement.innerHTML + '<p data-block="0"><wbr>\n</p>');
             } else {
                 pElement.outerHTML = vditor.lute.SpinVditorIRDOM(pElement.innerHTML + '<p data-block="0"><wbr>\n</p>');
+            }
+            setRangeByWbr(vditor[vditor.currentMode].element, range);
+            execAfterRender(vditor);
+            scrollCenter(vditor);
+            event.preventDefault();
+            return true;
+        }
+
+        if (isCodeFenceOpeningMD(pText)) {
+            const codeBlockMarkdown = getCodeFenceOpeningBlockMD(pText);
+            if (vditor.currentMode === "wysiwyg") {
+                pElement.outerHTML = vditor.lute.SpinVditorDOM(codeBlockMarkdown);
+            } else {
+                pElement.outerHTML = vditor.lute.SpinVditorIRDOM(codeBlockMarkdown);
             }
             setRangeByWbr(vditor[vditor.currentMode].element, range);
             execAfterRender(vditor);
