@@ -48,6 +48,19 @@
     }
 
     &--expand {
+      &[data-type="code-block"] {
+        > span[data-type="code-block-open-marker"],
+        > span[data-type="code-block-close-marker"],
+        > .vditor-ir__marker--info,
+        > .vditor-ir__preview {
+          display: none !important;
+        }
+
+        > .vditor-ir__marker--pre {
+          display: block !important;
+        }
+      }
+
       .vditor-ir__marker {
         color: var(--second-color);
         display: inline;

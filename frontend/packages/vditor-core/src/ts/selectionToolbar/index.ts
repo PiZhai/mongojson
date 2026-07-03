@@ -30,7 +30,7 @@ export class SelectionToolbar {
         this.isEnabled = options?.enable !== false && this.actions.length > 0;
 
         this.element = document.createElement("div");
-        this.element.className = "memo-selection-toolbar";
+        this.element.className = "vditor-selection-toolbar";
         this.element.setAttribute("role", "toolbar");
         this.element.setAttribute("aria-label", "文本选择工具栏");
         this.element.style.visibility = "hidden";
@@ -54,7 +54,7 @@ export class SelectionToolbar {
     };
 
     public hide = () => {
-        this.element.classList.remove("memo-selection-toolbar-visible");
+        this.element.classList.remove("vditor-selection-toolbar--visible");
         this.element.style.visibility = "hidden";
         this.element.style.display = "none";
         this.element.replaceChildren();
@@ -186,9 +186,9 @@ export class SelectionToolbar {
         actions.forEach((action) => {
             const button = document.createElement("button");
             button.type = "button";
-            button.className = "memo-selection-toolbar-button";
+            button.className = "vditor-selection-toolbar__button";
             button.setAttribute("aria-label", action.title || action.label);
-            button.textContent = action.label;
+            button.textContent = action.icon || action.label;
             button.setAttribute("title", action.title || action.label);
 
             button.addEventListener("mousedown", (event) => {
@@ -212,7 +212,7 @@ export class SelectionToolbar {
 
         this.element.style.display = "inline-flex";
         this.element.style.visibility = "visible";
-        this.element.classList.add("memo-selection-toolbar-visible");
+        this.element.classList.add("vditor-selection-toolbar--visible");
     }
 
     private position(context: ISelectionToolbarContext) {
@@ -283,6 +283,7 @@ export class SelectionToolbar {
             cancelable: true,
         }));
         this.dispatchCommandExecution(context, runtimeContext, "after");
+        this.vditor.emitTransaction?.("command", {commandId: action.command});
         this.hide();
         this.update();
     }

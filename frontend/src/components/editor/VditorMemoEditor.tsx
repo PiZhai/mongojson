@@ -1,4 +1,4 @@
-import Vditor, { memoSlashCommandDefinitions } from '@mongojson/vditor-core'
+import Vditor, { markdownSlashCommandDefinitions } from '@mongojson/vditor-core'
 import type { VditorMode } from '@mongojson/vditor-core'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react'
 
@@ -19,6 +19,7 @@ type VditorMemoEditorProps = {
   codeTheme?: VditorMemoCodeTheme
   contentTheme?: VditorMemoContentTheme
   documentRevision?: string
+  fallbackHTML?: string
   initialValue: string
   mode?: VditorMemoMode
   onChange: (value: string) => void
@@ -62,6 +63,7 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
     codeTheme = 'github',
     contentTheme = 'light',
     documentRevision = '',
+    fallbackHTML = '',
     initialValue,
     mode = 'ir',
     onChange,
@@ -76,53 +78,22 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
     const isReadyRef = useRef(false)
     const onChangeRef = useRef(onChange)
     const onUploadRef = useRef(onUpload)
-    const outlineSyncTimerRef = useRef<number | null>(null)
     const pendingValueRef = useRef<string | null>(null)
     const suppressInputRef = useRef(false)
     const themeRef = useRef(theme)
     const initialValueRef = useRef(initialValue)
     const initialModeRef = useRef<VditorMode>(mode)
     const valueRef = useRef(initialValue)
+    const fallbackHTMLRef = useRef(fallbackHTML)
+    const convertedFallbackHTMLRef = useRef('')
 
     codeThemeRef.current = codeTheme
     contentThemeRef.current = contentTheme
+    fallbackHTMLRef.current = fallbackHTML
     initialValueRef.current = initialValue
     onChangeRef.current = onChange
     onUploadRef.current = onUpload
     themeRef.current = theme
-
-    const scheduleOutlineSync = useCallback(() => {
-      if (outlineSyncTimerRef.current) {
-        window.clearTimeout(outlineSyncTimerRef.current)
-      }
-      outlineSyncTimerRef.current = window.setTimeout(() => {
-        outlineSyncTimerRef.current = null
-        const editor = editorRef.current
-        if (!editor || !isReadyRef.current) return
-        editor.vditor.outline?.render(editor.vditor)
-      }, 0)
-    }, [])
-
-    const handleEditorCommandExecuted = useCallback((
-      _command: unknown,
-      context: { phase?: "before" | "after" },
-    ) => {
-      if (!isReadyRef.current || context.phase !== "after") {
-        return
-      }
-
-      window.setTimeout(() => {
-        const editor = editorRef.current
-        if (!editor || !isReadyRef.current) return
-
-        const nextValue = getEditorMarkdown(editor)
-        if (nextValue !== valueRef.current) {
-          valueRef.current = nextValue
-          onChangeRef.current(nextValue)
-        }
-        scheduleOutlineSync()
-      }, 0)
-    }, [scheduleOutlineSync])
 
     const applyEditorValue = useCallback((editor: Vditor, nextValue: string) => {
       suppressInputRef.current = true
@@ -130,8 +101,16 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       window.setTimeout(() => {
         suppressInputRef.current = false
       }, 0)
-      scheduleOutlineSync()
-    }, [scheduleOutlineSync])
+    }, [])
+
+    const getPendingFallbackMarkdown = useCallback((editor: Vditor) => {
+      const html = fallbackHTMLRef.current.trim()
+      if (!html || valueRef.current.trim().length > 0 || convertedFallbackHTMLRef.current === html) {
+        return null
+      }
+      convertedFallbackHTMLRef.current = html
+      return editor.html2md(html)
+    }, [])
 
     useEffect(() => {
       if (!hostRef.current || editorRef.current) return
@@ -152,25 +131,30 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
             isReadyRef.current = true
             if (!unsubscribeTransaction) {
               unsubscribeTransaction = editor.onTransaction((transaction) => {
+                const previousValue = valueRef.current
                 valueRef.current = transaction.markdown
                 if (suppressInputRef.current) return
-                if (transaction.source === 'input') {
+                if (transaction.source === 'input' || transaction.source === 'command' || transaction.source === 'insert-value') {
+                  if (transaction.markdown === previousValue) return
                   onChangeRef.current(transaction.markdown)
-                  scheduleOutlineSync()
                 }
               })
             }
             const pendingValue = pendingValueRef.current
-            const nextValue = pendingValue ?? valueRef.current
+            const fallbackMarkdown = getPendingFallbackMarkdown(editor)
+            const nextValue = fallbackMarkdown ?? pendingValue ?? valueRef.current
 
             pendingValueRef.current = null
             window.requestAnimationFrame(() => {
               if (disposed || editorRef.current !== editor || !isReadyRef.current || !editor) return
-              if (getEditorMarkdown(editor) === nextValue) return
-              applyEditorValue(editor, nextValue)
-              scheduleOutlineSync()
+              if (getEditorMarkdown(editor) !== nextValue) {
+                applyEditorValue(editor, nextValue)
+              }
+              if (fallbackMarkdown !== null) {
+                valueRef.current = fallbackMarkdown
+                onChangeRef.current(fallbackMarkdown)
+              }
             })
-            scheduleOutlineSync()
           },
           height: 'calc(100vh - 242px)',
           lang: 'zh_CN',
@@ -182,7 +166,7 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
             position: 'left',
             scrollOffset: 72,
           },
-          command: memoSlashCommandDefinitions,
+          command: markdownSlashCommandDefinitions,
           editorTail: {
             enable: true,
             ignoreSelector: '.vditor-code-language-menu',
@@ -201,7 +185,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
           selectionToolbar: {
             actions: memoSelectionToolbarActions,
           },
-          onEditorCommandExecuted: handleEditorCommandExecuted,
           preview: {
             theme: {
               current: contentThemeRef.current,
@@ -243,10 +226,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         window.clearTimeout(initTimer)
         isReadyRef.current = false
         pendingValueRef.current = null
-        if (outlineSyncTimerRef.current) {
-          window.clearTimeout(outlineSyncTimerRef.current)
-          outlineSyncTimerRef.current = null
-        }
         unsubscribeTransaction?.()
         if (editor) {
           destroyEditor(editor, host)
@@ -259,24 +238,21 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       }
     }, [
       applyEditorValue,
-      handleEditorCommandExecuted,
+      getPendingFallbackMarkdown,
       placeholder,
-      scheduleOutlineSync,
     ])
 
     useEffect(() => {
       const editor = editorRef.current
       if (!editor || !isReadyRef.current) return
       editor.setTheme(theme, contentTheme, codeTheme)
-      scheduleOutlineSync()
-    }, [codeTheme, contentTheme, scheduleOutlineSync, theme])
+    }, [codeTheme, contentTheme, theme])
 
     useEffect(() => {
       const editor = editorRef.current
       if (!editor || !isReadyRef.current) return
       editor.setMode(mode)
-      scheduleOutlineSync()
-    }, [mode, scheduleOutlineSync])
+    }, [mode])
 
     useEffect(() => {
       const editor = editorRef.current
@@ -287,13 +263,25 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         pendingValueRef.current = nextValue
         return
       }
-      if (nextValue === getEditorMarkdown(editor)) return
+      const fallbackMarkdown = getPendingFallbackMarkdown(editor)
+      const valueToApply = fallbackMarkdown ?? nextValue
+      if (valueToApply === getEditorMarkdown(editor)) {
+        if (fallbackMarkdown !== null) {
+          valueRef.current = fallbackMarkdown
+          onChangeRef.current(fallbackMarkdown)
+        }
+        return
+      }
       window.requestAnimationFrame(() => {
         if (editorRef.current !== editor || !isReadyRef.current) return
-        if (nextValue === getEditorMarkdown(editor)) return
-        applyEditorValue(editor, nextValue)
+        if (valueToApply === getEditorMarkdown(editor)) return
+        applyEditorValue(editor, valueToApply)
+        if (fallbackMarkdown !== null) {
+          valueRef.current = fallbackMarkdown
+          onChangeRef.current(fallbackMarkdown)
+        }
       })
-    }, [applyEditorValue, documentRevision])
+    }, [applyEditorValue, documentRevision, getPendingFallbackMarkdown])
 
     useImperativeHandle(ref, () => ({
       focus() {
@@ -311,8 +299,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         const editor = editorRef.current
         if (!editor || !isReadyRef.current) return
         editor.insertValue(text)
-        valueRef.current = getEditorMarkdown(editor)
-        onChangeRef.current(valueRef.current)
       },
       isUploading() {
         return editorRef.current?.isUploading() ?? false

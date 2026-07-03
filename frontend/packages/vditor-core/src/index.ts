@@ -49,9 +49,10 @@ export interface VditorOutlineEntry {
 }
 
 export interface VditorTransaction {
+    commandId?: string;
     markdown: string;
     mode: VditorMode;
-    source: "input" | "mode" | "set-document";
+    source: "input" | "mode" | "set-document" | "insert-value" | "command";
 }
 
 export interface VditorDocumentSnapshot {
@@ -341,6 +342,9 @@ class Vditor extends VditorMethod {
                 command: command || null,
             });
         }
+        if (executed) {
+            this.emitTransaction("command", getMarkdown(this.vditor), command.id);
+        }
 
         return executed;
     }
@@ -520,6 +524,7 @@ class Vditor extends VditorMethod {
                 irInput(this.vditor, getSelection().getRangeAt(0), true);
             }
         }
+        this.emitTransaction("insert-value");
     }
 
     /** 在焦点处插入 Markdown */
@@ -736,6 +741,9 @@ class Vditor extends VditorMethod {
             currentMode: mergedOptions.mode,
             element: id,
             commandBus,
+            emitTransaction: (source, options = {}) => {
+                this.emitTransaction(source, options.markdown, options.commandId);
+            },
             hint: new Hint(mergedOptions.hint.extend, commandBus),
             lute: undefined,
             options: mergedOptions,
@@ -806,12 +814,29 @@ class Vditor extends VditorMethod {
         });
     }
 
-    private emitTransaction(source: VditorTransaction["source"], markdown = getMarkdown(this.vditor)) {
-        if (this.transactionListeners.size === 0 || !this.vditor) {
+    private refreshOutline() {
+        if (!this.vditor?.outline) {
+            return;
+        }
+        this.vditor.outline.render(this.vditor);
+    }
+
+    private emitTransaction(
+        source: VditorTransaction["source"],
+        markdown?: string,
+        commandId?: string,
+    ) {
+        if (!this.vditor) {
+            return;
+        }
+        const currentMarkdown = markdown ?? getMarkdown(this.vditor);
+        this.refreshOutline();
+        if (this.transactionListeners.size === 0) {
             return;
         }
         const transaction: VditorTransaction = {
-            markdown,
+            commandId,
+            markdown: currentMarkdown,
             mode: this.vditor.currentMode,
             source,
         };
@@ -820,4 +845,4 @@ class Vditor extends VditorMethod {
 }
 
 export default Vditor;
-export {memoSlashCommandDefinitions} from "./ts/command";
+export {markdownSlashCommandDefinitions} from "./ts/command";

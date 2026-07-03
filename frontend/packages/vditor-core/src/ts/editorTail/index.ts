@@ -148,14 +148,27 @@ export class EditorTail {
         this.maxLines = Math.max(1, Math.floor(options?.lines ?? DEFAULT_TAIL_LINES));
         this.singleClickDelay = Math.max(0, Math.floor(options?.singleClickDelay ?? DEFAULT_SINGLE_CLICK_DELAY));
         this.ignoreSelector = options?.ignoreSelector;
+        this.applyTailSpacing();
         this.vditor.element.addEventListener("click", this.handleClick, true);
         this.vditor.element.addEventListener("dblclick", this.handleDoubleClick, true);
     }
 
     public destroy() {
         this.clearClickTimer();
+        this.vditor.element.classList.remove("vditor--editor-tail");
+        this.vditor.element.style.removeProperty("--vditor-editor-tail-height");
         this.vditor.element.removeEventListener("click", this.handleClick, true);
         this.vditor.element.removeEventListener("dblclick", this.handleDoubleClick, true);
+    }
+
+    private applyTailSpacing() {
+        const editorElement = getActiveEditorElement(this.vditor);
+        const lineHeight = editorElement ? getEditorLineHeight(editorElement) : 22;
+        this.vditor.element.classList.add("vditor--editor-tail");
+        this.vditor.element.style.setProperty(
+            "--vditor-editor-tail-height",
+            `${Math.ceil(lineHeight * this.maxLines)}px`,
+        );
     }
 
     private clearClickTimer() {

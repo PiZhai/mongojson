@@ -191,12 +191,15 @@ export class Hint {
         const command = selectedItem?.command;
         const commandContext = this.getActiveCommandContext(selection.getRangeAt(0));
         const range = commandContext.range.cloneRange();
-        const finalize = () => {
+        const finalize = (emitCommandTransaction = false) => {
             this.dispatchCommandExecuted(value, command ?? null, vditor, actionContext, "after");
             this.dispatchOnSelect(value, vditor, actionContext ? {
                 ...actionContext,
                 phase: "after",
             } : null);
+            if (emitCommandTransaction && command) {
+                vditor.emitTransaction?.("command", {commandId: command.id});
+            }
         };
 
         const actionContext = this.createActionContext(value, command, this.commandContext, "before");
@@ -204,7 +207,7 @@ export class Hint {
         this.dispatchCommandExecuted(value, command ?? null, vditor, actionContext, "before");
 
         if (this.commandBus.execute(value, command, vditor, commandContext)) {
-            finalize();
+            finalize(true);
         } else {
             const preBeforeElement = hasClosestByAttribute(range.startContainer, "data-type", "code-block-info");
             if (preBeforeElement) {
@@ -417,10 +420,12 @@ export class Hint {
     }
 
     private getDefaultCommandHTML(command: IEditorCommand) {
-        const leftText = command.icon ? `<span class="memo-slash-command-icon">${escapeHTML(command.icon)}</span>` : "";
-        return `<span class="memo-slash-command">${leftText}<span class="memo-slash-command-text">` +
-            `<span class="memo-slash-command-category">${escapeHTML(command.detail || "")}</span>` +
-            `<span class="memo-slash-command-label">${escapeHTML(command.description || command.id)}</span>` +
+        const iconText = command.icon
+            ? `<span class="vditor-command-hint__icon">${escapeHTML(command.icon)}</span>`
+            : "";
+        return `<span class="vditor-command-hint">${iconText}<span class="vditor-command-hint__text">` +
+            `<span class="vditor-command-hint__detail">${escapeHTML(command.detail || "")}</span>` +
+            `<span class="vditor-command-hint__label">${escapeHTML(command.description || command.id)}</span>` +
             `</span></span>`;
     }
 

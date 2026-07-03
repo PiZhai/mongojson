@@ -52,6 +52,10 @@
   }
 
   &__block {
+    &[data-type="code-block"]:has(> .vditor-wysiwyg__pre[style*="display: block"]) > .vditor-wysiwyg__preview {
+      display: none !important;
+    }
+
     pre:first-child {
       margin-bottom: -1em;
 

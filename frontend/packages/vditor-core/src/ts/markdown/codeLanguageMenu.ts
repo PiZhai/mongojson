@@ -110,14 +110,22 @@ export const renderCodeLanguageMenu = (
     list.setAttribute("role", "listbox");
     panel.appendChild(list);
 
+    const restoreEditorFocus = () => {
+        window.requestAnimationFrame(() => {
+            vditor[vditor.currentMode]?.element?.focus();
+        });
+    };
+
     const applyLanguage = (language: string) => {
         const blockIndex = getRenderedCodeBlockIndex(code);
         if (blockIndex < 0) {
+            restoreEditorFocus();
             return;
         }
         const currentMarkdown = getMarkdown(vditor);
         const nextMarkdown = replaceCodeFenceLanguage(currentMarkdown, blockIndex, language);
         if (nextMarkdown === currentMarkdown) {
+            restoreEditorFocus();
             return;
         }
         setMarkdown(vditor, nextMarkdown, {
@@ -126,6 +134,7 @@ export const renderCodeLanguageMenu = (
             enableHint: false,
             enableInput: true,
         });
+        restoreEditorFocus();
     };
 
     const renderOptions = () => {

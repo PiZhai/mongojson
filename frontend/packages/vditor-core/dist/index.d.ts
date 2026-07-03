@@ -9,9 +9,10 @@ export interface VditorOutlineEntry {
     text: string;
 }
 export interface VditorTransaction {
+    commandId?: string;
     markdown: string;
     mode: VditorMode;
-    source: "input" | "mode" | "set-document";
+    source: "input" | "mode" | "set-document" | "insert-value" | "command";
 }
 export interface VditorDocumentSnapshot {
     html: string;
@@ -115,5 +116,5 @@ declare class Vditor extends VditorMethod {
     removeCommentIds(removeIds: string[]): void;
     private init;
 }
-export declare const memoSlashCommandDefinitions: IEditorCommand[];
+export declare const markdownSlashCommandDefinitions: IEditorCommand[];
 export default Vditor;

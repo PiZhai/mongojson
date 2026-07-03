@@ -662,6 +662,13 @@ interface IEditorTail {
     destroy(): void;
 }
 
+interface IEditorTransactionEmitOptions {
+    markdown?: string;
+    commandId?: string;
+}
+
+type IEditorTransactionSource = "input" | "mode" | "set-document" | "insert-value" | "command";
+
 interface IEditorCommandContext {
     key: string;
     splitChar: string;
@@ -953,6 +960,7 @@ interface IVditor {
     lute: Lute;
     currentMode: "sv" | "wysiwyg" | "ir";
     commandBus?: IEditorCommandBus;
+    emitTransaction?(source: IEditorTransactionSource, options?: IEditorTransactionEmitOptions): void;
     devtools?: {
         element: HTMLDivElement,
         renderEchart(vditor: IVditor): void,

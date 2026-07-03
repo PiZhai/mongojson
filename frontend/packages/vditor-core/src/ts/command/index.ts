@@ -101,7 +101,7 @@ export class CommandBus {
     }
 }
 
-type MemoSlashCommand = {
+type MarkdownSlashCommand = {
     id: string;
     category: "基础" | "常用";
     icon: string;
@@ -131,7 +131,7 @@ const clearSlashInput = (context: IEditorCommandContext): boolean => {
     return true;
 };
 
-type MemoSlashCommandExecute = (value: string, vditor: IVditor, context: IEditorCommandContext) => boolean;
+type MarkdownSlashCommandExecute = (value: string, vditor: IVditor, context: IEditorCommandContext) => boolean;
 
 const getNormalizedSlashText = (value: string) => value
     .replace(/\u200b/g, "")
@@ -293,7 +293,7 @@ const getEditorRange = (vditor: IVditor) => {
     return selection.getRangeAt(0).cloneRange();
 };
 
-const buildMemoSlashCommandExecutor = (commandId: string): MemoSlashCommandExecute | undefined => {
+const buildMarkdownSlashCommandExecutor = (commandId: string): MarkdownSlashCommandExecute | undefined => {
     if (commandId === "paragraph") {
         return (_value: string, _vditor: IVditor, context: IEditorCommandContext) => {
             return clearSlashInput(context);
@@ -346,7 +346,7 @@ const buildMemoSlashCommandExecutor = (commandId: string): MemoSlashCommandExecu
     };
 };
 
-const memoSlashCommands: MemoSlashCommand[] = [
+const markdownSlashCommands: MarkdownSlashCommand[] = [
     {
         id: "paragraph",
         category: "基础",
@@ -461,22 +461,6 @@ const memoSlashCommands: MemoSlashCommand[] = [
     },
 ];
 
-const escapeHTML = (value: string) => value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-
-const renderSlashCommand = (command: MemoSlashCommand) => [
-    '<span class="memo-slash-command">',
-    `<span class="memo-slash-command-icon">${escapeHTML(command.icon)}</span>`,
-    '<span class="memo-slash-command-text">',
-    `<span class="memo-slash-command-category">${escapeHTML(command.category)}</span>`,
-    `<span class="memo-slash-command-label">${escapeHTML(command.label)}</span>`,
-    "</span>",
-    "</span>",
-].join("");
-
 const isInCodeBlock = (context: IEditorCommandContext) => {
     return !!hasClosestByAttribute(context.range.startContainer, "data-type", "code-block") ||
         !!hasClosestByAttribute(context.range.startContainer, "data-type", "code-block-info") ||
@@ -511,7 +495,7 @@ const isBlockTypeCommand = (commandId: string) => {
 
 const canInvokeSlashCommand = (context: IEditorCommandContext) => !isInCodeBlock(context);
 
-export const memoSlashCommandDefinitions: IEditorCommand[] = memoSlashCommands.map((command) => ({
+export const markdownSlashCommandDefinitions: IEditorCommand[] = markdownSlashCommands.map((command) => ({
     id: command.id,
     trigger: "/",
     keywords: command.keywords,
@@ -520,10 +504,9 @@ export const memoSlashCommandDefinitions: IEditorCommand[] = memoSlashCommands.m
     icon: command.icon,
     description: command.label,
     detail: command.category,
-    execute: buildMemoSlashCommandExecutor(command.id) as MemoSlashCommandExecute,
+    execute: buildMarkdownSlashCommandExecutor(command.id) as MarkdownSlashCommandExecute,
     ...getBlockCommandHooks(command.id),
     hint: {
-        html: renderSlashCommand(command),
         value: command.value,
         icon: command.icon,
         description: command.label,
