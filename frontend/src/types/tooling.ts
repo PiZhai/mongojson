@@ -211,6 +211,21 @@ export type MusicTrackSource = 'remote' | 'local'
 
 export type PlaybackMode = 'order' | 'repeat-all' | 'repeat-one' | 'shuffle'
 
+export type MusicAudioQuality = {
+  container?: string
+  codec?: string
+  bitrate?: number
+  sampleRate?: number
+  bitsPerSample?: number
+  numberOfChannels?: number
+  lossless?: boolean
+  duration?: number
+  fileSize?: number
+  analyzedAt: string
+  analysisSource: 'metadata' | 'inferred'
+  error?: string
+}
+
 export type MusicTrack = {
   id: string
   source: MusicTrackSource
@@ -227,6 +242,7 @@ export type MusicTrack = {
   fileName?: string
   mimeType?: string
   duration?: number
+  audioQuality?: MusicAudioQuality
   addedAt: string
 }
 

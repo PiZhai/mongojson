@@ -25,6 +25,14 @@ import {
   type LocalDirectoryHandle,
   type LocalFileHandle,
 } from '../../lib/music/storage'
+import {
+  analyzeAudioFileQuality,
+  analyzeRemoteAudioQuality,
+  inferAudioQuality,
+  mergeDurationIntoQuality,
+  summarizeAudioQuality,
+} from '../../lib/music/audioQuality'
+import type { MusicAudioQuality } from '../../types/tooling'
 
 type RemoteTrackPayload = {
   title: string
@@ -61,6 +69,7 @@ type LocalTrackOptions = {
   lyricHandleId?: string
   lyricFileName?: string
   lyricRelativePath?: string
+  audioQuality?: MusicAudioQuality
 }
 
 type LyricUpdate = {
@@ -167,6 +176,8 @@ function createLocalTrackFromFile(file: File, id: string, options: LocalTrackOpt
     lyricRelativePath: options.lyricRelativePath,
     fileName: file.name,
     mimeType: file.type || undefined,
+    duration: options.audioQuality?.duration,
+    audioQuality: options.audioQuality,
     addedAt: new Date().toISOString(),
   }
 }
@@ -599,6 +610,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const objectUrlRef = useRef<string | null>(null)
+  const pendingPlayRef = useRef(false)
   const sessionFilesRef = useRef(new Map<string, File>())
   const sessionLyricsRef = useRef(new Map<string, string>())
 
@@ -606,6 +618,10 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     () => library.tracks.find((track) => track.id === library.currentTrackId) ?? null,
     [library.currentTrackId, library.tracks],
   )
+
+  const currentTrackSourceKey = currentTrack
+    ? [currentTrack.id, currentTrack.source, currentTrack.remoteUrl ?? '', currentTrack.localHandleId ?? ''].join('|')
+    : ''
 
   const currentLyricIndex = useMemo(() => {
     if (lyrics.length === 0) {
@@ -636,33 +652,35 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     let cancelled = false
+    const track = currentTrack
 
-    async function resolveSource(track: MusicTrack) {
+    async function resolveSource(nextTrack: MusicTrack) {
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current)
         objectUrlRef.current = null
       }
 
       setCurrentTime(0)
-      setDuration(track.duration ?? 0)
+      setDuration(nextTrack.duration ?? 0)
       setAudioSrc(null)
 
-      if (track.source === 'remote') {
-        if (!track.remoteUrl) {
+      if (nextTrack.source === 'remote') {
+        if (!nextTrack.remoteUrl) {
           setStatusMessage('这首云端音乐缺少可播放 URL。')
+          pendingPlayRef.current = false
           setIsPlaying(false)
           return
         }
 
         setStatusMessage(null)
-        setAudioSrc(track.remoteUrl)
+        setAudioSrc(nextTrack.remoteUrl)
         return
       }
 
       try {
-        let file = sessionFilesRef.current.get(track.id)
-        if (!file && track.localHandleId) {
-          const handle = await getLocalFileHandle(track.localHandleId)
+        let file = sessionFilesRef.current.get(nextTrack.id)
+        if (!file && nextTrack.localHandleId) {
+          const handle = await getLocalFileHandle(nextTrack.localHandleId)
           if (handle) {
             file = await readLocalHandleFile(handle)
           }
@@ -670,6 +688,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
 
         if (!file) {
           setStatusMessage('本地音乐需要重新选择文件后才能播放。')
+          pendingPlayRef.current = false
           setIsPlaying(false)
           return
         }
@@ -684,11 +703,13 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
         }
       } catch (error) {
         setStatusMessage(error instanceof Error ? error.message : '无法读取本地音乐文件。')
+        pendingPlayRef.current = false
         setIsPlaying(false)
       }
     }
 
-    if (!currentTrack) {
+    if (!track) {
+      pendingPlayRef.current = false
       setAudioSrc(null)
       setCurrentTime(0)
       setDuration(0)
@@ -696,12 +717,12 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       return undefined
     }
 
-    void resolveSource(currentTrack)
+    void resolveSource(track)
 
     return () => {
       cancelled = true
     }
-  }, [currentTrack])
+  }, [currentTrackSourceKey])
 
   useEffect(() => {
     let cancelled = false
@@ -753,21 +774,39 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     }
   }, [currentTrack])
 
-  useEffect(() => {
+  const requestAudioPlay = useCallback(() => {
     const audio = audioRef.current
     if (!audio || !audioSrc) {
+      pendingPlayRef.current = true
       return
     }
 
-    if (isPlaying) {
-      void audio.play().catch(() => {
-        setIsPlaying(false)
-        setStatusMessage('浏览器阻止了自动播放，请手动点击播放。')
+    pendingPlayRef.current = false
+    void audio
+      .play()
+      .then(() => {
+        setIsPlaying(true)
+        setStatusMessage(null)
       })
-    } else {
+      .catch(() => {
+        pendingPlayRef.current = false
+        setIsPlaying(false)
+        setStatusMessage('播放启动失败，请再次点击播放。')
+      })
+  }, [audioSrc])
+
+  useEffect(() => {
+    if (audioSrc && pendingPlayRef.current) {
+      requestAudioPlay()
+    }
+  }, [audioSrc, requestAudioPlay])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (audio && !isPlaying) {
       audio.pause()
     }
-  }, [audioSrc, isPlaying])
+  }, [isPlaying])
 
   useEffect(
     () => () => {
@@ -776,6 +815,30 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       }
     },
     [],
+  )
+
+  const setTrackAudioQuality = useCallback((trackId: string, audioQuality: MusicAudioQuality) => {
+    setLibrary((value) => ({
+      ...value,
+      tracks: value.tracks.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              audioQuality,
+              duration: audioQuality.duration ?? track.duration,
+            }
+          : track,
+      ),
+    }))
+  }, [])
+
+  const analyzeRemoteTrackAudioQuality = useCallback(
+    (trackId: string, remoteUrl: string) => {
+      void analyzeRemoteAudioQuality(remoteUrl).then((audioQuality) => {
+        setTrackAudioQuality(trackId, audioQuality)
+      })
+    },
+    [setTrackAudioQuality],
   )
 
   const addRemoteTrack = useCallback((payload: RemoteTrackPayload) => {
@@ -787,6 +850,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       artist: payload.artist || undefined,
       note: payload.note || undefined,
       remoteUrl: payload.remoteUrl,
+      audioQuality: inferAudioQuality({ fileName: payload.remoteUrl }),
       addedAt: new Date().toISOString(),
     }
 
@@ -797,8 +861,9 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       currentTrackId: value.currentTrackId ?? track.id,
     }))
     setStatusMessage('已添加云端音乐。')
+    analyzeRemoteTrackAudioQuality(id, payload.remoteUrl)
     return id
-  }, [])
+  }, [analyzeRemoteTrackAudioQuality])
 
   const addLocalFileHandles = useCallback(async (handles: LocalFileHandle[]) => {
     const tracks: MusicTrack[] = []
@@ -834,12 +899,14 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       }
 
       await saveLocalFileHandle(handleId, handle)
+      const audioQuality = await analyzeAudioFileQuality(file)
       sessionFilesRef.current.set(trackId, file)
       tracks.push(
         createLocalTrackFromFile(file, trackId, {
           localHandleId: handleId,
           lyricHandleId,
           lyricFileName: lyricHandle?.name,
+          audioQuality,
         }),
       )
     }
@@ -872,6 +939,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     const tracks = await Promise.all(audioFiles.map(async (file) => {
       const trackId = createMusicId('local')
       const lyricFile = lyricFiles.get(getLyricMatchKey(file.name))
+      const audioQuality = await analyzeAudioFileQuality(file)
       sessionFilesRef.current.set(trackId, file)
       if (lyricFile) {
         sessionLyricsRef.current.set(trackId, await readLyricFileText(lyricFile))
@@ -879,6 +947,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       }
       return createLocalTrackFromFile(file, trackId, {
         lyricFileName: lyricFile?.name,
+        audioQuality,
       })
     }))
 
@@ -973,6 +1042,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
         }
 
         await saveLocalFileHandle(handleId, entry)
+        const audioQuality = await analyzeAudioFileQuality(file)
         sessionFilesRef.current.set(trackId, file)
         const track = createLocalTrackFromFile(file, trackId, {
           localHandleId: handleId,
@@ -981,6 +1051,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
           lyricHandleId,
           lyricFileName: lyricEntry?.entry.name,
           lyricRelativePath: lyricEntry?.relativePath,
+          audioQuality,
         })
         tracks.push(track)
         existingTracksByKey.set(trackKey, track)
@@ -1175,7 +1246,10 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       ),
     }))
     setStatusMessage('已更新音乐信息。')
-  }, [])
+    if (payload.remoteUrl) {
+      analyzeRemoteTrackAudioQuality(id, payload.remoteUrl)
+    }
+  }, [analyzeRemoteTrackAudioQuality])
 
   const removeTrack = useCallback((id: string) => {
     setLibrary((value) => {
@@ -1210,14 +1284,21 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     setStatusMessage('已删除音乐。')
   }, [])
 
-  const playTrack = useCallback((id: string) => {
-    setLibrary((value) => ({
-      ...value,
-      queue: value.queue.includes(id) ? value.queue : [id, ...value.queue],
-      currentTrackId: id,
-    }))
-    setIsPlaying(true)
-  }, [])
+  const playTrack = useCallback(
+    (id: string) => {
+      pendingPlayRef.current = true
+      setLibrary((value) => ({
+        ...value,
+        queue: value.queue.includes(id) ? value.queue : [id, ...value.queue],
+        currentTrackId: id,
+      }))
+
+      if (library.currentTrackId === id) {
+        requestAudioPlay()
+      }
+    },
+    [library.currentTrackId, requestAudioPlay],
+  )
 
   const enqueueTrack = useCallback((id: string) => {
     setLibrary((value) => ({
@@ -1270,37 +1351,59 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
   const playNext = useCallback(() => {
     const nextTrackId = getNextTrackId(library)
     if (!nextTrackId) {
+      pendingPlayRef.current = false
       setIsPlaying(false)
       return
     }
 
+    pendingPlayRef.current = true
+    if (nextTrackId === library.currentTrackId) {
+      if (audioRef.current) {
+        audioRef.current.currentTime = 0
+      }
+      requestAudioPlay()
+      return
+    }
+
     setLibrary((value) => ({ ...value, currentTrackId: nextTrackId }))
-    setIsPlaying(true)
-  }, [library])
+  }, [library, requestAudioPlay])
 
   const playPrevious = useCallback(() => {
-    setLibrary((value) => {
-      const previousTrackId = getPreviousTrackId(value)
-      return previousTrackId ? { ...value, currentTrackId: previousTrackId } : value
-    })
-    setIsPlaying(true)
-  }, [])
+    const previousTrackId = getPreviousTrackId(library)
+    if (!previousTrackId) {
+      return
+    }
+
+    pendingPlayRef.current = true
+    setLibrary((value) => ({ ...value, currentTrackId: previousTrackId }))
+    if (previousTrackId === library.currentTrackId) {
+      requestAudioPlay()
+    }
+  }, [library, requestAudioPlay])
 
   const togglePlay = useCallback(() => {
+    if (isPlaying) {
+      pendingPlayRef.current = false
+      audioRef.current?.pause()
+      setIsPlaying(false)
+      return
+    }
+
     if (!library.currentTrackId && library.queue[0]) {
+      pendingPlayRef.current = true
       setLibrary((value) => ({ ...value, currentTrackId: value.queue[0] }))
-      setIsPlaying(true)
       return
     }
 
     if (!library.currentTrackId && library.tracks[0]) {
+      pendingPlayRef.current = true
       setLibrary((value) => ({ ...value, currentTrackId: value.tracks[0].id, queue: value.queue.length ? value.queue : value.tracks.map((track) => track.id) }))
-      setIsPlaying(true)
       return
     }
 
-    setIsPlaying((value) => !value)
-  }, [library.currentTrackId, library.queue, library.tracks])
+    pendingPlayRef.current = true
+    requestAudioPlay()
+  }, [isPlaying, library.currentTrackId, library.queue, library.tracks, requestAudioPlay])
 
   const seek = useCallback((time: number) => {
     const audio = audioRef.current
@@ -1326,15 +1429,25 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
   const handleEnded = () => {
     if (library.mode === 'repeat-one' && audioRef.current) {
       audioRef.current.currentTime = 0
-      void audioRef.current.play()
+      pendingPlayRef.current = true
+      requestAudioPlay()
       return
     }
 
     const nextTrackId = getNextTrackId(library)
     if (nextTrackId) {
+      pendingPlayRef.current = true
+      if (nextTrackId === library.currentTrackId) {
+        if (audioRef.current) {
+          audioRef.current.currentTime = 0
+        }
+        requestAudioPlay()
+        return
+      }
+
       setLibrary((value) => ({ ...value, currentTrackId: nextTrackId }))
-      setIsPlaying(true)
     } else {
+      pendingPlayRef.current = false
       setIsPlaying(false)
     }
   }
@@ -1348,15 +1461,24 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     const nextDuration = Number.isFinite(audio.duration) ? audio.duration : 0
     setDuration(nextDuration)
 
-    if (currentTrack && nextDuration > 0 && currentTrack.duration !== nextDuration) {
+    if (currentTrack && nextDuration > 0) {
       setLibrary((value) => ({
         ...value,
-        tracks: value.tracks.map((track) => (track.id === currentTrack.id ? { ...track, duration: nextDuration } : track)),
+        tracks: value.tracks.map((track) =>
+          track.id === currentTrack.id
+            ? {
+                ...track,
+                duration: nextDuration,
+                audioQuality: mergeDurationIntoQuality(track.audioQuality, nextDuration),
+              }
+            : track,
+        ),
       }))
     }
   }
 
   const handleAudioError = () => {
+    pendingPlayRef.current = false
     setIsPlaying(false)
     setStatusMessage('音频加载失败，请检查 URL、CORS、Range 请求或本地文件权限。')
   }
@@ -1514,6 +1636,7 @@ export function MusicMiniPlayer() {
           <div className="music-now-playing-copy">
             <strong>{currentTrack?.title ?? '未选择音乐'}</strong>
             <span>{currentTrack?.artist || currentTrack?.fileName || currentTrack?.remoteUrl || '打开音乐播放器添加曲目'}</span>
+            {currentTrack?.audioQuality ? <span>{summarizeAudioQuality(currentTrack.audioQuality)}</span> : null}
             {statusMessage ? <span className="music-player-inline-message">{statusMessage}</span> : null}
           </div>
         </div>
@@ -1748,7 +1871,7 @@ function MusicFloatingPlayer() {
         <span className="music-floating-grip" aria-hidden="true" />
         <div className="music-floating-copy">
           <strong>{currentTrack?.title ?? '音乐播放器'}</strong>
-          <span>{statusMessage || currentTrack?.artist || currentTrack?.fileName || '拖动浮标调整位置'}</span>
+          <span>{statusMessage || (currentTrack?.audioQuality ? summarizeAudioQuality(currentTrack.audioQuality) : currentTrack?.artist || currentTrack?.fileName || '拖动浮标调整位置')}</span>
         </div>
       </div>
 

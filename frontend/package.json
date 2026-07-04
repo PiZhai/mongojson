@@ -14,15 +14,16 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@mongodb-js/shell-bson-parser": "^1.5.13",
+    "@mongojson/vditor-core": "file:packages/vditor-core",
     "bson": "^7.3.1",
     "clsx": "^2.1.1",
     "jsonrepair": "^3.14.1",
     "monaco-editor": "^0.55.1",
     "mongodb-query-parser": "^4.7.13",
+    "music-metadata": "^11.13.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.17.0",
-    "@mongojson/vditor-core": "file:packages/vditor-core",
     "zod": "^4.4.3"
   },
   "overrides": {

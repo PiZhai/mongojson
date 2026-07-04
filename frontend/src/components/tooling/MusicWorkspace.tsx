@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import type { MusicTrack, PlaybackMode, ToolStatus } from '../../types/tooling'
 import { type WindowWithFilePicker } from '../../lib/music/storage'
+import { compactAudioQualityLabel, summarizeAudioQuality } from '../../lib/music/audioQuality'
 import { StatusBanner } from '../common/StatusBanner'
 import { useMusicPlayer } from '../music/MusicPlayerProvider'
 
@@ -154,6 +155,10 @@ function describeTrackLyric(track: MusicTrack) {
   }
 
   return track.lyricRelativePath ? `歌词 · ${track.lyricRelativePath}` : `歌词 · ${track.lyricFileName}`
+}
+
+function describeTrackAudioQuality(track: MusicTrack) {
+  return compactAudioQualityLabel(track.audioQuality) ?? '音质待识别'
 }
 
 function describeMode(mode: PlaybackMode) {
@@ -622,6 +627,7 @@ export function MusicWorkspace() {
               <div className="music-current-copy">
                 <strong>{currentTrack?.title ?? '未选择音乐'}</strong>
                 <span>{currentTrack?.artist || currentTrack?.fileName || currentTrack?.remoteUrl || '从曲库选择一首歌开始播放'}</span>
+                {currentTrack?.audioQuality ? <span>{summarizeAudioQuality(currentTrack.audioQuality)}</span> : null}
               </div>
             </div>
             <div className="music-sidebar-stats">
@@ -717,6 +723,7 @@ export function MusicWorkspace() {
                         <ActionIcon name="clock" />
                         {formatTrackDuration(track.duration)}
                       </span>
+                      <span className="music-meta-chip">{describeTrackAudioQuality(track)}</span>
                       <span className="music-track-source-text">{describeTrackSource(track)}</span>
                       {track.lyricFileName ? <span className="music-track-source-text">{describeTrackLyric(track)}</span> : null}
                     </div>
