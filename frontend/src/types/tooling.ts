@@ -209,7 +209,7 @@ export type ChartSeriesRow = Record<string, string | number | null>
 
 export type MusicTrackSource = 'remote' | 'local'
 
-export type PlaybackMode = 'order' | 'repeat-one' | 'repeat-all'
+export type PlaybackMode = 'order' | 'repeat-all' | 'repeat-one' | 'shuffle'
 
 export type MusicTrack = {
   id: string
@@ -219,14 +219,28 @@ export type MusicTrack = {
   note?: string
   remoteUrl?: string
   localHandleId?: string
+  folderHandleId?: string
+  relativePath?: string
+  lyricHandleId?: string
+  lyricFileName?: string
+  lyricRelativePath?: string
   fileName?: string
   mimeType?: string
   duration?: number
   addedAt: string
 }
 
+export type MusicLibraryFolder = {
+  id: string
+  name: string
+  addedAt: string
+  lastScannedAt?: string
+  trackCount?: number
+}
+
 export type MusicLibraryState = {
   tracks: MusicTrack[]
+  folders: MusicLibraryFolder[]
   queue: string[]
   currentTrackId?: string
   volume: number

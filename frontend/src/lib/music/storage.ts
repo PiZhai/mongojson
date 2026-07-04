@@ -13,6 +13,15 @@ export type LocalFileHandle = {
   requestPermission?: (descriptor?: { mode: 'read' }) => Promise<PermissionState>
 }
 
+export type LocalDirectoryHandle = {
+  kind: 'directory'
+  name: string
+  entries: () => AsyncIterableIterator<[string, LocalFileHandle | LocalDirectoryHandle]>
+  isSameEntry?: (other: LocalDirectoryHandle) => Promise<boolean>
+  queryPermission?: (descriptor?: { mode: 'read' }) => Promise<PermissionState>
+  requestPermission?: (descriptor?: { mode: 'read' }) => Promise<PermissionState>
+}
+
 export type WindowWithFilePicker = Window & {
   showOpenFilePicker?: (options?: {
     multiple?: boolean
@@ -22,10 +31,16 @@ export type WindowWithFilePicker = Window & {
     }>
     excludeAcceptAllOption?: boolean
   }) => Promise<LocalFileHandle[]>
+  showDirectoryPicker?: (options?: {
+    id?: string
+    mode?: 'read' | 'readwrite'
+    startIn?: string
+  }) => Promise<LocalDirectoryHandle>
 }
 
 export const defaultMusicLibraryState: MusicLibraryState = {
   tracks: [],
+  folders: [],
   queue: [],
   volume: 0.82,
   mode: 'order',
@@ -48,13 +63,18 @@ export function loadMusicLibraryState(): MusicLibraryState {
 
     const parsed = JSON.parse(raw) as Partial<MusicLibraryState>
     const tracks = Array.isArray(parsed.tracks) ? parsed.tracks : []
+    const folders = Array.isArray(parsed.folders) ? parsed.folders : []
     const trackIds = new Set(tracks.map((track) => track.id))
     const queue = Array.isArray(parsed.queue) ? parsed.queue.filter((id) => trackIds.has(id)) : tracks.map((track) => track.id)
     const currentTrackId = parsed.currentTrackId && trackIds.has(parsed.currentTrackId) ? parsed.currentTrackId : undefined
-    const mode = parsed.mode === 'repeat-one' || parsed.mode === 'repeat-all' || parsed.mode === 'order' ? parsed.mode : 'order'
+    const mode =
+      parsed.mode === 'repeat-one' || parsed.mode === 'repeat-all' || parsed.mode === 'shuffle' || parsed.mode === 'order'
+        ? parsed.mode
+        : 'order'
 
     return {
       tracks,
+      folders,
       queue,
       currentTrackId,
       volume: normalizeVolume(parsed.volume),
@@ -119,6 +139,22 @@ export function deleteLocalFileHandle(id: string) {
   return withStore('readwrite', (store) => store.delete(id))
 }
 
+export function saveLocalDirectoryHandle(id: string, handle: LocalDirectoryHandle) {
+  return withStore('readwrite', (store) => store.put(handle, id))
+}
+
+export function getLocalDirectoryHandle(id: string) {
+  return withStore<LocalDirectoryHandle | undefined>('readonly', (store) => store.get(id))
+}
+
+export function deleteLocalDirectoryHandle(id: string) {
+  return withStore('readwrite', (store) => store.delete(id))
+}
+
 export function supportsPersistentLocalFiles() {
   return typeof window !== 'undefined' && typeof (window as WindowWithFilePicker).showOpenFilePicker === 'function'
+}
+
+export function supportsPersistentMusicFolders() {
+  return typeof window !== 'undefined' && typeof (window as WindowWithFilePicker).showDirectoryPicker === 'function'
 }

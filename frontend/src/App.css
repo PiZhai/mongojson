@@ -248,6 +248,7 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  height: 100vh;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -303,10 +304,10 @@
 
 .app-content {
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
   padding: 14px;
 }
 
@@ -354,6 +355,7 @@
   }
 
   .app-main {
+    height: auto;
     min-height: auto;
     overflow: visible;
   }

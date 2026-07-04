@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { MusicMiniPlayer } from '../music/MusicPlayerProvider'
+import { MusicMiniPlayer, MusicQueueDrawer } from '../music/MusicPlayerProvider'
 
 type NavItem = {
   to: string
@@ -253,6 +253,7 @@ export function AppShell() {
           <Outlet />
         </div>
         <MusicMiniPlayer />
+        <MusicQueueDrawer />
       </main>
     </div>
   )

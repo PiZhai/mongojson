@@ -10,14 +10,19 @@ import {
   useState,
 } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import type { MusicLibraryState, MusicTrack, PlaybackMode } from '../../types/tooling'
+import type { MusicLibraryFolder, MusicLibraryState, MusicTrack, PlaybackMode } from '../../types/tooling'
 import {
+  deleteLocalDirectoryHandle,
   deleteLocalFileHandle,
+  getLocalDirectoryHandle,
   getLocalFileHandle,
   loadMusicLibraryState,
+  saveLocalDirectoryHandle,
   saveLocalFileHandle,
   saveMusicLibraryState,
   supportsPersistentLocalFiles,
+  supportsPersistentMusicFolders,
+  type LocalDirectoryHandle,
   type LocalFileHandle,
 } from '../../lib/music/storage'
 
@@ -35,31 +40,84 @@ type TrackEditPayload = {
   remoteUrl?: string
 }
 
+type FolderScanResult = {
+  folderId: string
+  folderName: string
+  added: number
+  scanned: number
+  skipped: number
+  lyricsMatched: number
+}
+
+type LrcLine = {
+  time: number
+  text: string
+}
+
+type LocalTrackOptions = {
+  localHandleId?: string
+  folderHandleId?: string
+  relativePath?: string
+  lyricHandleId?: string
+  lyricFileName?: string
+  lyricRelativePath?: string
+}
+
+type LyricUpdate = {
+  trackId: string
+  lyricHandleId: string
+  lyricFileName: string
+  lyricRelativePath: string
+}
+
+type FolderTrackCollectionResult = {
+  tracks: MusicTrack[]
+  scanned: number
+  skipped: number
+  lyricsMatched: number
+  lyricUpdates: LyricUpdate[]
+}
+
 type MusicPlayerContextValue = {
   tracks: MusicTrack[]
+  folders: MusicLibraryFolder[]
   queue: string[]
   currentTrack: MusicTrack | null
   currentTrackId?: string
   currentTime: number
   duration: number
+  lyrics: LrcLine[]
+  currentLyricLine: LrcLine | null
+  currentLyricIndex: number
+  lyricStatusMessage: string | null
   isPlaying: boolean
   volume: number
   mode: PlaybackMode
   statusMessage: string | null
   addRemoteTrack: (payload: RemoteTrackPayload) => string
   addLocalFileHandles: (handles: LocalFileHandle[]) => Promise<void>
-  addLocalFiles: (files: File[]) => void
+  addLocalFiles: (files: File[]) => Promise<void>
+  scanLocalDirectory: (handle: LocalDirectoryHandle) => Promise<FolderScanResult>
+  rescanLocalFolder: (folderId: string) => Promise<FolderScanResult>
+  removeLocalFolder: (folderId: string) => void
   updateTrack: (id: string, payload: TrackEditPayload) => void
   removeTrack: (id: string) => void
   playTrack: (id: string) => void
   enqueueTrack: (id: string) => void
+  removeFromQueue: (id: string) => void
+  clearQueue: () => void
+  moveQueueItem: (id: string, direction: 'up' | 'down') => void
   togglePlay: () => void
   playNext: () => void
   playPrevious: () => void
   seek: (time: number) => void
   setVolume: (volume: number) => void
   setMode: (mode: PlaybackMode) => void
+  openQueue: () => void
+  closeQueue: () => void
+  isQueueOpen: boolean
   persistentLocalFilesSupported: boolean
+  persistentMusicFoldersSupported: boolean
 }
 
 const MusicPlayerContext = createContext<MusicPlayerContextValue | null>(null)
@@ -68,6 +126,8 @@ const FLOATING_PLAYER_POSITION_KEY = 'personal-tooling-music-floating-position'
 const FLOATING_PLAYER_WIDTH = 220
 const FLOATING_PLAYER_HEIGHT = 82
 const FLOATING_PLAYER_MARGIN = 16
+const SUPPORTED_AUDIO_EXTENSIONS = /\.(mp3|flac|wav|ogg|m4a|aac|opus|webm)$/i
+const SUPPORTED_LYRIC_EXTENSION = /\.lrc$/i
 
 type FloatingPlayerPosition = {
   x: number
@@ -82,16 +142,130 @@ function createMusicId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-function createLocalTrackFromFile(file: File, id: string, localHandleId?: string): MusicTrack {
+function isSupportedAudioFile(fileName: string, mimeType?: string) {
+  return Boolean(mimeType?.startsWith('audio/')) || SUPPORTED_AUDIO_EXTENSIONS.test(fileName)
+}
+
+function isSupportedLyricFile(fileName: string) {
+  return SUPPORTED_LYRIC_EXTENSION.test(fileName)
+}
+
+function getPathWithoutExtension(path: string) {
+  return path.replace(/\\/g, '/').replace(/\.[^/.]+$/, '').toLowerCase()
+}
+
+function createLocalTrackFromFile(file: File, id: string, options: LocalTrackOptions = {}): MusicTrack {
   return {
     id,
     source: 'local',
     title: file.name.replace(/\.[^.]+$/, '') || file.name,
-    localHandleId,
+    localHandleId: options.localHandleId,
+    folderHandleId: options.folderHandleId,
+    relativePath: options.relativePath,
+    lyricHandleId: options.lyricHandleId,
+    lyricFileName: options.lyricFileName,
+    lyricRelativePath: options.lyricRelativePath,
     fileName: file.name,
     mimeType: file.type || undefined,
     addedAt: new Date().toISOString(),
   }
+}
+
+function getFolderTrackKey(folderId: string, relativePath: string) {
+  return `${folderId}::${relativePath.toLowerCase()}`
+}
+
+function getLyricMatchKey(path: string) {
+  return getPathWithoutExtension(path)
+}
+
+function parseLrcTimestamp(value: string) {
+  const match = value.match(/^(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?$/)
+  if (!match) {
+    return null
+  }
+
+  const minutes = Number(match[1])
+  const seconds = Number(match[2])
+  const fraction = match[3] ?? '0'
+  if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) {
+    return null
+  }
+
+  return minutes * 60 + seconds + Number(fraction.padEnd(3, '0').slice(0, 3)) / 1000
+}
+
+function parseLrcText(value: string): LrcLine[] {
+  const lines: LrcLine[] = []
+
+  for (const rawLine of value.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    const matches = Array.from(rawLine.matchAll(/\[(\d{1,3}:\d{2}(?:[.:]\d{1,3})?)\]/g))
+    if (matches.length === 0) {
+      continue
+    }
+
+    const text = rawLine.replace(/\[[^\]]+\]/g, '').trim()
+    if (!text) {
+      continue
+    }
+
+    for (const match of matches) {
+      const time = parseLrcTimestamp(match[1])
+      if (time !== null) {
+        lines.push({ time, text })
+      }
+    }
+  }
+
+  return lines.sort((a, b) => a.time - b.time)
+}
+
+function countEncodingArtifacts(value: string) {
+  const replacementCount = (value.match(/\uFFFD/g) ?? []).length
+  const mojibakeCount = (value.match(/锟斤拷|ï»¿|â€|â€™|Ã./g) ?? []).length
+  return replacementCount * 4 + mojibakeCount * 3
+}
+
+function decodeLyricBuffer(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer)
+
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return new TextDecoder('utf-8').decode(bytes.subarray(3))
+  }
+
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder('utf-16le').decode(bytes.subarray(2))
+  }
+
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder('utf-16be').decode(bytes.subarray(2))
+  }
+
+  const candidates: string[] = []
+  try {
+    candidates.push(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+  } catch {
+    // GBK/GB18030 lyrics often fail strict UTF-8 decoding.
+  }
+
+  for (const encoding of ['gb18030', 'gbk', 'utf-8']) {
+    try {
+      const decoded = new TextDecoder(encoding).decode(bytes)
+      if (!candidates.includes(decoded)) {
+        candidates.push(decoded)
+      }
+    } catch {
+      // Some browsers may not expose every legacy label.
+    }
+  }
+
+  return candidates
+    .filter(Boolean)
+    .sort((left, right) => countEncodingArtifacts(left) - countEncodingArtifacts(right))[0] ?? ''
+}
+
+async function readLyricFileText(file: File) {
+  return decodeLyricBuffer(await file.arrayBuffer())
 }
 
 function formatPlayerTime(value: number) {
@@ -104,7 +278,26 @@ function formatPlayerTime(value: number) {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
-function PlayerIcon({ name }: { name: 'previous' | 'play' | 'pause' | 'next' | 'music-page' }) {
+function PlayerIcon({
+  name,
+}: {
+  name:
+    | 'previous'
+    | 'play'
+    | 'pause'
+    | 'next'
+    | 'music-page'
+    | 'queue'
+    | 'close'
+    | 'up'
+    | 'down'
+    | 'trash'
+    | 'order'
+    | 'repeat-all'
+    | 'repeat-one'
+    | 'shuffle'
+    | 'volume'
+}) {
   if (name === 'previous') {
     return (
       <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
@@ -137,6 +330,112 @@ function PlayerIcon({ name }: { name: 'previous' | 'play' | 'pause' | 'next' | '
         <path d="M9 18V6l9-2v12" />
         <circle cx="6.5" cy="18" r="2.5" />
         <circle cx="15.5" cy="16" r="2.5" />
+      </svg>
+    )
+  }
+
+  if (name === 'queue') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M5 7h10" />
+        <path d="M5 12h8" />
+        <path d="M5 17h6" />
+        <path d="M17 15v-4l3 2z" />
+      </svg>
+    )
+  }
+
+  if (name === 'order') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M5 7h11" />
+        <path d="M5 12h9" />
+        <path d="M5 17h7" />
+        <path d="M17 15l2 2 2-2" />
+      </svg>
+    )
+  }
+
+  if (name === 'repeat-all') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M17 3l4 4-4 4" />
+        <path d="M3 11V9a2 2 0 0 1 2-2h16" />
+        <path d="M7 21l-4-4 4-4" />
+        <path d="M21 13v2a2 2 0 0 1-2 2H3" />
+      </svg>
+    )
+  }
+
+  if (name === 'repeat-one') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M17 3l4 4-4 4" />
+        <path d="M3 11V9a2 2 0 0 1 2-2h16" />
+        <path d="M7 21l-4-4 4-4" />
+        <path d="M21 13v2a2 2 0 0 1-2 2H3" />
+        <path d="M12 10v5" />
+      </svg>
+    )
+  }
+
+  if (name === 'shuffle') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M4 7h3c2.5 0 4 10 6.5 10H20" />
+        <path d="M17 14l3 3-3 3" />
+        <path d="M4 17h3c1.2 0 2.1-1.2 3-2.8" />
+        <path d="M14 7h6" />
+        <path d="M17 4l3 3-3 3" />
+      </svg>
+    )
+  }
+
+  if (name === 'volume') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M4 10v4h4l5 4V6l-5 4z" />
+        <path d="M16 9.5a4 4 0 0 1 0 5" />
+        <path d="M18.5 7a7 7 0 0 1 0 10" />
+      </svg>
+    )
+  }
+
+  if (name === 'close') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M7 7l10 10" />
+        <path d="M17 7L7 17" />
+      </svg>
+    )
+  }
+
+  if (name === 'up') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M12 19V5" />
+        <path d="M6 11l6-6 6 6" />
+      </svg>
+    )
+  }
+
+  if (name === 'down') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M12 5v14" />
+        <path d="M18 13l-6 6-6-6" />
+      </svg>
+    )
+  }
+
+  if (name === 'trash') {
+    return (
+      <svg aria-hidden="true" className="music-control-icon" viewBox="0 0 24 24">
+        <path d="M5 7h14" />
+        <path d="M9 7V5h6v2" />
+        <path d="M8 10v8" />
+        <path d="M12 10v8" />
+        <path d="M16 10v8" />
       </svg>
     )
   }
@@ -192,6 +491,11 @@ function getNextTrackId(library: MusicLibraryState) {
     return library.queue[0]
   }
 
+  if (library.mode === 'shuffle') {
+    const candidates = library.queue.length > 1 ? library.queue.filter((id) => id !== library.currentTrackId) : library.queue
+    return candidates[Math.floor(Math.random() * candidates.length)]
+  }
+
   const currentIndex = library.queue.indexOf(library.currentTrackId)
   if (currentIndex < 0) {
     return library.queue[0]
@@ -217,6 +521,54 @@ function getPreviousTrackId(library: MusicLibraryState) {
   return library.mode === 'repeat-all' ? library.queue[library.queue.length - 1] : library.currentTrackId
 }
 
+function getModeLabel(mode: PlaybackMode) {
+  if (mode === 'repeat-all') {
+    return '列表循环'
+  }
+
+  if (mode === 'repeat-one') {
+    return '单曲循环'
+  }
+
+  if (mode === 'shuffle') {
+    return '随机播放'
+  }
+
+  return '顺序播放'
+}
+
+function getModeIcon(mode: PlaybackMode): Parameters<typeof PlayerIcon>[0]['name'] {
+  if (mode === 'repeat-all') {
+    return 'repeat-all'
+  }
+
+  if (mode === 'repeat-one') {
+    return 'repeat-one'
+  }
+
+  if (mode === 'shuffle') {
+    return 'shuffle'
+  }
+
+  return 'order'
+}
+
+function getNextMode(mode: PlaybackMode): PlaybackMode {
+  if (mode === 'order') {
+    return 'repeat-all'
+  }
+
+  if (mode === 'repeat-all') {
+    return 'repeat-one'
+  }
+
+  if (mode === 'repeat-one') {
+    return 'shuffle'
+  }
+
+  return 'order'
+}
+
 async function readLocalHandleFile(handle: LocalFileHandle) {
   if (handle.queryPermission && (await handle.queryPermission({ mode: 'read' })) !== 'granted') {
     if (!handle.requestPermission || (await handle.requestPermission({ mode: 'read' })) !== 'granted') {
@@ -227,21 +579,49 @@ async function readLocalHandleFile(handle: LocalFileHandle) {
   return handle.getFile()
 }
 
+async function ensureDirectoryReadPermission(handle: LocalDirectoryHandle) {
+  if (handle.queryPermission && (await handle.queryPermission({ mode: 'read' })) !== 'granted') {
+    if (!handle.requestPermission || (await handle.requestPermission({ mode: 'read' })) !== 'granted') {
+      throw new Error('本地文件夹读取授权已失效，请重新选择文件夹。')
+    }
+  }
+}
+
 export function MusicPlayerProvider({ children }: PropsWithChildren) {
   const [library, setLibrary] = useState<MusicLibraryState>(() => loadMusicLibraryState())
   const [audioSrc, setAudioSrc] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [isQueueOpen, setIsQueueOpen] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [lyrics, setLyrics] = useState<LrcLine[]>([])
+  const [lyricStatusMessage, setLyricStatusMessage] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const objectUrlRef = useRef<string | null>(null)
   const sessionFilesRef = useRef(new Map<string, File>())
+  const sessionLyricsRef = useRef(new Map<string, string>())
 
   const currentTrack = useMemo(
     () => library.tracks.find((track) => track.id === library.currentTrackId) ?? null,
     [library.currentTrackId, library.tracks],
   )
+
+  const currentLyricIndex = useMemo(() => {
+    if (lyrics.length === 0) {
+      return -1
+    }
+
+    for (let index = lyrics.length - 1; index >= 0; index -= 1) {
+      if (currentTime + 0.2 >= lyrics[index].time) {
+        return index
+      }
+    }
+
+    return -1
+  }, [currentTime, lyrics])
+
+  const currentLyricLine = currentLyricIndex >= 0 ? lyrics[currentLyricIndex] : null
 
   useEffect(() => {
     saveMusicLibraryState(library)
@@ -324,6 +704,56 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
   }, [currentTrack])
 
   useEffect(() => {
+    let cancelled = false
+
+    async function resolveLyrics(track: MusicTrack) {
+      setLyrics([])
+      setLyricStatusMessage(null)
+
+      try {
+        let lyricText = sessionLyricsRef.current.get(track.id)
+        if ((!lyricText || countEncodingArtifacts(lyricText) > 0) && track.lyricHandleId) {
+          const handle = await getLocalFileHandle(track.lyricHandleId)
+          if (handle) {
+            const file = await readLocalHandleFile(handle)
+            lyricText = await readLyricFileText(file)
+            sessionLyricsRef.current.set(track.id, lyricText)
+          }
+        }
+
+        if (!lyricText) {
+          return
+        }
+
+        const parsedLyrics = parseLrcText(lyricText)
+        if (cancelled) {
+          return
+        }
+
+        setLyrics(parsedLyrics)
+        setLyricStatusMessage(parsedLyrics.length > 0 ? null : '歌词文件没有可识别的时间轴。')
+      } catch (error) {
+        if (!cancelled) {
+          setLyrics([])
+          setLyricStatusMessage(error instanceof Error ? error.message : '无法读取歌词文件。')
+        }
+      }
+    }
+
+    if (!currentTrack) {
+      setLyrics([])
+      setLyricStatusMessage(null)
+      return undefined
+    }
+
+    void resolveLyrics(currentTrack)
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentTrack])
+
+  useEffect(() => {
     const audio = audioRef.current
     if (!audio || !audioSrc) {
       return
@@ -372,13 +802,51 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
 
   const addLocalFileHandles = useCallback(async (handles: LocalFileHandle[]) => {
     const tracks: MusicTrack[] = []
+    const lyricHandles = new Map<string, LocalFileHandle>()
+    let lyricsMatched = 0
+
     for (const handle of handles) {
+      if (isSupportedLyricFile(handle.name)) {
+        lyricHandles.set(getLyricMatchKey(handle.name), handle)
+      }
+    }
+
+    for (const handle of handles) {
+      if (isSupportedLyricFile(handle.name)) {
+        continue
+      }
+
       const file = await readLocalHandleFile(handle)
+      if (!isSupportedAudioFile(file.name, file.type)) {
+        continue
+      }
+
       const trackId = createMusicId('local')
       const handleId = createMusicId('handle')
+      const lyricHandle = lyricHandles.get(getLyricMatchKey(handle.name))
+      let lyricHandleId: string | undefined
+
+      if (lyricHandle) {
+        lyricHandleId = createMusicId('lyric')
+        await saveLocalFileHandle(lyricHandleId, lyricHandle)
+        sessionLyricsRef.current.set(trackId, await readLyricFileText(await readLocalHandleFile(lyricHandle)))
+        lyricsMatched += 1
+      }
+
       await saveLocalFileHandle(handleId, handle)
       sessionFilesRef.current.set(trackId, file)
-      tracks.push(createLocalTrackFromFile(file, trackId, handleId))
+      tracks.push(
+        createLocalTrackFromFile(file, trackId, {
+          localHandleId: handleId,
+          lyricHandleId,
+          lyricFileName: lyricHandle?.name,
+        }),
+      )
+    }
+
+    if (tracks.length === 0) {
+      setStatusMessage('没有找到可识别的本地音乐文件。')
+      return
     }
 
     setLibrary((value) => ({
@@ -387,15 +855,37 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       queue: [...tracks.map((track) => track.id), ...value.queue],
       currentTrackId: value.currentTrackId ?? tracks[0]?.id,
     }))
-    setStatusMessage(`已添加 ${tracks.length} 个本地音乐文件。`)
+    setStatusMessage(`已添加 ${tracks.length} 个本地音乐文件${lyricsMatched > 0 ? `，自动匹配 ${lyricsMatched} 个歌词` : ''}。`)
   }, [])
 
-  const addLocalFiles = useCallback((files: File[]) => {
-    const tracks = files.map((file) => {
+  const addLocalFiles = useCallback(async (files: File[]) => {
+    const lyricFiles = new Map<string, File>()
+    let lyricsMatched = 0
+
+    for (const file of files) {
+      if (isSupportedLyricFile(file.name)) {
+        lyricFiles.set(getLyricMatchKey(file.name), file)
+      }
+    }
+
+    const audioFiles = files.filter((file) => isSupportedAudioFile(file.name, file.type))
+    const tracks = await Promise.all(audioFiles.map(async (file) => {
       const trackId = createMusicId('local')
+      const lyricFile = lyricFiles.get(getLyricMatchKey(file.name))
       sessionFilesRef.current.set(trackId, file)
-      return createLocalTrackFromFile(file, trackId)
-    })
+      if (lyricFile) {
+        sessionLyricsRef.current.set(trackId, await readLyricFileText(lyricFile))
+        lyricsMatched += 1
+      }
+      return createLocalTrackFromFile(file, trackId, {
+        lyricFileName: lyricFile?.name,
+      })
+    }))
+
+    if (tracks.length === 0) {
+      setStatusMessage('没有找到可识别的本地音乐文件。')
+      return
+    }
 
     setLibrary((value) => ({
       ...value,
@@ -403,7 +893,270 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       queue: [...tracks.map((track) => track.id), ...value.queue],
       currentTrackId: value.currentTrackId ?? tracks[0]?.id,
     }))
-    setStatusMessage(`已添加 ${tracks.length} 个本地音乐文件；当前浏览器不支持刷新后自动恢复。`)
+    setStatusMessage(
+      `已添加 ${tracks.length} 个本地音乐文件${lyricsMatched > 0 ? `，自动匹配 ${lyricsMatched} 个歌词` : ''}；当前浏览器不支持刷新后自动恢复。`,
+    )
+  }, [])
+
+  const collectDirectoryTracks = useCallback(
+    async (
+      folderId: string,
+      directoryHandle: LocalDirectoryHandle,
+      existingTracksByKey: Map<string, MusicTrack>,
+    ): Promise<FolderTrackCollectionResult> => {
+      const tracks: MusicTrack[] = []
+      const audioEntries: Array<{ entry: LocalFileHandle; relativePath: string }> = []
+      const lyricEntries = new Map<string, { entry: LocalFileHandle; relativePath: string }>()
+      const lyricUpdates: LyricUpdate[] = []
+      let scanned = 0
+      let skipped = 0
+      let lyricsMatched = 0
+
+      async function walk(handle: LocalDirectoryHandle, basePath: string) {
+        for await (const [entryName, entry] of handle.entries()) {
+          const relativePath = basePath ? `${basePath}/${entryName}` : entryName
+
+          if (entry.kind === 'directory') {
+            await walk(entry, relativePath)
+            continue
+          }
+
+          if (isSupportedLyricFile(entry.name)) {
+            lyricEntries.set(getLyricMatchKey(relativePath), { entry, relativePath })
+            continue
+          }
+
+          if (!isSupportedAudioFile(entry.name)) {
+            continue
+          }
+
+          audioEntries.push({ entry, relativePath })
+        }
+      }
+
+      await ensureDirectoryReadPermission(directoryHandle)
+      await walk(directoryHandle, '')
+
+      for (const { entry, relativePath } of audioEntries) {
+        scanned += 1
+
+        const trackKey = getFolderTrackKey(folderId, relativePath)
+        const lyricEntry = lyricEntries.get(getLyricMatchKey(relativePath))
+        const existingTrack = existingTracksByKey.get(trackKey)
+
+        if (existingTrack) {
+          skipped += 1
+          if (lyricEntry && !existingTrack.lyricHandleId) {
+            const lyricHandleId = createMusicId('lyric')
+            await saveLocalFileHandle(lyricHandleId, lyricEntry.entry)
+            lyricUpdates.push({
+              trackId: existingTrack.id,
+              lyricHandleId,
+              lyricFileName: lyricEntry.entry.name,
+              lyricRelativePath: lyricEntry.relativePath,
+            })
+            lyricsMatched += 1
+          }
+          continue
+        }
+
+        const file = await readLocalHandleFile(entry)
+        const trackId = createMusicId('local')
+        const handleId = createMusicId('handle')
+        let lyricHandleId: string | undefined
+
+        if (lyricEntry) {
+          lyricHandleId = createMusicId('lyric')
+          await saveLocalFileHandle(lyricHandleId, lyricEntry.entry)
+          sessionLyricsRef.current.set(trackId, await readLyricFileText(await readLocalHandleFile(lyricEntry.entry)))
+          lyricsMatched += 1
+        }
+
+        await saveLocalFileHandle(handleId, entry)
+        sessionFilesRef.current.set(trackId, file)
+        const track = createLocalTrackFromFile(file, trackId, {
+          localHandleId: handleId,
+          folderHandleId: folderId,
+          relativePath,
+          lyricHandleId,
+          lyricFileName: lyricEntry?.entry.name,
+          lyricRelativePath: lyricEntry?.relativePath,
+        })
+        tracks.push(track)
+        existingTracksByKey.set(trackKey, track)
+      }
+
+      return { tracks, scanned, skipped, lyricsMatched, lyricUpdates }
+    },
+    [],
+  )
+
+  const scanLocalDirectory = useCallback(
+    async (handle: LocalDirectoryHandle) => {
+      await ensureDirectoryReadPermission(handle)
+
+      let folderId = createMusicId('folder')
+      let folderName = handle.name
+      let isExistingFolder = false
+
+      if (handle.isSameEntry) {
+        for (const folder of library.folders) {
+          const savedHandle = await getLocalDirectoryHandle(folder.id).catch(() => undefined)
+          if (savedHandle && (await handle.isSameEntry(savedHandle))) {
+            folderId = folder.id
+            folderName = folder.name
+            isExistingFolder = true
+            break
+          }
+        }
+      }
+
+      await saveLocalDirectoryHandle(folderId, handle)
+
+      const existingTracksByKey = new Map(
+        library.tracks
+          .filter((track) => track.folderHandleId === folderId && track.relativePath)
+          .map((track) => [getFolderTrackKey(folderId, track.relativePath as string), track]),
+      )
+      const result = await collectDirectoryTracks(folderId, handle, existingTracksByKey)
+      const scannedAt = new Date().toISOString()
+
+      setLibrary((value) => {
+        const lyricUpdatesById = new Map(result.lyricUpdates.map((update) => [update.trackId, update]))
+        const nextTrackCount =
+          value.tracks.filter((track) => track.folderHandleId === folderId).length + result.tracks.length
+        const nextFolder: MusicLibraryFolder = {
+          id: folderId,
+          name: folderName,
+          addedAt: value.folders.find((folder) => folder.id === folderId)?.addedAt ?? scannedAt,
+          lastScannedAt: scannedAt,
+          trackCount: nextTrackCount,
+        }
+        const folders = isExistingFolder
+          ? value.folders.map((folder) => (folder.id === folderId ? nextFolder : folder))
+          : [nextFolder, ...value.folders]
+
+        return {
+          ...value,
+          folders,
+          tracks: [
+            ...result.tracks,
+            ...value.tracks.map((track) => {
+              const lyricUpdate = lyricUpdatesById.get(track.id)
+              return lyricUpdate
+                ? {
+                    ...track,
+                    lyricHandleId: lyricUpdate.lyricHandleId,
+                    lyricFileName: lyricUpdate.lyricFileName,
+                    lyricRelativePath: lyricUpdate.lyricRelativePath,
+                  }
+                : track
+            }),
+          ],
+          queue: [...result.tracks.map((track) => track.id), ...value.queue],
+          currentTrackId: value.currentTrackId ?? result.tracks[0]?.id,
+        }
+      })
+
+      setStatusMessage(
+        result.tracks.length > 0
+          ? `已扫描 ${folderName}，新增 ${result.tracks.length} 首音乐${result.lyricsMatched > 0 ? `，匹配 ${result.lyricsMatched} 个歌词` : ''}。`
+          : `已扫描 ${folderName}，没有发现新的音乐文件${result.lyricsMatched > 0 ? `，补全 ${result.lyricsMatched} 个歌词` : ''}。`,
+      )
+
+      return {
+        folderId,
+        folderName,
+        added: result.tracks.length,
+        scanned: result.scanned,
+        skipped: result.skipped,
+        lyricsMatched: result.lyricsMatched,
+      }
+    },
+    [collectDirectoryTracks, library.folders, library.tracks],
+  )
+
+  const rescanLocalFolder = useCallback(
+    async (folderId: string) => {
+      const folder = library.folders.find((item) => item.id === folderId)
+      if (!folder) {
+        throw new Error('没有找到这个音乐文件夹。')
+      }
+
+      const handle = await getLocalDirectoryHandle(folderId)
+      if (!handle) {
+        throw new Error('这个文件夹需要重新选择后才能扫描。')
+      }
+
+      await ensureDirectoryReadPermission(handle)
+      const existingTracksByKey = new Map(
+        library.tracks
+          .filter((track) => track.folderHandleId === folderId && track.relativePath)
+          .map((track) => [getFolderTrackKey(folderId, track.relativePath as string), track]),
+      )
+      const result = await collectDirectoryTracks(folderId, handle, existingTracksByKey)
+      const scannedAt = new Date().toISOString()
+
+      setLibrary((value) => {
+        const lyricUpdatesById = new Map(result.lyricUpdates.map((update) => [update.trackId, update]))
+        const nextTrackCount =
+          value.tracks.filter((track) => track.folderHandleId === folderId).length + result.tracks.length
+
+        return {
+          ...value,
+          folders: value.folders.map((item) =>
+            item.id === folderId
+              ? {
+                  ...item,
+                  lastScannedAt: scannedAt,
+                  trackCount: nextTrackCount,
+                }
+              : item,
+          ),
+          tracks: [
+            ...result.tracks,
+            ...value.tracks.map((track) => {
+              const lyricUpdate = lyricUpdatesById.get(track.id)
+              return lyricUpdate
+                ? {
+                    ...track,
+                    lyricHandleId: lyricUpdate.lyricHandleId,
+                    lyricFileName: lyricUpdate.lyricFileName,
+                    lyricRelativePath: lyricUpdate.lyricRelativePath,
+                  }
+                : track
+            }),
+          ],
+          queue: [...result.tracks.map((track) => track.id), ...value.queue],
+          currentTrackId: value.currentTrackId ?? result.tracks[0]?.id,
+        }
+      })
+
+      setStatusMessage(
+        result.tracks.length > 0
+          ? `已重新扫描 ${folder.name}，新增 ${result.tracks.length} 首音乐${result.lyricsMatched > 0 ? `，匹配 ${result.lyricsMatched} 个歌词` : ''}。`
+          : `已重新扫描 ${folder.name}，没有发现新的音乐文件${result.lyricsMatched > 0 ? `，补全 ${result.lyricsMatched} 个歌词` : ''}。`,
+      )
+
+      return {
+        folderId,
+        folderName: folder.name,
+        added: result.tracks.length,
+        scanned: result.scanned,
+        skipped: result.skipped,
+        lyricsMatched: result.lyricsMatched,
+      }
+    },
+    [collectDirectoryTracks, library.folders, library.tracks],
+  )
+
+  const removeLocalFolder = useCallback((folderId: string) => {
+    setLibrary((value) => ({
+      ...value,
+      folders: value.folders.filter((folder) => folder.id !== folderId),
+    }))
+    void deleteLocalDirectoryHandle(folderId).catch(() => undefined)
+    setStatusMessage('已停止跟踪这个音乐文件夹，已扫描歌曲仍保留在曲库。')
   }, [])
 
   const updateTrack = useCallback((id: string, payload: TrackEditPayload) => {
@@ -434,10 +1187,21 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       if (removedTrack?.localHandleId) {
         void deleteLocalFileHandle(removedTrack.localHandleId).catch(() => undefined)
       }
+      if (removedTrack?.lyricHandleId) {
+        void deleteLocalFileHandle(removedTrack.lyricHandleId).catch(() => undefined)
+      }
       sessionFilesRef.current.delete(id)
+      sessionLyricsRef.current.delete(id)
 
       return {
         ...value,
+        folders: removedTrack?.folderHandleId
+          ? value.folders.map((folder) =>
+              folder.id === removedTrack.folderHandleId
+                ? { ...folder, trackCount: Math.max((folder.trackCount ?? 1) - 1, 0) }
+                : folder,
+            )
+          : value.folders,
         tracks,
         queue,
         currentTrackId,
@@ -461,6 +1225,46 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       queue: value.queue.includes(id) ? value.queue : [...value.queue, id],
     }))
     setStatusMessage('已加入播放队列。')
+  }, [])
+
+  const removeFromQueue = useCallback((id: string) => {
+    setLibrary((value) => {
+      const queue = value.queue.filter((trackId) => trackId !== id)
+      const currentTrackId = value.currentTrackId === id ? queue[0] : value.currentTrackId
+      return {
+        ...value,
+        queue,
+        currentTrackId,
+      }
+    })
+    setStatusMessage('已从播放队列移除。')
+  }, [])
+
+  const clearQueue = useCallback(() => {
+    setLibrary((value) => ({
+      ...value,
+      queue: value.currentTrackId ? [value.currentTrackId] : [],
+    }))
+    setStatusMessage('已清空待播队列。')
+  }, [])
+
+  const moveQueueItem = useCallback((id: string, direction: 'up' | 'down') => {
+    setLibrary((value) => {
+      const index = value.queue.indexOf(id)
+      if (index < 0) {
+        return value
+      }
+
+      const nextIndex = direction === 'up' ? index - 1 : index + 1
+      if (nextIndex < 0 || nextIndex >= value.queue.length) {
+        return value
+      }
+
+      const queue = [...value.queue]
+      const [item] = queue.splice(index, 1)
+      queue.splice(nextIndex, 0, item)
+      return { ...value, queue }
+    })
   }, [])
 
   const playNext = useCallback(() => {
@@ -560,11 +1364,16 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
   const value = useMemo<MusicPlayerContextValue>(
     () => ({
       tracks: library.tracks,
+      folders: library.folders,
       queue: library.queue,
       currentTrack,
       currentTrackId: library.currentTrackId,
       currentTime,
       duration,
+      lyrics,
+      currentLyricLine,
+      currentLyricIndex,
+      lyricStatusMessage,
       isPlaying,
       volume: library.volume,
       mode: library.mode,
@@ -572,36 +1381,58 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       addRemoteTrack,
       addLocalFileHandles,
       addLocalFiles,
+      scanLocalDirectory,
+      rescanLocalFolder,
+      removeLocalFolder,
       updateTrack,
       removeTrack,
       playTrack,
       enqueueTrack,
+      removeFromQueue,
+      clearQueue,
+      moveQueueItem,
       togglePlay,
       playNext,
       playPrevious,
       seek,
       setVolume,
       setMode,
+      openQueue: () => setIsQueueOpen(true),
+      closeQueue: () => setIsQueueOpen(false),
+      isQueueOpen,
       persistentLocalFilesSupported: supportsPersistentLocalFiles(),
+      persistentMusicFoldersSupported: supportsPersistentMusicFolders(),
     }),
     [
       addLocalFileHandles,
       addLocalFiles,
       addRemoteTrack,
+      clearQueue,
       currentTime,
+      currentLyricIndex,
+      currentLyricLine,
       currentTrack,
       duration,
       enqueueTrack,
       isPlaying,
+      isQueueOpen,
       library.currentTrackId,
+      library.folders,
       library.mode,
       library.queue,
       library.tracks,
       library.volume,
+      lyricStatusMessage,
+      lyrics,
+      moveQueueItem,
       playNext,
       playPrevious,
       playTrack,
+      removeLocalFolder,
+      removeFromQueue,
       removeTrack,
+      rescanLocalFolder,
+      scanLocalDirectory,
       seek,
       setMode,
       setVolume,
@@ -645,6 +1476,7 @@ export function MusicMiniPlayer() {
     duration,
     isPlaying,
     mode,
+    openQueue,
     playNext,
     playPrevious,
     seek,
@@ -656,13 +1488,15 @@ export function MusicMiniPlayer() {
     volume,
   } = useMusicPlayer()
 
+  const isMusicPage = location.pathname === '/tools/music'
+
   if (!currentTrack && tracks.length === 0) {
     return null
   }
 
-  const modeLabel = mode === 'order' ? '顺序' : mode === 'repeat-one' ? '单曲' : '循环'
-  const nextMode: PlaybackMode = mode === 'order' ? 'repeat-all' : mode === 'repeat-all' ? 'repeat-one' : 'order'
-  const isMusicPage = location.pathname === '/tools/music'
+  const modeLabel = getModeLabel(mode)
+  const nextMode = getNextMode(mode)
+  const modeIcon = getModeIcon(mode)
 
   if (!isMusicPage) {
     return <MusicFloatingPlayer />
@@ -670,69 +1504,178 @@ export function MusicMiniPlayer() {
 
   return (
     <section className="music-mini-player" aria-label="音乐播放器">
-      <div className="music-now-playing">
-        <span className="music-equalizer" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </span>
-        <div className="music-now-playing-copy">
-          <strong>{currentTrack?.title ?? '未选择音乐'}</strong>
-          <span>{currentTrack?.artist || currentTrack?.fileName || currentTrack?.remoteUrl || '打开音乐播放器添加曲目'}</span>
+      <div className="music-mini-surface">
+        <div className="music-now-playing">
+          <span className="music-equalizer" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+          <div className="music-now-playing-copy">
+            <strong>{currentTrack?.title ?? '未选择音乐'}</strong>
+            <span>{currentTrack?.artist || currentTrack?.fileName || currentTrack?.remoteUrl || '打开音乐播放器添加曲目'}</span>
+            {statusMessage ? <span className="music-player-inline-message">{statusMessage}</span> : null}
+          </div>
+        </div>
+
+        <div className="music-playback-cluster">
+          <div className="music-transport">
+            <button className="music-icon-button" onClick={playPrevious} type="button" aria-label="上一首" title="上一首">
+              <PlayerIcon name="previous" />
+            </button>
+            <button className="music-play-button" onClick={togglePlay} type="button" aria-label={isPlaying ? '暂停' : '播放'} title={isPlaying ? '暂停' : '播放'}>
+              <PlayerIcon name={isPlaying ? 'pause' : 'play'} />
+            </button>
+            <button className="music-icon-button" onClick={playNext} type="button" aria-label="下一首" title="下一首">
+              <PlayerIcon name="next" />
+            </button>
+          </div>
+
+          <div className="music-progress">
+            <span className="music-progress-time">{formatPlayerTime(currentTime)}</span>
+            <input
+              aria-label="播放进度"
+              max={duration || 0}
+              min={0}
+              onChange={(event) => seek(Number(event.target.value))}
+              step={1}
+              type="range"
+              value={duration ? Math.min(currentTime, duration) : 0}
+            />
+            <span className="music-progress-time">{formatPlayerTime(duration)}</span>
+          </div>
+        </div>
+
+        <div className="music-mini-actions">
+          <button
+            aria-label={`播放模式：${modeLabel}，点击切换`}
+            className="music-mini-action-button"
+            onClick={() => setMode(nextMode)}
+            title={`播放模式：${modeLabel}`}
+            type="button"
+          >
+            <PlayerIcon name={modeIcon} />
+          </button>
+          <button aria-label="打开播放队列" className="music-mini-action-button" onClick={openQueue} title="播放队列" type="button">
+            <PlayerIcon name="queue" />
+          </button>
+          <label className="music-volume-control" title="音量">
+            <span className="sr-only">音量</span>
+            <PlayerIcon name="volume" />
+            <input
+              aria-label="音量"
+              className="music-volume"
+              max={1}
+              min={0}
+              onChange={(event) => setVolume(Number(event.target.value))}
+              step={0.01}
+              type="range"
+              value={volume}
+            />
+          </label>
+          {isMusicPage ? (
+            <span aria-label="当前在音乐页" className="music-current-page-chip" title="当前在音乐页">
+              <PlayerIcon name="music-page" />
+            </span>
+          ) : (
+            <Link aria-label="打开音乐页" className="music-mini-action-button" title="打开音乐页" to="/tools/music">
+              <PlayerIcon name="music-page" />
+            </Link>
+          )}
         </div>
       </div>
+    </section>
+  )
+}
 
-      <div className="music-transport">
-        <button className="music-icon-button" onClick={playPrevious} type="button" aria-label="上一首">
-          <span aria-hidden="true">‹‹</span>
-        </button>
-        <button className="music-play-button" onClick={togglePlay} type="button">
-          {isPlaying ? '暂停' : '播放'}
-        </button>
-        <button className="music-icon-button" onClick={playNext} type="button" aria-label="下一首">
-          <span aria-hidden="true">››</span>
-        </button>
-      </div>
+export function MusicQueueDrawer() {
+  const {
+    clearQueue,
+    closeQueue,
+    currentTrackId,
+    isQueueOpen,
+    moveQueueItem,
+    playTrack,
+    queue,
+    removeFromQueue,
+    tracks,
+  } = useMusicPlayer()
+  const queueTracks = queue
+    .map((id) => tracks.find((track) => track.id === id))
+    .filter((track): track is MusicTrack => Boolean(track))
 
-      <div className="music-progress">
-        <span>{formatPlayerTime(currentTime)}</span>
-        <input
-          aria-label="播放进度"
-          max={duration || 0}
-          min={0}
-          onChange={(event) => seek(Number(event.target.value))}
-          step={1}
-          type="range"
-          value={duration ? Math.min(currentTime, duration) : 0}
-        />
-        <span>{formatPlayerTime(duration)}</span>
-      </div>
+  if (!isQueueOpen) {
+    return null
+  }
 
-      <div className="music-mini-actions">
-        <button className="music-mode-button" onClick={() => setMode(nextMode)} type="button">
-          {modeLabel}
-        </button>
-        <input
-          aria-label="音量"
-          className="music-volume"
-          max={1}
-          min={0}
-          onChange={(event) => setVolume(Number(event.target.value))}
-          step={0.01}
-          type="range"
-          value={volume}
-        />
-        {isMusicPage ? (
-          <span className="music-current-page-chip">当前页</span>
+  return (
+    <aside aria-label="播放队列" className="music-queue-drawer">
+      <div className="music-queue-panel">
+        <div className="music-queue-header">
+          <div>
+            <p className="music-queue-eyebrow">Queue</p>
+            <h2>播放队列</h2>
+          </div>
+          <div className="music-queue-header-actions">
+            <button className="music-queue-text-button" onClick={clearQueue} type="button">
+              清空
+            </button>
+            <button className="music-queue-icon-button" onClick={closeQueue} type="button" aria-label="关闭队列">
+              <PlayerIcon name="close" />
+            </button>
+          </div>
+        </div>
+
+        {queueTracks.length === 0 ? (
+          <div className="music-queue-empty">播放队列为空。</div>
         ) : (
-          <Link className="button button-ghost button-sm" to="/tools/music">
-            音乐页
-          </Link>
+          <div className="music-queue-list">
+            {queueTracks.map((track, index) => (
+              <article
+                className={`music-queue-item${track.id === currentTrackId ? ' music-queue-item-active' : ''}`}
+                key={track.id}
+              >
+                <button className="music-queue-play-target" onClick={() => playTrack(track.id)} type="button">
+                  <span className="music-queue-index">{track.id === currentTrackId ? '播放中' : String(index + 1)}</span>
+                  <span className="music-queue-copy">
+                    <strong>{track.title}</strong>
+                    <span>{track.artist || track.fileName || track.remoteUrl || '未填写来源'}</span>
+                  </span>
+                </button>
+                <div className="music-queue-item-actions">
+                  <button
+                    aria-label="上移"
+                    className="music-queue-icon-button"
+                    disabled={index === 0}
+                    onClick={() => moveQueueItem(track.id, 'up')}
+                    type="button"
+                  >
+                    <PlayerIcon name="up" />
+                  </button>
+                  <button
+                    aria-label="下移"
+                    className="music-queue-icon-button"
+                    disabled={index === queueTracks.length - 1}
+                    onClick={() => moveQueueItem(track.id, 'down')}
+                    type="button"
+                  >
+                    <PlayerIcon name="down" />
+                  </button>
+                  <button
+                    aria-label="从队列移除"
+                    className="music-queue-icon-button music-queue-danger-button"
+                    onClick={() => removeFromQueue(track.id)}
+                    type="button"
+                  >
+                    <PlayerIcon name="trash" />
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
         )}
       </div>
-
-      {statusMessage ? <div className="music-player-message">{statusMessage}</div> : null}
-    </section>
+    </aside>
   )
 }
 

@@ -77,6 +77,7 @@ export function MonacoEditorHost({
       }}
       onChange={(next) => onChange?.(next ?? '')}
       options={{
+        automaticLayout: true,
         minimap: { enabled: minimap },
         readOnly,
         fontSize: 13,
