@@ -25,7 +25,7 @@ export function MongoJsonWorkspace() {
   }
 
   return (
-    <div className="page-shell">
+    <div className="page-shell mongo-json-page-shell">
       <ModeSwitch mode={mode} onModeChange={setMode} />
       <ContextStrip
         actions={

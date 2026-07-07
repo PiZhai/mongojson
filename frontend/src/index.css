@@ -1182,6 +1182,36 @@ a {
   min-height: 0;
 }
 
+.mongo-json-page-shell {
+  align-content: start;
+}
+
+.mongo-json-page-shell > .panel {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.mongo-json-page-shell > .panel > .editor-split {
+  flex: 0 0 auto;
+  height: clamp(420px, calc(100vh - 390px), 620px);
+  min-height: 420px;
+}
+
+.mongo-json-page-shell > .panel > .workspace-grid {
+  flex: 0 0 auto;
+  min-height: auto;
+}
+
+.mongo-json-page-shell .editor-pane {
+  min-height: 0;
+}
+
+.mongo-json-page-shell .editor-host,
+.mongo-json-page-shell .editor-shell,
+.mongo-json-page-shell .empty-state {
+  min-height: 0;
+}
+
 .inspect-page-shell {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(280px, 0.9fr);
