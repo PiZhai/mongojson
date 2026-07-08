@@ -10,6 +10,7 @@ const InspectToolPage = lazy(() =>
 )
 const MemoDocsPage = lazy(() => import('./pages/MemoDocsPage').then((module) => ({ default: module.MemoDocsPage })))
 const MusicToolPage = lazy(() => import('./pages/MusicToolPage').then((module) => ({ default: module.MusicToolPage })))
+const WatchPartyPage = lazy(() => import('./pages/WatchPartyPage').then((module) => ({ default: module.WatchPartyPage })))
 const MongoJsonToolPage = lazy(() =>
   import('./pages/MongoJsonToolPage').then((module) => ({ default: module.MongoJsonToolPage })),
 )
@@ -42,6 +43,7 @@ function App() {
             <Route path="tools/visualize" element={withSuspense(<VisualizeToolPage />)} />
             <Route path="tools/memo-docs" element={withSuspense(<MemoDocsPage />)} />
             <Route path="tools/music" element={withSuspense(<MusicToolPage />)} />
+            <Route path="tools/watch-party" element={withSuspense(<WatchPartyPage />)} />
           </Route>
         </Routes>
       </MusicPlayerProvider>

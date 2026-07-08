@@ -5,7 +5,7 @@ import { MusicMiniPlayer, MusicQueueDrawer } from '../music/MusicPlayerProvider'
 type NavItem = {
   to: string
   title: string
-  icon: 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'music'
+  icon: 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'music' | 'watch'
 }
 
 const navGroups: Array<{ label: string; items: NavItem[] }> = [
@@ -52,6 +52,11 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
         title: '音乐播放器',
         icon: 'music',
       },
+      {
+        to: '/tools/watch-party',
+        title: '视频同步',
+        icon: 'watch',
+      },
     ],
   },
 ]
@@ -74,6 +79,9 @@ const pageMeta: Record<string, { title: string }> = {
   },
   '/tools/music': {
     title: '音乐播放器',
+  },
+  '/tools/watch-party': {
+    title: '视频同步',
   },
 }
 
@@ -137,6 +145,16 @@ function NavIcon({ icon }: Pick<NavItem, 'icon'>) {
         <path d="M9 18V6l9-2v12" />
         <circle cx="6.5" cy="18" r="2.5" />
         <circle cx="15.5" cy="16" r="2.5" />
+      </svg>
+    )
+  }
+
+  if (icon === 'watch') {
+    return (
+      <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">
+        <rect height="12" rx="2" width="16" x="4" y="6" />
+        <path d="M10 10l5 2-5 2z" />
+        <path d="M8 20h8" />
       </svg>
     )
   }

@@ -223,6 +223,14 @@ func (h *Handler) createPreset(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusCreated, map[string]domain.PresetRecord{"preset": record})
 }
 
+func (h *Handler) watchRoomWebSocket(w http.ResponseWriter, r *http.Request) {
+	if h.deps.WatchSync == nil {
+		httpError(w, http.StatusServiceUnavailable, "watch sync is not configured")
+		return
+	}
+	h.deps.WatchSync.ServeRoom(w, r, chi.URLParam(r, "roomID"))
+}
+
 func withTimeout(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, 3*time.Second)
 }

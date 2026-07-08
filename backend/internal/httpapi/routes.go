@@ -14,6 +14,7 @@ import (
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
 	"mongojson/backend/internal/service/presets"
+	"mongojson/backend/internal/service/watchsync"
 )
 
 type MemoStore interface {
@@ -27,6 +28,7 @@ type Dependencies struct {
 	JobService    *jobs.Service
 	MemoService   MemoStore
 	PresetService *presets.Service
+	WatchSync     *watchsync.Hub
 	Readiness     func(context.Context) (map[string]string, error)
 }
 
@@ -45,6 +47,7 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/jobs/{id}", handler.getJob)
 		r.Get("/presets", handler.listPresets)
 		r.Post("/presets", handler.createPreset)
+		r.Get("/watch/rooms/{roomID}/ws", handler.watchRoomWebSocket)
 	})
 }
 

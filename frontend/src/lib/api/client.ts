@@ -2,6 +2,10 @@ import type { FileSummary, JobSummary, MemoFloatingCardRecord, MemoRecord, Prese
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
+function resolveApiUrl(path: string) {
+  return new URL(`${API_BASE}${path}`, window.location.origin)
+}
+
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init)
   if (!response.ok) {
@@ -59,6 +63,13 @@ export async function savePreset(payload: {
 
 export function getFileDownloadUrl(id: string) {
   return `${API_BASE}/files/${id}/download`
+}
+
+export function getWatchRoomWebSocketUrl(roomId: string, clientId: string) {
+  const url = resolveApiUrl(`/watch/rooms/${encodeURIComponent(roomId)}/ws`)
+  url.searchParams.set('client_id', clientId)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
 }
 
 export async function getMemo(slug = 'inbox') {

@@ -429,3 +429,259 @@
     padding-inline: 14px;
   }
 }
+
+.watch-party-shell {
+  --watch-bg: #f5f7fb;
+  --watch-panel: #ffffff;
+  --watch-ink: #172033;
+  --watch-muted: #607085;
+  --watch-line: #d7e0eb;
+  --watch-blue: #2563eb;
+  --watch-green: #0f766e;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 100%;
+  padding: 18px;
+  overflow: auto;
+  background: var(--watch-bg);
+  color: var(--watch-ink);
+}
+
+.watch-party-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  width: 100%;
+  min-width: 0;
+}
+
+.watch-stage,
+.watch-side-panel,
+.watch-panel {
+  min-width: 0;
+}
+
+.watch-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.watch-video-frame {
+  display: grid;
+  place-items: center;
+  min-height: min(62vh, 720px);
+  overflow: hidden;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  background: #05070c;
+  box-shadow: 0 18px 46px rgba(23, 32, 51, 0.16);
+}
+
+.watch-video {
+  display: block;
+  width: 100%;
+  max-height: min(72vh, 760px);
+  background: #05070c;
+}
+
+.watch-empty-video {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: min(62vh, 720px);
+  color: #dbeafe;
+  font-family: "Fira Code", Consolas, monospace;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.watch-control-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--watch-line);
+  border-radius: 8px;
+  background: var(--watch-panel);
+  box-shadow: 0 8px 22px rgba(31, 42, 68, 0.07);
+}
+
+.watch-icon-button {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--watch-line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--watch-ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.watch-icon-button:hover {
+  border-color: var(--watch-blue);
+  color: var(--watch-blue);
+}
+
+.watch-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.watch-primary-action {
+  border-color: var(--watch-blue);
+  background: var(--watch-blue);
+  color: #ffffff;
+}
+
+.watch-primary-action:hover {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+.watch-rate-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--watch-line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--watch-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.watch-rate-control select {
+  min-height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--watch-ink);
+  font: inherit;
+  font-weight: 700;
+}
+
+.watch-time-readout {
+  margin-left: auto;
+  color: var(--watch-muted);
+  font-family: "Fira Code", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.watch-side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.watch-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--watch-line);
+  border-radius: 8px;
+  background: var(--watch-panel);
+  box-shadow: 0 8px 22px rgba(31, 42, 68, 0.07);
+}
+
+.watch-panel-heading,
+.watch-file-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.watch-panel-heading span,
+.watch-file-meta span {
+  color: var(--watch-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.watch-panel-heading strong,
+.watch-file-meta strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--watch-ink);
+}
+
+.watch-room-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.watch-file-picker {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 72px;
+  overflow: hidden;
+  border: 1px dashed #9db1cc;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--watch-blue);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.watch-file-picker input {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.watch-state-list {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.watch-state-list span {
+  color: var(--watch-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.watch-state-list strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--watch-ink);
+}
+
+@media (max-width: 1100px) {
+  .watch-party-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .watch-side-panel {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .watch-party-shell {
+    padding: 12px;
+  }
+
+  .watch-side-panel,
+  .watch-room-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .watch-time-readout {
+    width: 100%;
+    margin-left: 0;
+  }
+}

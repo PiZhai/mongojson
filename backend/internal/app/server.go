@@ -20,6 +20,7 @@ import (
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
 	"mongojson/backend/internal/service/presets"
+	"mongojson/backend/internal/service/watchsync"
 )
 
 type Server struct {
@@ -57,6 +58,7 @@ func NewServer() (*Server, error) {
 	jobService := jobs.NewService(db, fileStore, cfg.FileRetention)
 	presetService := presets.NewService(db)
 	memoService := memo.NewService(db)
+	watchSyncHub := watchsync.NewHub()
 
 	worker := jobs.NewWorker(jobService, cfg)
 	worker.Start(context.Background())
@@ -79,6 +81,7 @@ func NewServer() (*Server, error) {
 		JobService:    jobService,
 		MemoService:   memoService,
 		PresetService: presetService,
+		WatchSync:     watchSyncHub,
 		Readiness:     readinessChecker(cfg, db, worker),
 	})
 
