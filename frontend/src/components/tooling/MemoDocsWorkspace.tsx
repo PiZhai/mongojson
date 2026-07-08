@@ -487,9 +487,9 @@ export function MemoDocsWorkspace() {
   }
 
   return (
-    <div className="memo-focus-shell">
-      <div className="memo-focus-body">
-        <section className="memo-focus-card" aria-labelledby="memo-page-title">
+    <div className="memo-focus-shell tool-workspace">
+      <div className="memo-focus-body tool-layout">
+        <section className="memo-focus-card tool-primary" aria-labelledby="memo-page-title">
           <div className="memo-editor-shell">
             <div className="memo-title-row">
               <div className="memo-focus-heading">
@@ -580,7 +580,7 @@ export function MemoDocsWorkspace() {
           />
         </section>
 
-        <aside className="memo-floating-panel" aria-label="随手记悬浮卡片栏">
+        <aside className="memo-floating-panel tool-secondary" aria-label="随手记悬浮卡片栏">
           <div className="memo-floating-panel-header">
             <span className="memo-floating-panel-title">悬浮卡片</span>
             <div className="memo-floating-panel-actions">
