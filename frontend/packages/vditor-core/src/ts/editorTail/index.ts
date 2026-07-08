@@ -1,6 +1,6 @@
 import {Constants} from "../constants";
 import {getMarkdown} from "../markdown/getMarkdown";
-import {execAfterRender, insertEmptyBlock} from "../util/fixBrowserBehavior";
+import {insertEmptyBlock} from "../util/fixBrowserBehavior";
 import {setMarkdown} from "../util/setMarkdown";
 
 const DEFAULT_TAIL_LINES = 3;
@@ -80,8 +80,11 @@ const getEditorTailClickLine = (vditor: IVditor, event: MouseEvent, maxLines: nu
         return null;
     }
 
-    const lastBlock = getLastEditorContentBlock(editorElement);
-    const contentBottom = lastBlock?.getBoundingClientRect().bottom ?? editorElement.getBoundingClientRect().top;
+    const lastBlock = getEditorTailBlocks(editorElement).tailStartBlock;
+    if (!lastBlock) {
+        return null;
+    }
+    const contentBottom = lastBlock.getBoundingClientRect().bottom;
     return getTailClickLine(event.clientY, contentBottom, getEditorLineHeight(editorElement), maxLines);
 };
 
@@ -260,14 +263,22 @@ export class EditorTail {
             return;
         }
         const normalizedLine = Math.max(1, Math.floor(targetLine));
-        let {tailBlocks} = getEditorTailBlocks(editorElement);
+        let {tailBlocks, tailStartBlock} = getEditorTailBlocks(editorElement);
+        if (!tailStartBlock) {
+            editorElement.focus();
+            collapseSelectionToElementEnd(editorElement);
+            return;
+        }
 
         if (tailBlocks.length < normalizedLine) {
             collapseSelectionToElementEnd(editorElement);
         }
         while (tailBlocks.length < normalizedLine) {
             insertEmptyBlock(this.vditor, "afterend");
-            tailBlocks = getEditorTailBlocks(editorElement).tailBlocks;
+            ({tailBlocks, tailStartBlock} = getEditorTailBlocks(editorElement));
+            if (!tailStartBlock) {
+                break;
+            }
         }
 
         const targetBlock = tailBlocks[normalizedLine - 1] ?? tailBlocks[tailBlocks.length - 1];
@@ -276,12 +287,6 @@ export class EditorTail {
             collapseSelectionToBlockStart(targetBlock);
         } else {
             collapseSelectionToElementEnd(editorElement);
-        }
-
-        const markdown = getMarkdown(this.vditor);
-        execAfterRender(this.vditor);
-        if (typeof this.vditor.options.input === "function") {
-            this.vditor.options.input(markdown);
         }
     }
 }

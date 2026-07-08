@@ -19,7 +19,6 @@ type VditorMemoEditorProps = {
   codeTheme?: VditorMemoCodeTheme
   contentTheme?: VditorMemoContentTheme
   documentRevision?: string
-  fallbackHTML?: string
   initialValue: string
   mode?: VditorMemoMode
   onChange: (value: string) => void
@@ -63,7 +62,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
     codeTheme = 'github',
     contentTheme = 'light',
     documentRevision = '',
-    fallbackHTML = '',
     initialValue,
     mode = 'ir',
     onChange,
@@ -84,12 +82,9 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
     const initialValueRef = useRef(initialValue)
     const initialModeRef = useRef<VditorMode>(mode)
     const valueRef = useRef(initialValue)
-    const fallbackHTMLRef = useRef(fallbackHTML)
-    const convertedFallbackHTMLRef = useRef('')
 
     codeThemeRef.current = codeTheme
     contentThemeRef.current = contentTheme
-    fallbackHTMLRef.current = fallbackHTML
     initialValueRef.current = initialValue
     onChangeRef.current = onChange
     onUploadRef.current = onUpload
@@ -101,15 +96,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       window.setTimeout(() => {
         suppressInputRef.current = false
       }, 0)
-    }, [])
-
-    const getPendingFallbackMarkdown = useCallback((editor: Vditor) => {
-      const html = fallbackHTMLRef.current.trim()
-      if (!html || valueRef.current.trim().length > 0 || convertedFallbackHTMLRef.current === html) {
-        return null
-      }
-      convertedFallbackHTMLRef.current = html
-      return editor.html2md(html)
     }, [])
 
     useEffect(() => {
@@ -141,18 +127,13 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
               })
             }
             const pendingValue = pendingValueRef.current
-            const fallbackMarkdown = getPendingFallbackMarkdown(editor)
-            const nextValue = fallbackMarkdown ?? pendingValue ?? valueRef.current
+            const nextValue = pendingValue ?? valueRef.current
 
             pendingValueRef.current = null
             window.requestAnimationFrame(() => {
               if (disposed || editorRef.current !== editor || !isReadyRef.current || !editor) return
               if (getEditorMarkdown(editor) !== nextValue) {
                 applyEditorValue(editor, nextValue)
-              }
-              if (fallbackMarkdown !== null) {
-                valueRef.current = fallbackMarkdown
-                onChangeRef.current(fallbackMarkdown)
               }
             })
           },
@@ -238,7 +219,6 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
       }
     }, [
       applyEditorValue,
-      getPendingFallbackMarkdown,
       placeholder,
     ])
 
@@ -263,25 +243,16 @@ export const VditorMemoEditor = forwardRef<VditorMemoEditorHandle, VditorMemoEdi
         pendingValueRef.current = nextValue
         return
       }
-      const fallbackMarkdown = getPendingFallbackMarkdown(editor)
-      const valueToApply = fallbackMarkdown ?? nextValue
+      const valueToApply = nextValue
       if (valueToApply === getEditorMarkdown(editor)) {
-        if (fallbackMarkdown !== null) {
-          valueRef.current = fallbackMarkdown
-          onChangeRef.current(fallbackMarkdown)
-        }
         return
       }
       window.requestAnimationFrame(() => {
         if (editorRef.current !== editor || !isReadyRef.current) return
         if (valueToApply === getEditorMarkdown(editor)) return
         applyEditorValue(editor, valueToApply)
-        if (fallbackMarkdown !== null) {
-          valueRef.current = fallbackMarkdown
-          onChangeRef.current(fallbackMarkdown)
-        }
       })
-    }, [applyEditorValue, documentRevision, getPendingFallbackMarkdown])
+    }, [applyEditorValue, documentRevision])
 
     useImperativeHandle(ref, () => ({
       focus() {

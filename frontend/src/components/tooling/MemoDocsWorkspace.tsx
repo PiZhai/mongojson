@@ -216,12 +216,12 @@ export function MemoDocsWorkspace() {
   const hasLoadedRemoteMemoRef = useRef(false)
   const [title, setTitle] = useState('')
   const [editorMarkdown, setEditorMarkdown] = useState('')
-  const [fallbackHTML, setFallbackHTML] = useState('')
   const [documentRevision, setDocumentRevision] = useState('')
   const [floatingCards, setFloatingCards] = useState<FloatingCard[]>(() => loadFloatingCardsFromStorage())
   const titleRef = useRef(title)
   const editorMarkdownRef = useRef(editorMarkdown)
   const floatingCardsRef = useRef(floatingCards)
+  const legacyContentHTMLRef = useRef('')
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null)
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null)
   const [dragOverPosition, setDragOverPosition] = useState<FloatingCardDropPosition>('after')
@@ -256,7 +256,7 @@ export function MemoDocsWorkspace() {
         const response = await getMemo(MEMO_SLUG)
         const hasMarkdown = response.memo.content_text?.trim().length > 0
         const nextMarkdown = hasMarkdown ? response.memo.content_text : ''
-        const nextFallbackHTML = hasMarkdown ? '' : response.memo.content_html
+        legacyContentHTMLRef.current = hasMarkdown ? '' : response.memo.content_html
         const remoteCards = deserializeFloatingCards(response.memo.floating_cards)
         const shouldUploadLocalCards = remoteCards.length === 0 && hasMeaningfulFloatingCards(localCards)
 
@@ -264,7 +264,6 @@ export function MemoDocsWorkspace() {
         editorMarkdownRef.current = nextMarkdown
         setTitle(response.memo.title)
         setEditorMarkdown(nextMarkdown)
-        setFallbackHTML(nextFallbackHTML)
         setDocumentRevision(response.memo.updated_at)
         setLastSavedAt(response.memo.updated_at)
         hasLoadedRemoteMemoRef.current = true
@@ -317,6 +316,9 @@ export function MemoDocsWorkspace() {
         content_text: nextMarkdown,
         floating_cards: serializeFloatingCards(nextFloatingCards),
       })
+      if (nextMarkdown.trim().length > 0) {
+        legacyContentHTMLRef.current = ''
+      }
       setLastSavedAt(response.memo.updated_at)
       setStatus({ kind: 'success', message: messages.success })
     } catch (error) {
@@ -340,7 +342,8 @@ export function MemoDocsWorkspace() {
       window.clearTimeout(saveTimerRef.current)
     }
     saveTimerRef.current = window.setTimeout(async () => {
-      await saveMemoNow(nextTitle, nextMarkdown, nextFloatingCards, '', messages)
+      const contentHTML = nextMarkdown.trim().length > 0 ? '' : legacyContentHTMLRef.current
+      await saveMemoNow(nextTitle, nextMarkdown, nextFloatingCards, contentHTML, messages)
     }, 700)
   }
 
@@ -354,9 +357,6 @@ export function MemoDocsWorkspace() {
 
   const commitMarkdown = (nextMarkdown: string) => {
     editorMarkdownRef.current = nextMarkdown
-    if (fallbackHTML) {
-      setFallbackHTML('')
-    }
     scheduleStatsRefresh()
     setStatus({ kind: 'idle', message: '正在编辑，稍后自动保存。' })
     scheduleSave(titleRef.current, nextMarkdown, floatingCardsRef.current)
@@ -564,7 +564,6 @@ export function MemoDocsWorkspace() {
               codeTheme={codeTheme}
               contentTheme={contentTheme}
               documentRevision={documentRevision}
-              fallbackHTML={fallbackHTML}
               initialValue={editorMarkdown}
               mode={editorMode}
               onChange={commitMarkdown}
