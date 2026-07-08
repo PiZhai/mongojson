@@ -340,7 +340,7 @@ export function MemoDocsWorkspace() {
       window.clearTimeout(saveTimerRef.current)
     }
     saveTimerRef.current = window.setTimeout(async () => {
-      await saveMemoNow(nextTitle, nextMarkdown, nextFloatingCards, editorRef.current?.getHtml() ?? '', messages)
+      await saveMemoNow(nextTitle, nextMarkdown, nextFloatingCards, '', messages)
     }, 700)
   }
 

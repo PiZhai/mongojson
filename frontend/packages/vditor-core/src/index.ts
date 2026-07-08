@@ -149,6 +149,8 @@ class Vditor extends VditorMethod {
     public readonly version: string;
     public vditor: IVditor;
     private isDestroyed = false;
+    private outlineRefreshFrame = 0;
+    private outlineSignature = "";
     private transactionListeners = new Set<VditorTransactionListener>();
 
     /**
@@ -548,6 +550,7 @@ class Vditor extends VditorMethod {
             enableHint: false,
             enableInput: false,
         });
+        this.outlineSignature = this.getOutlineSignature(markdown);
 
         if (!markdown) {
             hidePanel(this.vditor, ["emoji", "headings", "submenu", "hint"]);
@@ -598,6 +601,10 @@ class Vditor extends VditorMethod {
             this.vditor.editorTail = undefined;
         }
         this.vditor.outline?.destroy();
+        if (this.outlineRefreshFrame) {
+            window.cancelAnimationFrame(this.outlineRefreshFrame);
+            this.outlineRefreshFrame = 0;
+        }
         this.clearCache();
 
         UIUnbindListener();
@@ -803,6 +810,7 @@ class Vditor extends VditorMethod {
             this.vditor.preview = new Preview(this.vditor);
 
             initUI(this.vditor);
+            this.outlineSignature = this.getOutlineSignature(getMarkdown(this.vditor));
 
             if (mergedOptions.after) {
                 mergedOptions.after();
@@ -821,6 +829,32 @@ class Vditor extends VditorMethod {
         this.vditor.outline.render(this.vditor);
     }
 
+    private getOutlineSignature(markdown: string) {
+        return buildOutlineModelFromMarkdown(markdown)
+            .map((entry) => `${entry.line}:${entry.level}:${entry.text}`)
+            .join("\n");
+    }
+
+    private scheduleOutlineRefresh(markdown: string, force = false) {
+        if (!this.vditor?.outline || !this.vditor.options.outline.enable) {
+            return;
+        }
+
+        const nextSignature = this.getOutlineSignature(markdown);
+        if (!force && nextSignature === this.outlineSignature) {
+            return;
+        }
+        this.outlineSignature = nextSignature;
+
+        if (this.outlineRefreshFrame) {
+            window.cancelAnimationFrame(this.outlineRefreshFrame);
+        }
+        this.outlineRefreshFrame = window.requestAnimationFrame(() => {
+            this.outlineRefreshFrame = 0;
+            this.refreshOutline();
+        });
+    }
+
     private emitTransaction(
         source: VditorTransaction["source"],
         markdown?: string,
@@ -830,7 +864,7 @@ class Vditor extends VditorMethod {
             return;
         }
         const currentMarkdown = markdown ?? getMarkdown(this.vditor);
-        this.refreshOutline();
+        this.scheduleOutlineRefresh(currentMarkdown, source === "mode");
         if (this.transactionListeners.size === 0) {
             return;
         }
