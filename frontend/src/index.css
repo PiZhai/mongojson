@@ -1308,6 +1308,7 @@ a {
 
 .panel-header-copy {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
@@ -1327,7 +1328,15 @@ a {
 }
 
 .panel-subtitle {
-  display: none;
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toolbar {
