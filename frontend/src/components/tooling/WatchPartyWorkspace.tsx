@@ -42,6 +42,9 @@ type ControlMessage = {
 
 const roomPattern = /^[A-Za-z0-9_-]{1,64}$/
 const driftToleranceSeconds = 0.35
+const keyboardSeekSeconds = 10
+const keyboardBoostRate = 2
+const keyboardHoldDelayMs = 350
 
 function createClientId() {
   const key = 'watch-party-client-id'
@@ -74,6 +77,18 @@ function clampPlaybackRate(value: number) {
   return Math.min(4, Math.max(0.25, value))
 }
 
+function isEditableShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  if (target.isContentEditable || target.closest("[contenteditable='true']")) {
+    return true
+  }
+
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+}
+
 export function WatchPartyWorkspace() {
   const clientId = useMemo(createClientId, [])
   const [roomInput, setRoomInput] = useState('main-room')
@@ -93,11 +108,19 @@ export function WatchPartyWorkspace() {
   const [playbackRate, setPlaybackRate] = useState(1)
   const [position, setPosition] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [volume, setVolume] = useState(1)
+  const [muted, setMuted] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const videoFrameRef = useRef<HTMLDivElement | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
   const suppressLocalEventsRef = useRef(false)
   const lastVersionRef = useRef(0)
   const localVideoRef = useRef<LocalVideo | null>(null)
+  const rightArrowHoldTimerRef = useRef<number | null>(null)
+  const rightArrowHoldActiveRef = useRef(false)
+  const rightArrowPressedRef = useRef(false)
+  const rightArrowHoldBaseRateRef = useRef(1)
 
   useEffect(() => {
     localVideoRef.current = localVideo
@@ -108,6 +131,17 @@ export function WatchPartyWorkspace() {
       if (localVideoRef.current) {
         URL.revokeObjectURL(localVideoRef.current.objectUrl)
       }
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === videoFrameRef.current)
+    }
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange)
     }
   }, [])
 
@@ -284,16 +318,25 @@ export function WatchPartyWorkspace() {
     }
   }
 
-  const seekBy = (delta: number) => {
+  const seekTo = useCallback((value: number) => {
     const video = videoRef.current
     if (!video || !Number.isFinite(video.duration)) {
       return
     }
-    video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + delta))
+    video.currentTime = Math.min(video.duration, Math.max(0, value))
+    setPosition(video.currentTime)
     sendControl()
-  }
+  }, [sendControl])
 
-  const changePlaybackRate = (value: number) => {
+  const seekBy = useCallback((delta: number) => {
+    const video = videoRef.current
+    if (!video || !Number.isFinite(video.duration)) {
+      return
+    }
+    seekTo(video.currentTime + delta)
+  }, [seekTo])
+
+  const changePlaybackRate = useCallback((value: number) => {
     const video = videoRef.current
     const nextRate = clampPlaybackRate(value)
     setPlaybackRate(nextRate)
@@ -301,7 +344,143 @@ export function WatchPartyWorkspace() {
       video.playbackRate = nextRate
       sendControl()
     }
+  }, [sendControl])
+
+  const changeVolume = (value: number) => {
+    const nextVolume = Math.min(1, Math.max(0, value))
+    const video = videoRef.current
+    setVolume(nextVolume)
+    if (video) {
+      video.volume = nextVolume
+      video.muted = nextVolume === 0
+      setMuted(video.muted)
+    }
   }
+
+  const toggleMute = () => {
+    const video = videoRef.current
+    if (!video) {
+      return
+    }
+
+    const nextMuted = !video.muted
+    video.muted = nextMuted
+    if (!nextMuted && video.volume === 0) {
+      video.volume = volume || 1
+      setVolume(video.volume)
+    }
+    setMuted(video.muted)
+  }
+
+  const toggleFullscreen = () => {
+    const frame = videoFrameRef.current
+    if (!frame) {
+      return
+    }
+
+    if (document.fullscreenElement) {
+      void document.exitFullscreen()
+      return
+    }
+
+    void frame.requestFullscreen()
+  }
+
+  useEffect(() => {
+    const clearRightArrowHoldTimer = () => {
+      if (rightArrowHoldTimerRef.current === null) {
+        return false
+      }
+      window.clearTimeout(rightArrowHoldTimerRef.current)
+      rightArrowHoldTimerRef.current = null
+      return true
+    }
+
+    const finishRightArrowPress = (seekOnTap: boolean) => {
+      const wasPressed = rightArrowPressedRef.current
+      const wasWaitingForHold = clearRightArrowHoldTimer()
+      rightArrowPressedRef.current = false
+      if (!rightArrowHoldActiveRef.current) {
+        if (seekOnTap && wasPressed && wasWaitingForHold) {
+          seekBy(keyboardSeekSeconds)
+        }
+        return
+      }
+
+      rightArrowHoldActiveRef.current = false
+      changePlaybackRate(rightArrowHoldBaseRateRef.current)
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        isEditableShortcutTarget(event.target)
+      ) {
+        return
+      }
+
+      const video = videoRef.current
+      if (!video || !localVideoRef.current) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (event.key === 'ArrowLeft') {
+        if (!event.repeat) {
+          seekBy(-keyboardSeekSeconds)
+        }
+        return
+      }
+
+      if (rightArrowPressedRef.current) {
+        return
+      }
+
+      rightArrowPressedRef.current = true
+      rightArrowHoldBaseRateRef.current = clampPlaybackRate(video.playbackRate || 1)
+      rightArrowHoldTimerRef.current = window.setTimeout(() => {
+        rightArrowHoldTimerRef.current = null
+        if (!rightArrowPressedRef.current || !videoRef.current || !localVideoRef.current) {
+          return
+        }
+
+        rightArrowHoldActiveRef.current = true
+        changePlaybackRate(keyboardBoostRate)
+      }, keyboardHoldDelayMs)
+    }
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowRight') {
+        if (rightArrowPressedRef.current) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
+        finishRightArrowPress(true)
+      }
+    }
+
+    const handleWindowBlur = () => {
+      finishRightArrowPress(false)
+    }
+
+    document.addEventListener('keydown', handleKeyDown, { capture: true })
+    document.addEventListener('keyup', handleKeyUp, { capture: true })
+    window.addEventListener('blur', handleWindowBlur)
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, { capture: true })
+      document.removeEventListener('keyup', handleKeyUp, { capture: true })
+      window.removeEventListener('blur', handleWindowBlur)
+      finishRightArrowPress(false)
+      rightArrowPressedRef.current = false
+      rightArrowHoldActiveRef.current = false
+    }
+  }, [changePlaybackRate, seekBy])
 
   const mediaMatchesRoom = !remoteState?.media_id || !localVideo || remoteState.media_id === localVideo.mediaId
 
@@ -309,64 +488,101 @@ export function WatchPartyWorkspace() {
     <div className="page-shell watch-party-shell">
       <div className="watch-party-grid">
         <section className="watch-stage">
-          <div className="watch-video-frame">
+          <div className="watch-video-frame" ref={videoFrameRef}>
             {localVideo ? (
-              <video
-                className="watch-video"
-                controls
-                onLoadedMetadata={(event) => {
-                  const target = event.currentTarget
-                  setDuration(target.duration)
-                  target.playbackRate = playbackRate
-                  sendControl()
-                }}
-                onPause={() => {
-                  setIsPlaying(false)
-                  sendControl()
-                }}
-                onPlay={() => {
-                  setIsPlaying(true)
-                  sendControl()
-                }}
-                onRateChange={(event) => {
-                  setPlaybackRate(event.currentTarget.playbackRate)
-                  sendControl()
-                }}
-                onSeeked={sendControl}
-                onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
-                ref={videoRef}
-                src={localVideo.objectUrl}
-              />
+              <>
+                <video
+                  className="watch-video"
+                  onClick={togglePlayback}
+                  onLoadedMetadata={(event) => {
+                    const target = event.currentTarget
+                    setDuration(target.duration)
+                    target.playbackRate = playbackRate
+                    target.volume = volume
+                    target.muted = muted
+                    sendControl()
+                  }}
+                  onPause={() => {
+                    setIsPlaying(false)
+                    sendControl()
+                  }}
+                  onPlay={() => {
+                    setIsPlaying(true)
+                    sendControl()
+                  }}
+                  onRateChange={(event) => {
+                    setPlaybackRate(event.currentTarget.playbackRate)
+                    sendControl()
+                  }}
+                  onSeeked={sendControl}
+                  onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
+                  onVolumeChange={(event) => {
+                    setVolume(event.currentTarget.volume)
+                    setMuted(event.currentTarget.muted)
+                  }}
+                  playsInline
+                  ref={videoRef}
+                  src={localVideo.objectUrl}
+                />
+                <div className="watch-video-controls">
+                  <input
+                    aria-label="播放进度"
+                    className="watch-video-progress"
+                    disabled={!duration}
+                    max={duration || 0}
+                    min={0}
+                    onChange={(event) => seekTo(Number(event.target.value))}
+                    step={0.1}
+                    type="range"
+                    value={duration ? Math.min(position, duration) : 0}
+                  />
+                  <div className="watch-video-control-row">
+                    <button aria-label={isPlaying ? '暂停' : '播放'} className="watch-video-control-button watch-video-control-primary" onClick={togglePlayback} type="button">
+                      {isPlaying ? '暂停' : '播放'}
+                    </button>
+                    <button aria-label="快退 10 秒" className="watch-video-control-button" onClick={() => seekBy(-10)} type="button">
+                      -10s
+                    </button>
+                    <button aria-label="快进 10 秒" className="watch-video-control-button" onClick={() => seekBy(10)} type="button">
+                      +10s
+                    </button>
+                    <span className="watch-video-time">
+                      {formatClock(position)} / {formatClock(duration)}
+                    </span>
+                    <label className="watch-video-rate-control">
+                      <span>倍速</span>
+                      <select onChange={(event) => changePlaybackRate(Number(event.target.value))} value={playbackRate}>
+                        {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
+                          <option key={rate} value={rate}>
+                            {rate}x
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button aria-label={muted ? '取消静音' : '静音'} className="watch-video-control-button" onClick={toggleMute} type="button">
+                      {muted || volume === 0 ? '静音' : '音量'}
+                    </button>
+                    <input
+                      aria-label="音量"
+                      className="watch-video-volume"
+                      max={1}
+                      min={0}
+                      onChange={(event) => changeVolume(Number(event.target.value))}
+                      step={0.01}
+                      type="range"
+                      value={muted ? 0 : volume}
+                    />
+                    <button aria-label={isFullscreen ? '退出全屏' : '全屏'} className="watch-video-control-button" onClick={toggleFullscreen} type="button">
+                      {isFullscreen ? '退出' : '全屏'}
+                    </button>
+                  </div>
+                </div>
+              </>
             ) : (
               <div className="watch-empty-video">
                 <span>VIDEO</span>
               </div>
             )}
-          </div>
-
-          <div className="watch-control-bar">
-            <button className="watch-icon-button watch-primary-action" disabled={!localVideo} onClick={togglePlayback} type="button">
-              {isPlaying ? '暂停' : '播放'}
-            </button>
-            <button className="watch-icon-button" disabled={!localVideo} onClick={() => seekBy(-10)} type="button">
-              -10s
-            </button>
-            <button className="watch-icon-button" disabled={!localVideo} onClick={() => seekBy(10)} type="button">
-              +10s
-            </button>
-            <label className="watch-rate-control">
-              <span>倍速</span>
-              <select onChange={(event) => changePlaybackRate(Number(event.target.value))} value={playbackRate}>
-                {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
-                  <option key={rate} value={rate}>
-                    {rate}x
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="watch-time-readout">
-              {formatClock(position)} / {formatClock(duration)}
-            </div>
           </div>
         </section>
 
