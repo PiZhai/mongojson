@@ -1400,6 +1400,24 @@ a {
   color: #b4213f;
 }
 
+.button:disabled,
+.button[aria-disabled='true'] {
+  border-color: var(--border);
+  background: var(--surface-glass-strong);
+  color: var(--text-muted);
+  box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.button:disabled:hover,
+.button[aria-disabled='true']:hover {
+  border-color: var(--border);
+  background: var(--surface-glass-strong);
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
 .button-sm {
   min-height: 28px;
   padding-inline: 9px;
