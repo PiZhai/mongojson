@@ -652,7 +652,7 @@
   color: var(--text-strong);
 }
 
-@media (max-width: 1100px) {
+@container app-content (max-width: 1099px) {
   .watch-party-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -663,7 +663,7 @@
   }
 }
 
-@media (max-width: 760px) {
+@container app-content (max-width: 759px) {
   .watch-party-shell {
     padding: 12px;
   }
