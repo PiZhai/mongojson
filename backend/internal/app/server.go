@@ -20,16 +20,19 @@ import (
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
 	"mongojson/backend/internal/service/presets"
+	"mongojson/backend/internal/service/steward"
 	"mongojson/backend/internal/service/watchsync"
 )
 
 type Server struct {
-	Config config.Config
-	Router http.Handler
+	Config           config.Config
+	ManagementRouter http.Handler
+	PeerRouter       http.Handler
 
-	db        *database.DB
-	jobWorker *jobs.Worker
-	cleanup   *jobs.CleanupLoop
+	db            *database.DB
+	jobWorker     *jobs.Worker
+	cleanup       *jobs.CleanupLoop
+	stewardDaemon *steward.Daemon
 }
 
 func NewServer() (*Server, error) {
@@ -58,7 +61,14 @@ func NewServer() (*Server, error) {
 	jobService := jobs.NewService(db, fileStore, cfg.FileRetention)
 	presetService := presets.NewService(db)
 	memoService := memo.NewService(db)
+	stewardService := steward.NewService(db)
 	watchSyncHub := watchsync.NewHub()
+	if err := stewardService.EnsureDefaults(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure steward defaults: %w", err)
+	}
+
+	stewardDaemon := steward.NewDaemon(stewardService, steward.DaemonOptionsFromEnv())
+	stewardDaemon.Start(context.Background())
 
 	worker := jobs.NewWorker(jobService, cfg)
 	worker.Start(context.Background())
@@ -66,35 +76,50 @@ func NewServer() (*Server, error) {
 	cleanup := jobs.NewCleanupLoop(jobService, 30*time.Minute)
 	cleanup.Start(context.Background())
 
-	router := chi.NewRouter()
-	router.Use(cors.Handler(cors.Options{
+	deps := httpapi.Dependencies{
+		Config:         cfg,
+		FileService:    fileService,
+		JobService:     jobService,
+		MemoService:    memoService,
+		PresetService:  presetService,
+		StewardService: stewardService,
+		WatchSync:      watchSyncHub,
+		Readiness:      readinessChecker(cfg, db, worker, stewardDaemon),
+	}
+
+	managementRouter := chi.NewRouter()
+	managementRouter.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
 
-	httpapi.RegisterRoutes(router, httpapi.Dependencies{
-		Config:        cfg,
-		FileService:   fileService,
-		JobService:    jobService,
-		MemoService:   memoService,
-		PresetService: presetService,
-		WatchSync:     watchSyncHub,
-		Readiness:     readinessChecker(cfg, db, worker),
+	httpapi.RegisterManagementRoutes(managementRouter, deps)
+	managementHandler, err := withStaticWorkspace(managementRouter, cfg.StewardUIDir)
+	if err != nil {
+		return nil, err
+	}
+
+	peerRouter := chi.NewRouter()
+	httpapi.RegisterPeerRoutes(peerRouter, httpapi.PeerDependencies{
+		StewardService: stewardService,
+		Readiness:      deps.Readiness,
 	})
 
 	return &Server{
-		Config:    cfg,
-		Router:    router,
-		db:        db,
-		jobWorker: worker,
-		cleanup:   cleanup,
+		Config:           cfg,
+		ManagementRouter: managementHandler,
+		PeerRouter:       peerRouter,
+		db:               db,
+		jobWorker:        worker,
+		cleanup:          cleanup,
+		stewardDaemon:    stewardDaemon,
 	}, nil
 }
 
-func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker) func(context.Context) (map[string]string, error) {
+func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker, stewardDaemon *steward.Daemon) func(context.Context) (map[string]string, error) {
 	return func(ctx context.Context) (map[string]string, error) {
 		checks := map[string]string{}
 		var failures []string
@@ -118,6 +143,13 @@ func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker) f
 		} else {
 			checks["worker"] = "error: not running"
 			failures = append(failures, "worker")
+		}
+
+		if stewardDaemon.IsRunning() {
+			checks["steward_daemon"] = "ok"
+		} else {
+			checks["steward_daemon"] = "error: not running"
+			failures = append(failures, "steward_daemon")
 		}
 
 		if len(failures) > 0 {
@@ -163,6 +195,9 @@ func checkStorage(root string) error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) {
+	if s.stewardDaemon != nil {
+		s.stewardDaemon.Stop()
+	}
 	if s.cleanup != nil {
 		s.cleanup.Stop()
 	}

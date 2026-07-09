@@ -83,6 +83,7 @@ Compose 运行包含：
 - [docs/cloud-deployment-full.md](/Users/administrator/Documents/mongojson/docs/cloud-deployment-full.md)
 - [docs/deploy-centos-stream-10.md](/Users/administrator/Documents/mongojson/docs/deploy-centos-stream-10.md)
 - [docs/deploy-runbook.md](/Users/administrator/Documents/mongojson/docs/deploy-runbook.md)
+- [docs/macos-offline-release.md](/Users/administrator/Documents/mongojson/docs/macos-offline-release.md)
 
 生产环境样板与脚本：
 

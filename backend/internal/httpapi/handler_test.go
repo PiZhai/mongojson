@@ -63,6 +63,56 @@ func TestReadyzReturnsServiceUnavailableWhenCheckFails(t *testing.T) {
 	}
 }
 
+func TestManagementAndPeerRoutersExposeDisjointStewardSurfaces(t *testing.T) {
+	deps := Dependencies{
+		Readiness: func(context.Context) (map[string]string, error) {
+			return map[string]string{"steward": "ok"}, nil
+		},
+	}
+	management := chi.NewRouter()
+	RegisterManagementRoutes(management, deps)
+	peer := chi.NewRouter()
+	RegisterPeerRoutes(peer, PeerDependencies{Readiness: deps.Readiness})
+
+	assertRouteStatus(t, management, http.MethodGet, "/api/steward/sync/changes", http.StatusMethodNotAllowed)
+	assertRouteStatus(t, management, http.MethodPost, "/api/steward/sync/changes/import", http.StatusNotFound)
+	assertRouteStatus(t, management, http.MethodPost, "/api/steward/pairing/challenge", http.StatusNotFound)
+
+	assertRouteStatus(t, peer, http.MethodGet, "/api/steward/sync/status", http.StatusNotFound)
+	assertRouteStatus(t, peer, http.MethodGet, "/api/steward/tasks", http.StatusNotFound)
+	assertRouteStatus(t, peer, http.MethodPost, "/api/steward/devices/device-1/revoke", http.StatusNotFound)
+	assertRouteStatus(t, peer, http.MethodGet, "/healthz", http.StatusOK)
+
+	// A registered peer protocol route reaches the handler. With no service
+	// dependency it fails closed as unavailable instead of disappearing as 404.
+	assertRouteStatus(t, peer, http.MethodGet, "/api/steward/sync/changes", http.StatusServiceUnavailable)
+	assertRouteStatus(t, peer, http.MethodGet, "/api/steward/sync/probe?entity_type=task&entity_id=task-1", http.StatusServiceUnavailable)
+}
+
+func TestPeerRouterRejectsOversizedBodiesBeforeProtocolHandling(t *testing.T) {
+	peer := chi.NewRouter()
+	RegisterPeerRoutes(peer, PeerDependencies{})
+	req := httptest.NewRequest(http.MethodPost, "/api/steward/pairing/challenge", io.LimitReader(repeatingReader('x'), maxPeerRequestBodyBytes+1))
+	req.ContentLength = maxPeerRequestBodyBytes + 1
+	rec := httptest.NewRecorder()
+
+	peer.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized peer request status = %d, want 413: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func assertRouteStatus(t *testing.T, handler http.Handler, method string, path string, want int) {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != want {
+		t.Fatalf("%s %s status = %d, want %d: %s", method, path, rec.Code, want, rec.Body.String())
+	}
+}
+
 func TestCreateJobReturnsServiceUnavailableWhenProcessingIsDisabled(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{

@@ -5,7 +5,7 @@ import { MusicMiniPlayer, MusicQueueDrawer } from '../music/MusicPlayerProvider'
 type NavItem = {
   to: string
   title: string
-  icon: 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'music' | 'watch'
+  icon: 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'steward' | 'music' | 'watch'
 }
 
 const navGroups: Array<{ label: string; items: NavItem[] }> = [
@@ -45,6 +45,16 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     ],
   },
   {
+    label: '私人管家',
+    items: [
+      {
+        to: '/tools/steward',
+        title: 'S2 数据底座',
+        icon: 'steward',
+      },
+    ],
+  },
+  {
     label: '媒体工具',
     items: [
       {
@@ -76,6 +86,9 @@ const pageMeta: Record<string, { title: string }> = {
   },
   '/tools/memo-docs': {
     title: '在线备忘录',
+  },
+  '/tools/steward': {
+    title: 'S2 私人管家',
   },
   '/tools/music': {
     title: '音乐播放器',
@@ -155,6 +168,15 @@ function NavIcon({ icon }: Pick<NavItem, 'icon'>) {
         <rect height="12" rx="2" width="16" x="4" y="6" />
         <path d="M10 10l5 2-5 2z" />
         <path d="M8 20h8" />
+      </svg>
+    )
+  }
+
+  if (icon === 'steward') {
+    return (
+      <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">
+        <path d="M12 4.5l6 2.3v4.9c0 3.9-2.4 6.4-6 7.8-3.6-1.4-6-3.9-6-7.8V6.8z" />
+        <path d="M9 12l2 2 4-5" />
       </svg>
     )
   }

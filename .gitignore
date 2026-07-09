@@ -9,6 +9,8 @@ frontend/dist/
 # Backend
 backend/.env
 backend/data/
+backend/bin/
+backend/dist/
 
 # Local runtime
 *.log
