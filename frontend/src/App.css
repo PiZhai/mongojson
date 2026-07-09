@@ -431,20 +431,13 @@
 }
 
 .watch-party-shell {
-  --watch-bg: #f5f7fb;
-  --watch-panel: #ffffff;
-  --watch-ink: #172033;
-  --watch-muted: #607085;
-  --watch-line: #d7e0eb;
-  --watch-blue: #2563eb;
-  --watch-green: #0f766e;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 100%;
   padding: 18px;
   overflow: auto;
-  background: var(--watch-bg);
-  color: var(--watch-ink);
+  background: var(--bg);
+  color: var(--text-strong);
 }
 
 .watch-party-grid {
@@ -491,7 +484,7 @@
   width: 100%;
   min-height: min(62vh, 720px);
   color: #dbeafe;
-  font-family: "Fira Code", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 18px;
   font-weight: 700;
 }
@@ -503,27 +496,27 @@
   flex-wrap: wrap;
   min-width: 0;
   padding: 10px;
-  border: 1px solid var(--watch-line);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--watch-panel);
+  background: var(--surface);
   box-shadow: 0 8px 22px rgba(31, 42, 68, 0.07);
 }
 
 .watch-icon-button {
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid var(--watch-line);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: #ffffff;
-  color: var(--watch-ink);
+  color: var(--text-strong);
   cursor: pointer;
   font: inherit;
   font-weight: 700;
 }
 
 .watch-icon-button:hover {
-  border-color: var(--watch-blue);
-  color: var(--watch-blue);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .watch-icon-button:disabled {
@@ -532,13 +525,13 @@
 }
 
 .watch-primary-action {
-  border-color: var(--watch-blue);
-  background: var(--watch-blue);
+  border-color: var(--accent);
+  background: var(--accent);
   color: #ffffff;
 }
 
 .watch-primary-action:hover {
-  background: #1d4ed8;
+  background: var(--accent-strong);
   color: #ffffff;
 }
 
@@ -548,10 +541,10 @@
   gap: 8px;
   min-height: 38px;
   padding: 0 10px;
-  border: 1px solid var(--watch-line);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: #ffffff;
-  color: var(--watch-muted);
+  color: var(--text-muted);
   font-size: 13px;
   font-weight: 700;
 }
@@ -560,15 +553,15 @@
   min-height: 28px;
   border: 0;
   background: transparent;
-  color: var(--watch-ink);
+  color: var(--text-strong);
   font: inherit;
   font-weight: 700;
 }
 
 .watch-time-readout {
   margin-left: auto;
-  color: var(--watch-muted);
-  font-family: "Fira Code", Consolas, monospace;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 700;
 }
@@ -584,9 +577,9 @@
   flex-direction: column;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--watch-line);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--watch-panel);
+  background: var(--surface);
   box-shadow: 0 8px 22px rgba(31, 42, 68, 0.07);
 }
 
@@ -601,7 +594,7 @@
 
 .watch-panel-heading span,
 .watch-file-meta span {
-  color: var(--watch-muted);
+  color: var(--text-muted);
   font-size: 12px;
   font-weight: 700;
 }
@@ -610,7 +603,7 @@
 .watch-file-meta strong {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--watch-ink);
+  color: var(--text-strong);
 }
 
 .watch-room-row {
@@ -628,7 +621,7 @@
   border: 1px dashed #9db1cc;
   border-radius: 8px;
   background: #f8fafc;
-  color: var(--watch-blue);
+  color: var(--accent);
   cursor: pointer;
   font-weight: 750;
 }
@@ -648,7 +641,7 @@
 }
 
 .watch-state-list span {
-  color: var(--watch-muted);
+  color: var(--text-muted);
   font-size: 12px;
   font-weight: 700;
 }
@@ -656,7 +649,7 @@
 .watch-state-list strong {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--watch-ink);
+  color: var(--text-strong);
 }
 
 @media (max-width: 1100px) {
