@@ -2446,88 +2446,6 @@ button.path-chip,
   background: #fff;
 }
 
-.memo-editor-controls {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 10px;
-  padding: 0 28px 14px;
-  border-bottom: none;
-}
-
-.memo-control-group {
-  display: inline-flex;
-  gap: 4px;
-  min-width: 0;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 255, 0.82));
-}
-
-.memo-control-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  min-height: 40px;
-  padding: 4px 6px 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-raised);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.memo-control-select {
-  min-width: 118px;
-  min-height: 30px;
-  padding: 0 28px 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--text-strong);
-  font: inherit;
-  outline: none;
-}
-
-.memo-control-select-wide {
-  min-width: 176px;
-}
-
-.memo-control-select:focus {
-  border-color: #a8d4ff;
-  box-shadow: 0 0 0 3px var(--focus-ring);
-}
-
-.memo-control-button {
-  min-height: 30px;
-  padding: 0 12px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
-}
-
-.memo-control-button:hover {
-  color: var(--text-strong);
-  background: var(--surface);
-}
-
-.memo-control-button-active {
-  border-color: #cde4ff;
-  background: var(--surface);
-  color: var(--accent);
-  box-shadow: 0 3px 8px rgba(0, 122, 255, 0.1);
-}
-
 .memo-vditor-editor {
   --textarea-background-color: #fff;
   flex: 0 0 auto;
@@ -3007,10 +2925,6 @@ button.path-chip,
 
   .memo-focus-stats {
     justify-content: flex-start;
-  }
-
-  .memo-editor-controls {
-    padding-inline: 18px;
   }
 
   .memo-vditor-editor .vditor-ir > .vditor-reset,

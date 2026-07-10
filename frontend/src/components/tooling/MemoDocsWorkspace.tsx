@@ -15,11 +15,7 @@ import type { ToolStatus } from '../../types/tooling'
 import { StatusBanner } from '../common/StatusBanner'
 import {
   VditorMemoEditor,
-  type VditorMemoCodeTheme,
-  type VditorMemoContentTheme,
   type VditorMemoEditorHandle,
-  type VditorMemoMode,
-  type VditorMemoTheme,
 } from '../editor/VditorMemoEditor'
 
 const MEMO_SLUG = 'inbox'
@@ -44,45 +40,10 @@ const floatingCardColors: FloatingCardColorOption[] = [
   { label: '淡紫色', value: '#f4efff', border: '#d8c7ff' },
 ]
 
-const editorModes: Array<[VditorMemoMode, string]> = [
-  ['wysiwyg', '所见即所得'],
-  ['ir', '即时渲染'],
-  ['sv', '分屏'],
-]
-const editorThemes: Array<[VditorMemoTheme, string]> = [
-  ['classic', '浅色'],
-]
-const contentThemes: Array<[VditorMemoContentTheme, string]> = [
-  ['light', 'Light'],
-  ['ant-design', 'Ant Design'],
-  ['wechat', 'WeChat'],
-]
-const codeThemes: Array<[VditorMemoCodeTheme, string]> = [
-  ['github', 'GitHub'],
-  ['vs', 'VS'],
-  ['xcode', 'Xcode'],
-  ['atom-one-light', 'Atom One Light'],
-  ['a11y-light', 'A11y Light'],
-  ['arduino-light', 'Arduino Light'],
-  ['ascetic', 'Ascetic'],
-  ['default', 'Default'],
-  ['docco', 'Docco'],
-  ['foundation', 'Foundation'],
-  ['googlecode', 'Google Code'],
-  ['idea', 'IDEA'],
-  ['intellij-light', 'IntelliJ Light'],
-  ['isbl-editor-light', 'ISBL Light'],
-  ['kimbie-light', 'Kimbie Light'],
-  ['lightfair', 'Lightfair'],
-  ['magula', 'Magula'],
-  ['mono-blue', 'Mono Blue'],
-  ['qtcreator-light', 'Qt Creator Light'],
-  ['rainbow', 'Rainbow'],
-  ['routeros', 'RouterOS'],
-  ['school-book', 'School Book'],
-  ['stackoverflow-light', 'Stack Overflow Light'],
-  ['tokyo-night-light', 'Tokyo Night Light'],
-]
+const DEFAULT_EDITOR_MODE = 'ir'
+const DEFAULT_EDITOR_THEME = 'classic'
+const DEFAULT_CONTENT_THEME = 'light'
+const DEFAULT_CODE_THEME = 'atom-one-light'
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -225,10 +186,6 @@ export function MemoDocsWorkspace() {
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null)
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null)
   const [dragOverPosition, setDragOverPosition] = useState<FloatingCardDropPosition>('after')
-  const [editorMode, setEditorMode] = useState<VditorMemoMode>('ir')
-  const [editorTheme, setEditorTheme] = useState<VditorMemoTheme>('classic')
-  const [contentTheme, setContentTheme] = useState<VditorMemoContentTheme>('light')
-  const [codeTheme, setCodeTheme] = useState<VditorMemoCodeTheme>('atom-one-light')
   const [newFloatingCardColor, setNewFloatingCardColor] = useState(DEFAULT_FLOATING_CARD_COLOR)
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
@@ -370,26 +327,6 @@ export function MemoDocsWorkspace() {
     return markdown
   }
 
-  const handleModeChange = (nextMode: VditorMemoMode) => {
-    setEditorMode(nextMode)
-    setStatus({ kind: 'idle', message: `已切换到 ${editorModes.find(([mode]) => mode === nextMode)?.[1] ?? nextMode} 模式。` })
-  }
-
-  const handleThemeChange = (nextTheme: VditorMemoTheme) => {
-    setEditorTheme(nextTheme)
-    setStatus({ kind: 'idle', message: `已切换到 ${editorThemes.find(([theme]) => theme === nextTheme)?.[1] ?? nextTheme} 主题。` })
-  }
-
-  const handleContentThemeChange = (nextTheme: VditorMemoContentTheme) => {
-    setContentTheme(nextTheme)
-    setStatus({ kind: 'idle', message: `已切换到 ${contentThemes.find(([theme]) => theme === nextTheme)?.[1] ?? nextTheme} 内容主题。` })
-  }
-
-  const handleCodeThemeChange = (nextTheme: VditorMemoCodeTheme) => {
-    setCodeTheme(nextTheme)
-    setStatus({ kind: 'idle', message: `已切换到 ${codeThemes.find(([theme]) => theme === nextTheme)?.[1] ?? nextTheme} 代码主题。` })
-  }
-
   const persistFloatingCards = (updater: (cards: FloatingCard[]) => FloatingCard[]) => {
     const nextCards = updater(floatingCardsRef.current)
     floatingCardsRef.current = nextCards
@@ -503,74 +440,17 @@ export function MemoDocsWorkspace() {
               </div>
             </div>
 
-            <div className="memo-editor-controls" aria-label="编辑器设置">
-              <div className="memo-control-group" role="tablist" aria-label="编辑模式">
-                {editorModes.map(([nextMode, label]) => (
-                  <button
-                    aria-selected={editorMode === nextMode}
-                    className={`memo-control-button${editorMode === nextMode ? ' memo-control-button-active' : ''}`}
-                    key={nextMode}
-                    onClick={() => handleModeChange(nextMode)}
-                    role="tab"
-                    type="button"
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="memo-control-group" role="tablist" aria-label="编辑器主题">
-                {editorThemes.map(([nextTheme, label]) => (
-                  <button
-                    aria-selected={editorTheme === nextTheme}
-                    className={`memo-control-button${editorTheme === nextTheme ? ' memo-control-button-active' : ''}`}
-                    key={nextTheme}
-                    onClick={() => handleThemeChange(nextTheme)}
-                    role="tab"
-                    type="button"
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <label className="memo-control-field">
-                <span>内容主题</span>
-                <select
-                  aria-label="内容主题"
-                  className="memo-control-select"
-                  onChange={(event) => handleContentThemeChange(event.target.value as VditorMemoContentTheme)}
-                  value={contentTheme}
-                >
-                  {contentThemes.map(([nextTheme, label]) => (
-                    <option key={nextTheme} value={nextTheme}>{label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="memo-control-field">
-                <span>代码主题</span>
-                <select
-                  aria-label="代码主题"
-                  className="memo-control-select memo-control-select-wide"
-                  onChange={(event) => handleCodeThemeChange(event.target.value)}
-                  value={codeTheme}
-                >
-                  {codeThemes.map(([nextTheme, label]) => (
-                    <option key={nextTheme} value={nextTheme}>{label}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
             <VditorMemoEditor
-              codeTheme={codeTheme}
-              contentTheme={contentTheme}
+              codeTheme={DEFAULT_CODE_THEME}
+              contentTheme={DEFAULT_CONTENT_THEME}
               documentRevision={documentRevision}
               initialValue={editorMarkdown}
-              mode={editorMode}
+              mode={DEFAULT_EDITOR_MODE}
               onChange={commitMarkdown}
               onUpload={handleUpload}
               placeholder="从标题开始写，#、##、-、> 和图片链接都可以直接输入。"
               ref={editorRef}
-              theme={editorTheme}
+              theme={DEFAULT_EDITOR_THEME}
             />
           </div>
           <StatusBanner
