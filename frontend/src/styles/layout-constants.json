@@ -1,0 +1,45 @@
+{
+  "description": "Authoritative source of truth for all responsive layout breakpoints and sizing tokens used in frontend/src/App.css and frontend/src/index.css. Do not introduce any @media/@container max-width/min-width literal that is not listed in `breakpoints` below. Values here must stay in sync with the CSS custom properties declared in index.css :root (checked by scripts/validate-breakpoints.cjs).",
+  "sizeTokens": {
+    "sidebarExpandedWidth": 228,
+    "sidebarCollapsedWidth": 72,
+    "workspaceGap": 18,
+    "workspacePrimaryMin": 640,
+    "workspacePrimaryMax": 920,
+    "workspaceSecondaryMin": 320,
+    "workspaceSecondaryMax": 400,
+    "workspaceOutlineMin": 180,
+    "workspaceOutlineMax": 260,
+    "contentPadding": 14
+  },
+  "breakpoints": {
+    "shell.stackedBelow": {
+      "value": 1080,
+      "formula": "sidebarExpandedWidth(228) + workspacePrimaryMin(640) + safety buffer(~212) ~= 1080. Below this viewport width the sidebar can no longer sit side-by-side with a usable content area, so it collapses into a stacked top bar instead of a side column.",
+      "layer": "shell",
+      "queryType": "media",
+      "containerName": null
+    },
+    "content.doubleColumnMin": {
+      "value": 1400,
+      "formula": "outlineHideBelow(980) + workspaceGap(18) + workspaceSecondaryMax(400) = 1398, rounded up to 1400 for a small safety margin. The moment .tool-layout switches from single-column to double-column, .tool-primary's width instantly drops to (toolWorkspaceWidth - workspaceGap - workspaceSecondaryMax). This threshold must be high enough that this post-switch primary width never falls below content.outlineHideBelow, otherwise the Vditor outline would flicker hidden right at the column-split boundary (this was the second, narrower non-monotonic dip discovered after fixing the shell-layer bug: 1319 caused primaryWidth to drop to 901px at the split point, well under 980).",
+      "layer": "content",
+      "queryType": "container",
+      "containerName": "tool-workspace"
+    },
+    "content.outlineHideBelow": {
+      "value": 980,
+      "formula": "workspacePrimaryMin(640) + workspaceOutlineMin(180) + safety buffer(160, editor padding + scrollbar) ~= 980. Below this tool-primary container width, the primary editor and the outline can no longer both keep a readable width, so the outline is hidden to protect the editor.",
+      "layer": "content",
+      "queryType": "container",
+      "containerName": "tool-primary"
+    },
+    "content.compactBelow": {
+      "value": 720,
+      "formula": "workspacePrimaryMin(640) + minimum horizontal padding(2x40) ~= 720. Below this container width, panel headers/toolbars/forms switch to a stacked, single-column compact mode.",
+      "layer": "content",
+      "queryType": "container",
+      "containerName": "app-content"
+    }
+  }
+}
