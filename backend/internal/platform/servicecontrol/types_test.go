@@ -241,6 +241,7 @@ func TestPlanInstallRendersSystemScopeArtifacts(t *testing.T) {
 		PeerHTTPAddr: ":18081",
 		DatabaseURL:  "postgres://postgres:postgres@localhost:5432/mongojson?sslmode=disable",
 		StorageDir:   "./data",
+		SyncSecret:   "plan-secret-must-be-redacted",
 	}
 
 	darwinPlan, err := PlanInstall("darwin", base)
@@ -251,7 +252,7 @@ func TestPlanInstallRendersSystemScopeArtifacts(t *testing.T) {
 		t.Fatalf("unexpected darwin system plan: %#v", darwinPlan)
 	}
 	if !strings.Contains(strings.Join(darwinPlan.Commands, "\n"), "launchctl bootstrap system") ||
-		!strings.Contains(darwinPlan.Artifacts["service_type"], "LaunchDaemon") {
+		!strings.Contains(darwinPlan.Artifacts["service_type"], "LaunchDaemon") || darwinPlan.Artifacts["plist_mode"] != "0600" {
 		t.Fatalf("darwin system plan did not target LaunchDaemon: %#v", darwinPlan)
 	}
 
@@ -259,11 +260,16 @@ func TestPlanInstallRendersSystemScopeArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linux system plan: %v", err)
 	}
-	if linuxPlan.Scope != ScopeSystem || len(linuxPlan.Files) != 1 || linuxPlan.Files[0] != "/etc/systemd/system/mongojson-steward.service" {
+	if linuxPlan.Scope != ScopeSystem || len(linuxPlan.Files) != 2 || linuxPlan.Files[0] != "/etc/systemd/system/mongojson-steward.service" ||
+		linuxPlan.Files[1] != "/etc/mongojson-steward/mongojson-steward.service.env" {
 		t.Fatalf("unexpected linux system plan: %#v", linuxPlan)
 	}
 	if !strings.Contains(strings.Join(linuxPlan.Commands, "\n"), "systemctl daemon-reload") ||
-		!strings.Contains(linuxPlan.Artifacts["systemd_unit"], "WantedBy=multi-user.target") {
+		!strings.Contains(linuxPlan.Artifacts["systemd_unit"], "WantedBy=multi-user.target") ||
+		!strings.Contains(linuxPlan.Artifacts["systemd_unit"], `EnvironmentFile="/etc/mongojson-steward/mongojson-steward.service.env"`) ||
+		strings.Contains(linuxPlan.Artifacts["systemd_unit"], "plan-secret") ||
+		!strings.Contains(linuxPlan.Artifacts["environment_file"], `STEWARD_SYNC_SECRET="<redacted>"`) ||
+		linuxPlan.Artifacts["environment_file_mode"] != "0600" {
 		t.Fatalf("linux system plan did not target systemd system unit: %#v", linuxPlan)
 	}
 }
@@ -291,8 +297,10 @@ func TestPlanInstallKeepsUserScopeDefaultsForDarwinAndLinux(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linux user plan: %v", err)
 	}
-	if linuxPlan.Scope != ScopeUser || linuxPlan.Files[0] != "~/.config/systemd/user/mongojson-steward.service" ||
-		!strings.Contains(linuxPlan.Artifacts["systemd_unit"], "WantedBy=default.target") {
+	if linuxPlan.Scope != ScopeUser || len(linuxPlan.Files) != 2 || linuxPlan.Files[0] != "~/.config/systemd/user/mongojson-steward.service" ||
+		linuxPlan.Files[1] != "~/.config/mongojson-steward/mongojson-steward.service.env" ||
+		!strings.Contains(linuxPlan.Artifacts["systemd_unit"], "WantedBy=default.target") ||
+		!strings.Contains(linuxPlan.Artifacts["systemd_unit"], `EnvironmentFile="~/.config/mongojson-steward/mongojson-steward.service.env"`) {
 		t.Fatalf("unexpected linux user plan: %#v", linuxPlan)
 	}
 }

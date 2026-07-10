@@ -15,6 +15,7 @@ import (
 	"mongojson/backend/internal/config"
 	"mongojson/backend/internal/httpapi"
 	"mongojson/backend/internal/platform/database"
+	"mongojson/backend/internal/platform/peerdiscovery"
 	"mongojson/backend/internal/platform/storage"
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
@@ -33,12 +34,21 @@ type Server struct {
 	jobWorker     *jobs.Worker
 	cleanup       *jobs.CleanupLoop
 	stewardDaemon *steward.Daemon
+	peerDiscovery *peerdiscovery.Manager
 }
 
 func NewServer() (*Server, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
+	}
+	discoveryOptions, err := peerdiscovery.OptionsFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load steward peer discovery config: %w", err)
+	}
+	peerDiscovery, err := peerdiscovery.New(discoveryOptions)
+	if err != nil {
+		return nil, fmt.Errorf("configure steward peer discovery: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "uploads"), 0o755); err != nil {
@@ -53,6 +63,7 @@ func NewServer() (*Server, error) {
 		return nil, fmt.Errorf("connect database: %w", err)
 	}
 	if err := db.Migrate(context.Background()); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
 
@@ -61,20 +72,18 @@ func NewServer() (*Server, error) {
 	jobService := jobs.NewService(db, fileStore, cfg.FileRetention)
 	presetService := presets.NewService(db)
 	memoService := memo.NewService(db)
-	stewardService := steward.NewService(db)
+	stewardService := steward.NewService(db, steward.WithPeerDiscovery(peerDiscovery))
 	watchSyncHub := watchsync.NewHub()
 	if err := stewardService.EnsureDefaults(context.Background()); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("ensure steward defaults: %w", err)
 	}
 
 	stewardDaemon := steward.NewDaemon(stewardService, steward.DaemonOptionsFromEnv())
-	stewardDaemon.Start(context.Background())
 
 	worker := jobs.NewWorker(jobService, cfg)
-	worker.Start(context.Background())
 
 	cleanup := jobs.NewCleanupLoop(jobService, 30*time.Minute)
-	cleanup.Start(context.Background())
 
 	deps := httpapi.Dependencies{
 		Config:         cfg,
@@ -84,7 +93,7 @@ func NewServer() (*Server, error) {
 		PresetService:  presetService,
 		StewardService: stewardService,
 		WatchSync:      watchSyncHub,
-		Readiness:      readinessChecker(cfg, db, worker, stewardDaemon),
+		Readiness:      readinessChecker(cfg, db, worker, stewardDaemon, peerDiscovery),
 	}
 
 	managementRouter := chi.NewRouter()
@@ -99,6 +108,7 @@ func NewServer() (*Server, error) {
 	httpapi.RegisterManagementRoutes(managementRouter, deps)
 	managementHandler, err := withStaticWorkspace(managementRouter, cfg.StewardUIDir)
 	if err != nil {
+		db.Close()
 		return nil, err
 	}
 
@@ -108,6 +118,14 @@ func NewServer() (*Server, error) {
 		Readiness:      deps.Readiness,
 	})
 
+	if err := peerDiscovery.Start(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("start steward peer discovery: %w", err)
+	}
+	stewardDaemon.Start(context.Background())
+	worker.Start(context.Background())
+	cleanup.Start(context.Background())
+
 	return &Server{
 		Config:           cfg,
 		ManagementRouter: managementHandler,
@@ -116,10 +134,11 @@ func NewServer() (*Server, error) {
 		jobWorker:        worker,
 		cleanup:          cleanup,
 		stewardDaemon:    stewardDaemon,
+		peerDiscovery:    peerDiscovery,
 	}, nil
 }
 
-func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker, stewardDaemon *steward.Daemon) func(context.Context) (map[string]string, error) {
+func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker, stewardDaemon *steward.Daemon, peerDiscovery *peerdiscovery.Manager) func(context.Context) (map[string]string, error) {
 	return func(ctx context.Context) (map[string]string, error) {
 		checks := map[string]string{}
 		var failures []string
@@ -150,6 +169,22 @@ func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker, s
 		} else {
 			checks["steward_daemon"] = "error: not running"
 			failures = append(failures, "steward_daemon")
+		}
+
+		discoveryStatus := peerDiscovery.Status()
+		if !discoveryStatus.Enabled {
+			checks["peer_discovery"] = "disabled"
+		} else if !peerDiscovery.IsRunning() {
+			checks["peer_discovery"] = "error: not running"
+			failures = append(failures, "peer_discovery")
+		} else if strings.TrimSpace(discoveryStatus.LastError) != "" {
+			checks["peer_discovery"] = "error: " + discoveryStatus.LastError
+			failures = append(failures, "peer_discovery")
+		} else if discoveryStatus.LastAnnouncementAt == nil {
+			checks["peer_discovery"] = "error: no signed announcement sent yet"
+			failures = append(failures, "peer_discovery")
+		} else {
+			checks["peer_discovery"] = "ok"
 		}
 
 		if len(failures) > 0 {
@@ -195,6 +230,9 @@ func checkStorage(root string) error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) {
+	if s.peerDiscovery != nil {
+		s.peerDiscovery.Stop()
+	}
 	if s.stewardDaemon != nil {
 		s.stewardDaemon.Stop()
 	}

@@ -4,6 +4,7 @@ package servicecontrol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"syscall"
@@ -107,7 +108,11 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 	}
 	defer service.Close()
 	if err := setWindowsServiceEnv(options.Name, env); err != nil {
-		return Result{}, err
+		rollbackErr := service.Delete()
+		if rollbackErr != nil {
+			rollbackErr = fmt.Errorf("rollback Windows service after environment failure: %w", rollbackErr)
+		}
+		return Result{}, errors.Join(err, rollbackErr)
 	}
 	result.Message = "Windows service installed"
 	return result, nil

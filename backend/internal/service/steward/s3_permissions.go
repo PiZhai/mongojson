@@ -78,27 +78,6 @@ func (s *Service) ensureDefaultDevicePermissions(ctx context.Context, deviceID s
 	return nil
 }
 
-func syncCapabilityForEntity(entityType string) (string, bool) {
-	switch strings.TrimSpace(entityType) {
-	case EntityTask, EntityIntent:
-		return "sync.tasks", true
-	case EntityEvent, EntityTimeline:
-		return "sync.timeline", true
-	case EntityMemory:
-		return "sync.memory", true
-	case EntityKnowledgeItem, EntitySourceRef:
-		return "sync.knowledge", true
-	case EntityDataTag, EntityEntityTag:
-		return "sync.tags", true
-	case EntityAuditSummary:
-		return "sync.audit", true
-	case EntityDeviceCapability, EntityDeviceRevoke:
-		return "sync.devices", true
-	default:
-		return "", false
-	}
-}
-
 func validDeviceCapability(capability string) bool {
 	capability = strings.TrimSpace(capability)
 	if capability == "remote.execute" || capability == "autonomy.execute" {
@@ -126,14 +105,14 @@ func validPermissionLevel(value string) bool {
 	return len(value) == 2 && value[0] == 'A' && value[1] >= '0' && value[1] <= '9'
 }
 
-func syncChangePermissionLevel(entityType string, payload map[string]any) string {
+func syncChangePermissionLevel(adapter SyncEntityAdapter, payload map[string]any) string {
 	if value := strings.TrimSpace(stringPayload(payload, "permission_level", "")); value != "" {
 		return value
 	}
-	if entityType == EntityDeviceCapability {
-		return PermissionA1
+	if adapter == nil {
+		return PermissionA3
 	}
-	return PermissionA3
+	return adapter.DefaultPermissionLevel()
 }
 
 func (s *Service) authorizeDeviceSyncChange(ctx context.Context, deviceID string, entityType string, payload map[string]any) error {
@@ -141,9 +120,13 @@ func (s *Service) authorizeDeviceSyncChange(ctx context.Context, deviceID string
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrSyncPermissionDenied, err)
 	}
-	capability, ok := syncCapabilityForEntity(entityType)
+	adapter, ok := s.syncEntities.resolve(entityType)
 	if !ok {
 		return fmt.Errorf("%w: unsupported entity type %q", ErrSyncPermissionDenied, entityType)
+	}
+	capability := strings.TrimSpace(adapter.SyncCapability())
+	if !validDeviceCapability(capability) {
+		return fmt.Errorf("%w: entity type %q declares unsupported capability %q", ErrSyncPermissionDenied, entityType, capability)
 	}
 	var policy, maxPermission string
 	err = s.db.Pool.QueryRow(ctx, `
@@ -157,7 +140,7 @@ func (s *Service) authorizeDeviceSyncChange(ctx context.Context, deviceID string
 	if strings.TrimSpace(policy) != "allow" {
 		return fmt.Errorf("%w: device %q policy for %s is %s", ErrSyncPermissionDenied, deviceID, capability, policy)
 	}
-	requiredPermission := syncChangePermissionLevel(entityType, payload)
+	requiredPermission := syncChangePermissionLevel(adapter, payload)
 	if permissionRank(requiredPermission) > permissionRank(maxPermission) {
 		return fmt.Errorf("%w: %s requires %s but device %q allows up to %s", ErrSyncPermissionDenied, capability, requiredPermission, deviceID, maxPermission)
 	}

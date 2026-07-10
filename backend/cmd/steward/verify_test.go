@@ -100,6 +100,94 @@ func TestRunRuntimeVerificationStrictSecurityFailsWhenKeysMissing(t *testing.T) 
 	}
 }
 
+func TestRunRuntimeVerificationChecksDiscoveryHealth(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tests := []struct {
+		name      string
+		discovery map[string]any
+		peers     []any
+		wantOK    bool
+	}{
+		{
+			name: "healthy",
+			discovery: map[string]any{
+				"enabled": true, "running": true, "candidate_count": 1,
+				"last_announcement_at": now, "last_error": "",
+			},
+			peers:  []any{map[string]any{"device_id": "linux-main", "signature_verified": true}},
+			wantOK: true,
+		},
+		{
+			name: "sender error",
+			discovery: map[string]any{
+				"enabled": true, "running": true, "candidate_count": 0,
+				"last_announcement_at": now, "last_error": "send failed",
+			},
+		},
+		{
+			name: "no announcement",
+			discovery: map[string]any{
+				"enabled": true, "running": true, "candidate_count": 0, "last_error": "",
+			},
+		},
+		{
+			name: "candidate count mismatch",
+			discovery: map[string]any{
+				"enabled": true, "running": true, "candidate_count": 2,
+				"last_announcement_at": now, "last_error": "",
+			},
+			peers: []any{map[string]any{"device_id": "linux-main", "signature_verified": true}},
+		},
+		{
+			name: "unverified candidate",
+			discovery: map[string]any{
+				"enabled": true, "running": true, "candidate_count": 1,
+				"last_announcement_at": now, "last_error": "",
+			},
+			peers: []any{map[string]any{"device_id": "linux-main", "signature_verified": false}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+				writeTestJSON(w, map[string]any{"status": "ok"})
+			})
+			mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+				writeTestJSON(w, map[string]any{"status": "ok"})
+			})
+			mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
+				writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "status": "running"}})
+			})
+			mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
+				sync := testSyncStatus("", false)
+				sync["discovery"] = tt.discovery
+				sync["discovered_peers"] = tt.peers
+				writeTestJSON(w, map[string]any{"sync": sync})
+			})
+			mux.HandleFunc("/api/steward/autonomy", func(w http.ResponseWriter, _ *http.Request) {
+				writeTestJSON(w, map[string]any{"autonomy": testAutonomyPayload("")})
+			})
+
+			server := httptest.NewServer(mux)
+			defer server.Close()
+			c := cli{apiBase: server.URL + "/api", client: server.Client()}
+			result := c.runRuntimeVerification(runtimeVerifyOptions{})
+			if result.OK != tt.wantOK {
+				t.Fatalf("verification OK=%t, want %t: %#v", result.OK, tt.wantOK, result.Checks)
+			}
+			wantStatus := "error"
+			if tt.wantOK {
+				wantStatus = "ok"
+			}
+			if !hasCheckStatus(result.Checks, "s3.discovery.status", wantStatus) {
+				t.Fatalf("missing discovery %s check: %#v", wantStatus, result.Checks)
+			}
+		})
+	}
+}
+
 func TestRunRuntimeVerificationStrictSecurityChecksAdvisorRuntime(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

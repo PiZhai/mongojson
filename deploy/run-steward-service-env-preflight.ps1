@@ -389,17 +389,32 @@ try {
   $planPlatforms = @($installPlanOutput.plans | ForEach-Object { $_.platform })
   $hasAllPlatforms = ($planPlatforms -contains "windows") -and ($planPlatforms -contains "darwin") -and ($planPlatforms -contains "linux")
   $artifactOK = $true
+  $privateEnvironmentArtifactsOK = $true
   $verificationByPlatformOK = $true
   foreach ($servicePlan in @($installPlanOutput.plans)) {
     if ($servicePlan.environment.STEWARD_SYNC_ENCRYPTION_KEY -ne "<redacted>" -or
         $servicePlan.environment.STEWARD_DEVICE_PRIVATE_KEY -ne "<redacted>") {
       $artifactOK = $false
     }
-    if ($servicePlan.platform -eq "darwin" -and -not ([string]$servicePlan.artifacts.plist).Contains("<key>KeepAlive</key>")) {
-      $artifactOK = $false
+    if ($servicePlan.platform -eq "darwin") {
+      if (-not ([string]$servicePlan.artifacts.plist).Contains("<key>KeepAlive</key>")) {
+        $artifactOK = $false
+      }
+      if ($servicePlan.artifacts.plist_mode -ne "0600") {
+        $privateEnvironmentArtifactsOK = $false
+      }
     }
-    if ($servicePlan.platform -eq "linux" -and -not ([string]$servicePlan.artifacts.systemd_unit).Contains("Restart=always")) {
-      $artifactOK = $false
+    if ($servicePlan.platform -eq "linux") {
+      $unit = [string]$servicePlan.artifacts.systemd_unit
+      $environmentFile = [string]$servicePlan.artifacts.environment_file
+      if (-not $unit.Contains("Restart=always")) {
+        $artifactOK = $false
+      }
+      if (-not $unit.Contains("EnvironmentFile=") -or $unit.Contains("STEWARD_SYNC_SECRET") -or
+          -not $environmentFile.Contains('STEWARD_SYNC_SECRET="<redacted>"') -or
+          $servicePlan.artifacts.environment_file_mode -ne "0600" -or @($servicePlan.files).Count -ne 2) {
+        $privateEnvironmentArtifactsOK = $false
+      }
     }
     if ($servicePlan.platform -eq "windows" -and $servicePlan.artifacts.service_type -ne "Windows Service") {
       $artifactOK = $false
@@ -433,6 +448,11 @@ try {
       verification_by_platform_ok = $verificationByPlatformOK
       leaked_count = $installPlanLeaked.Count
     }
+  }
+  if ($privateEnvironmentArtifactsOK) {
+    Add-Check $checks "service_env_preflight.private_environment_artifacts" "ok" "macOS and Linux plans protect persisted service secrets with mode 0600 and Linux keeps them out of the unit" $null
+  } else {
+    Add-Check $checks "service_env_preflight.private_environment_artifacts" "error" "macOS or Linux service plan does not protect persisted service secrets" $installPlanOutput.plans
   }
 } catch {
   $errorMessage = $_.Exception.Message

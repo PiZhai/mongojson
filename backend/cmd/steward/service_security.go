@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"mongojson/backend/internal/platform/netpolicy"
+	"mongojson/backend/internal/platform/peerdiscovery"
 	"mongojson/backend/internal/platform/servicecontrol"
 )
 
@@ -24,6 +25,15 @@ var strictAdvisorEnvKeys = []string{
 	"STEWARD_LLM_MAX_DATA_LEVEL",
 	"STEWARD_LLM_FAILURE_THRESHOLD",
 	"STEWARD_LLM_FAILURE_COOLDOWN",
+}
+
+var discoveryEnvKeys = []string{
+	"STEWARD_DISCOVERY_ENABLED",
+	"STEWARD_DEVICE_NAME",
+	"STEWARD_DISCOVERY_LISTEN_ADDR",
+	"STEWARD_DISCOVERY_TARGETS",
+	"STEWARD_DISCOVERY_INTERVAL",
+	"STEWARD_DISCOVERY_TTL",
 }
 
 func validateStrictServiceSecurity(options servicecontrol.InstallOptions) error {
@@ -69,6 +79,9 @@ func validateStrictServiceSecurity(options servicecontrol.InstallOptions) error 
 	if err := validateStrictAdvisorEnvironment(options.ExtraEnv); err != nil {
 		problems = append(problems, err.Error())
 	}
+	if err := validateServiceDiscoveryEnvironment(options); err != nil {
+		problems = append(problems, err.Error())
+	}
 
 	if len(problems) > 0 {
 		return fmt.Errorf("strict service security validation failed: %s", strings.Join(problems, "; "))
@@ -99,7 +112,7 @@ func serviceInstallOptionsFromEnv(name string, env map[string]string) servicecon
 		SyncInterval:                serviceEnvDuration(env, "STEWARD_SYNC_INTERVAL"),
 		AutonomyInterval:            serviceEnvDuration(env, "STEWARD_AUTONOMY_INTERVAL"),
 		LogDir:                      strings.TrimSpace(env["STEWARD_LOG_DIR"]),
-		ExtraEnv:                    advisorEnvFromServiceEnv(env),
+		ExtraEnv:                    serviceExtraEnvFromServiceEnv(env),
 	}
 }
 
@@ -115,14 +128,72 @@ func serviceEnvDuration(env map[string]string, key string) time.Duration {
 	return parsed
 }
 
-func advisorEnvFromServiceEnv(env map[string]string) map[string]string {
+func serviceExtraEnvFromServiceEnv(env map[string]string) map[string]string {
 	extra := map[string]string{}
-	for _, key := range strictAdvisorEnvKeys {
+	keys := append(append([]string{}, strictAdvisorEnvKeys...), discoveryEnvKeys...)
+	for _, key := range keys {
 		if value, ok := env[key]; ok {
 			extra[key] = strings.TrimSpace(value)
 		}
 	}
 	return extra
+}
+
+func validateServiceDiscoveryEnvironment(options servicecontrol.InstallOptions) error {
+	enabledValue := strings.TrimSpace(options.ExtraEnv["STEWARD_DISCOVERY_ENABLED"])
+	if enabledValue == "" {
+		return nil
+	}
+	enabled, err := strconv.ParseBool(enabledValue)
+	if err != nil {
+		return fmt.Errorf("STEWARD_DISCOVERY_ENABLED must be true or false")
+	}
+	if !enabled {
+		return nil
+	}
+	interval, err := serviceDiscoveryDuration(options.ExtraEnv, "STEWARD_DISCOVERY_INTERVAL", peerdiscovery.DefaultInterval)
+	if err != nil {
+		return err
+	}
+	ttl, err := serviceDiscoveryDuration(options.ExtraEnv, "STEWARD_DISCOVERY_TTL", peerdiscovery.DefaultTTL)
+	if err != nil {
+		return err
+	}
+	targets := []string{}
+	for _, target := range strings.Split(options.ExtraEnv["STEWARD_DISCOVERY_TARGETS"], ",") {
+		if target = strings.TrimSpace(target); target != "" {
+			targets = append(targets, target)
+		}
+	}
+	_, err = peerdiscovery.New(peerdiscovery.Options{
+		Enabled:     true,
+		ListenAddr:  defaultString(options.ExtraEnv["STEWARD_DISCOVERY_LISTEN_ADDR"], peerdiscovery.DefaultListenAddr),
+		Targets:     targets,
+		Interval:    interval,
+		TTL:         ttl,
+		DeviceID:    options.AgentID,
+		DeviceName:  options.ExtraEnv["STEWARD_DEVICE_NAME"],
+		Platform:    "service",
+		PeerAPIBase: options.PublicAPIBase,
+		PublicKey:   options.DevicePublicKey,
+		PrivateKey:  options.DevicePrivateKey,
+	})
+	if err != nil {
+		return fmt.Errorf("invalid steward peer discovery environment: %w", err)
+	}
+	return nil
+}
+
+func serviceDiscoveryDuration(env map[string]string, key string, fallback time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(env[key])
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", key)
+	}
+	return parsed, nil
 }
 
 func validateServiceDeviceKeys(privateKeyValue string, publicKeyValue string) error {

@@ -33,3 +33,26 @@ func TestLoadAcceptsSplitManagementAndPeerListeners(t *testing.T) {
 		t.Fatalf("ui dir = %q", cfg.StewardUIDir)
 	}
 }
+
+func TestLoadUsesStewardManagementDefault(t *testing.T) {
+	t.Setenv("HTTP_ADDR", "")
+	t.Setenv("STEWARD_PEER_HTTP_ADDR", "")
+	t.Setenv("STEWARD_ALLOW_REMOTE_MANAGEMENT", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.HTTPAddr != DefaultHTTPAddr {
+		t.Fatalf("HTTPAddr = %q, want %q", cfg.HTTPAddr, DefaultHTTPAddr)
+	}
+}
+
+func TestLoadRejectsInvalidRemoteManagementSwitch(t *testing.T) {
+	t.Setenv("STEWARD_ALLOW_REMOTE_MANAGEMENT", "sometimes")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "STEWARD_ALLOW_REMOTE_MANAGEMENT") {
+		t.Fatalf("Load() error = %v, want invalid boolean error", err)
+	}
+}

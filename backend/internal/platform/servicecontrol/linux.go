@@ -4,6 +4,7 @@ package servicecontrol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,34 +27,55 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 	if err != nil {
 		return Result{}, err
 	}
+	envPath, err := linuxEnvironmentPath(options.Name, options.Scope)
+	if err != nil {
+		return Result{}, err
+	}
 	env := Environment(options)
-	content := linuxUnitContent(options, env)
+	content := linuxUnitContent(options, envPath)
 	result := Result{
 		Platform:    runtime.GOOS,
 		Name:        unitName,
 		Scope:       options.Scope,
-		Files:       []string{unitPath},
+		Files:       []string{unitPath, envPath},
 		Environment: redactedEnvironment(env),
 		Commands: []string{
+			"write private service environment " + envPath + " mode=0600",
 			linuxSystemctlCommand(options.Scope, "daemon-reload"),
 			linuxSystemctlCommand(options.Scope, "enable", unitName),
 		},
 	}
 	if options.DryRun {
-		result.Message = "dry run: systemd " + options.Scope + " unit would be written and enabled"
+		result.Message = "dry run: systemd " + options.Scope + " unit and private environment file would be written and enabled"
 		return result, nil
+	}
+	if err := ensureServicePathAbsent(unitPath, "systemd unit"); err != nil {
+		return Result{}, err
+	}
+	if err := ensureServicePathAbsent(envPath, "systemd environment file"); err != nil {
+		return Result{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		return Result{}, fmt.Errorf("create systemd %s dir: %w", options.Scope, err)
 	}
-	if err := os.WriteFile(unitPath, []byte(content), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
+		return Result{}, fmt.Errorf("create private systemd environment dir: %w", err)
+	}
+	if err := os.Chmod(filepath.Dir(envPath), 0o700); err != nil {
+		return Result{}, fmt.Errorf("protect private systemd environment dir: %w", err)
+	}
+	if err := writeNewServiceFile(envPath, []byte(renderSystemdEnvironmentFile(env)), 0o600); err != nil {
+		return Result{}, fmt.Errorf("write private systemd environment file: %w", err)
+	}
+	if err := writeNewServiceFile(unitPath, []byte(content), 0o644); err != nil {
+		_ = os.Remove(envPath)
 		return Result{}, fmt.Errorf("write systemd unit: %w", err)
 	}
 	if err := runSystemctl(ctx, options.Scope, "daemon-reload"); err != nil {
-		return Result{}, err
+		return Result{}, errors.Join(err, rollbackLinuxInstall(ctx, options.Scope, unitName, unitPath, envPath))
 	}
 	if err := runSystemctl(ctx, options.Scope, "enable", unitName); err != nil {
-		return Result{}, err
+		return Result{}, errors.Join(err, rollbackLinuxInstall(ctx, options.Scope, unitName, unitPath, envPath))
 	}
 	result.Message = "systemd " + options.Scope + " unit installed"
 	return result, nil
@@ -68,11 +90,11 @@ func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
-	data, err := os.ReadFile(unitPath)
+	envPath, err := linuxEnvironmentPath(options.Name, options.Scope)
 	if err != nil {
-		return Result{}, fmt.Errorf("read systemd unit: %w", err)
+		return Result{}, err
 	}
-	current, err := linuxUnitEnvironment(string(data))
+	current, legacyUnit, err := readLinuxServiceEnvironment(unitPath, envPath)
 	if err != nil {
 		return Result{}, err
 	}
@@ -80,18 +102,14 @@ func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
-	updated, err := replaceLinuxUnitEnvironment(string(data), next)
-	if err != nil {
-		return Result{}, err
-	}
 	result := Result{
 		Platform:    runtime.GOOS,
 		Name:        unitName,
 		Scope:       options.Scope,
-		Files:       []string{unitPath},
+		Files:       []string{unitPath, envPath},
 		Environment: redactedEnvironment(next),
 		Commands: []string{
-			linuxSystemctlCommand(options.Scope, "daemon-reload"),
+			"update private service environment " + envPath + " mode=0600",
 			linuxSystemctlCommand(options.Scope, "restart", unitName),
 		},
 	}
@@ -104,11 +122,34 @@ func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error
 		return Result{}, ctx.Err()
 	default:
 	}
-	if err := os.WriteFile(unitPath, []byte(updated), 0o644); err != nil {
-		return Result{}, fmt.Errorf("write systemd unit: %w", err)
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
+		return Result{}, fmt.Errorf("create private systemd environment dir: %w", err)
 	}
-	if err := runSystemctl(ctx, options.Scope, "daemon-reload"); err != nil {
-		return Result{}, err
+	if err := os.Chmod(filepath.Dir(envPath), 0o700); err != nil {
+		return Result{}, fmt.Errorf("protect private systemd environment dir: %w", err)
+	}
+	if len(legacyUnit) == 0 {
+		if err := writeServiceFileAtomic(envPath, []byte(renderSystemdEnvironmentFile(next)), 0o600); err != nil {
+			return Result{}, fmt.Errorf("update private systemd environment file: %w", err)
+		}
+	} else {
+		updatedUnit, err := replaceSystemdEnvironmentDirectives(string(legacyUnit), envPath)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := writeNewServiceFile(envPath, []byte(renderSystemdEnvironmentFile(next)), 0o600); err != nil {
+			return Result{}, fmt.Errorf("write migrated private systemd environment file: %w", err)
+		}
+		if err := writeServiceFileAtomic(unitPath, []byte(updatedUnit), 0o644); err != nil {
+			_ = os.Remove(envPath)
+			return Result{}, fmt.Errorf("migrate systemd unit to EnvironmentFile: %w", err)
+		}
+		if err := runSystemctl(ctx, options.Scope, "daemon-reload"); err != nil {
+			_ = writeServiceFileAtomic(unitPath, legacyUnit, 0o644)
+			_ = os.Remove(envPath)
+			_ = runSystemctl(context.Background(), options.Scope, "daemon-reload")
+			return Result{}, fmt.Errorf("reload migrated systemd unit: %w", err)
+		}
 	}
 	result.Message = "systemd " + options.Scope + " unit environment updated; restart the service for changes to take effect"
 	return result, nil
@@ -123,14 +164,19 @@ func uninstallPlatform(ctx context.Context, name string, scope string, dryRun bo
 	if err != nil {
 		return Result{}, err
 	}
+	envPath, err := linuxEnvironmentPath(name, scope)
+	if err != nil {
+		return Result{}, err
+	}
 	result := Result{
 		Platform: runtime.GOOS,
 		Name:     unitName,
 		Scope:    scope,
-		Files:    []string{unitPath},
+		Files:    []string{unitPath, envPath},
 		Commands: []string{
 			linuxSystemctlCommand(scope, "disable", "--now", unitName),
 			commandString("rm", unitPath),
+			commandString("rm", envPath),
 			linuxSystemctlCommand(scope, "daemon-reload"),
 		},
 	}
@@ -139,10 +185,17 @@ func uninstallPlatform(ctx context.Context, name string, scope string, dryRun bo
 		return result, nil
 	}
 	_ = runSystemctl(ctx, scope, "disable", "--now", unitName)
+	var removeErrors []error
 	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
-		return Result{}, fmt.Errorf("remove systemd unit: %w", err)
+		removeErrors = append(removeErrors, fmt.Errorf("remove systemd unit: %w", err))
+	}
+	if err := os.Remove(envPath); err != nil && !os.IsNotExist(err) {
+		removeErrors = append(removeErrors, fmt.Errorf("remove private systemd environment file: %w", err))
 	}
 	if err := runSystemctl(ctx, scope, "daemon-reload"); err != nil {
+		removeErrors = append(removeErrors, err)
+	}
+	if err := errors.Join(removeErrors...); err != nil {
 		return Result{}, err
 	}
 	result.Message = "systemd " + scope + " unit removed"
@@ -245,12 +298,23 @@ func linuxUnitPath(name string, scope string) (string, string, error) {
 	return filepath.Join(home, ".config", "systemd", "user", name), name, nil
 }
 
-func linuxUnitContent(options InstallOptions, env map[string]string) string {
-	args := append([]string{options.BinaryPath}, serviceRunArgs(options)...)
-	envLines := make([]string, 0, len(env))
-	for _, item := range envList(env) {
-		envLines = append(envLines, "Environment="+strconv.Quote(item))
+func linuxEnvironmentPath(name string, scope string) (string, error) {
+	_, unitName, err := linuxUnitPath(name, scope)
+	if err != nil {
+		return "", err
 	}
+	if scope == ScopeSystem {
+		return filepath.Join("/etc", "mongojson-steward", unitName+".env"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "mongojson-steward", unitName+".env"), nil
+}
+
+func linuxUnitContent(options InstallOptions, envFilePath string) string {
+	args := append([]string{options.BinaryPath}, serviceRunArgs(options)...)
 	wantedBy := "default.target"
 	if options.Scope == ScopeSystem {
 		wantedBy = "multi-user.target"
@@ -264,7 +328,7 @@ func linuxUnitContent(options InstallOptions, env map[string]string) string {
 		"[Service]",
 		"Type=simple",
 		"WorkingDirectory=" + strconv.Quote(options.WorkDir),
-		strings.Join(envLines, "\n"),
+		"EnvironmentFile=" + strconv.Quote(envFilePath),
 		"ExecStart=" + systemdCommand(args),
 		"Restart=always",
 		"RestartSec=5",
@@ -275,66 +339,41 @@ func linuxUnitContent(options InstallOptions, env map[string]string) string {
 	}, "\n")
 }
 
-func linuxUnitEnvironment(content string) (map[string]string, error) {
-	env := map[string]string{}
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "Environment=") {
-			continue
-		}
-		value := strings.TrimPrefix(line, "Environment=")
-		unquoted, err := strconv.Unquote(value)
-		if err != nil {
-			unquoted = value
-		}
-		key, envValue, ok := strings.Cut(unquoted, "=")
-		key = strings.TrimSpace(key)
-		if !ok || key == "" {
-			return nil, fmt.Errorf("invalid systemd Environment entry %q", line)
-		}
-		env[key] = envValue
+func readLinuxServiceEnvironment(unitPath string, envPath string) (map[string]string, []byte, error) {
+	data, err := os.ReadFile(envPath)
+	if err == nil {
+		env, parseErr := parseSystemdEnvironmentFile(string(data))
+		return env, nil, parseErr
 	}
-	return env, nil
+	if !os.IsNotExist(err) {
+		return nil, nil, fmt.Errorf("read private systemd environment file: %w", err)
+	}
+	legacyUnit, err := os.ReadFile(unitPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read systemd unit: %w", err)
+	}
+	env, err := parseInlineSystemdEnvironment(string(legacyUnit))
+	if err != nil {
+		return nil, nil, err
+	}
+	return env, legacyUnit, nil
 }
 
-func replaceLinuxUnitEnvironment(content string, env map[string]string) (string, error) {
-	envLines := make([]string, 0, len(env))
-	for _, item := range envList(env) {
-		envLines = append(envLines, "Environment="+strconv.Quote(item))
+func rollbackLinuxInstall(ctx context.Context, scope string, unitName string, unitPath string, envPath string) error {
+	var rollbackErrors []error
+	if err := runSystemctl(ctx, scope, "disable", unitName); err != nil {
+		rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback systemd enablement: %w", err))
 	}
-	lines := strings.Split(content, "\n")
-	next := make([]string, 0, len(lines)+len(envLines))
-	inService := false
-	inserted := false
-	sawService := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if inService && !inserted {
-				next = append(next, envLines...)
-				inserted = true
-			}
-			inService = trimmed == "[Service]"
-			if inService {
-				sawService = true
-			}
-		}
-		if inService && strings.HasPrefix(trimmed, "Environment=") {
-			continue
-		}
-		if inService && !inserted && strings.HasPrefix(trimmed, "ExecStart=") {
-			next = append(next, envLines...)
-			inserted = true
-		}
-		next = append(next, line)
+	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
+		rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback systemd unit: %w", err))
 	}
-	if !sawService {
-		return "", fmt.Errorf("systemd unit does not contain a [Service] section")
+	if err := os.Remove(envPath); err != nil && !os.IsNotExist(err) {
+		rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback private systemd environment file: %w", err))
 	}
-	if inService && !inserted {
-		next = append(next, envLines...)
+	if err := runSystemctl(context.Background(), scope, "daemon-reload"); err != nil {
+		rollbackErrors = append(rollbackErrors, fmt.Errorf("reload systemd after rollback: %w", err))
 	}
-	return strings.Join(next, "\n"), nil
+	return errors.Join(rollbackErrors...)
 }
 
 func systemdCommand(args []string) string {

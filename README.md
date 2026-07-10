@@ -58,6 +58,27 @@ go run ./cmd/server
 - User: `postgres`
 - Password: `postgres`
 
+### Private Steward Software
+
+私人管家可以构建为 Windows、macOS 和 Linux 后台软件目录。每个默认产物同时包含 `steward` CLI/服务二进制和 Web 工作台：
+
+```powershell
+.\deploy\build-steward.ps1 -Version local
+.\deploy\verify-steward-dist.ps1 -ExpectedVersion local -RunCurrentBinary
+```
+
+选择当前平台目录后直接运行：
+
+```powershell
+# Windows
+.\steward.exe run
+
+# macOS / Linux
+./steward run
+```
+
+默认本地管理地址是 `http://127.0.0.1:18080`，工作台入口是 `http://127.0.0.1:18080/tools/steward`。二进制会自动托管同级 `ui/`，仍需要可用的 PostgreSQL `DATABASE_URL`。系统服务安装、设备配对、同步密钥和 S3/S4 验收流程见 [S3/S4 运行与验证基线](docs/personal-ai-steward-s3-s4-runtime.md)。
+
 ## Docker Compose
 
 ```bash

@@ -117,6 +117,62 @@ func TestStewardSyncHTTPReplicatesTasksAcrossIndependentDatabases(t *testing.T) 
 	}
 }
 
+func TestStewardSyncChangeCreationIsAtomicForConcurrentDuplicateID(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed sync change concurrency test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "sync_change_concurrency"), "windows-main")
+
+	changeID := uuid.NewString()
+	input := steward.CreateSyncChangeInput{
+		ID:             changeID,
+		EntityType:     "task",
+		EntityID:       uuid.NewString(),
+		Operation:      steward.SyncCreate,
+		OriginDeviceID: "windows-main",
+		Version:        1,
+		DataLevel:      steward.DataD0,
+		Payload:        map[string]any{"title": "concurrent idempotency probe"},
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			change, err := node.service.CreateSyncChange(ctx, input)
+			if err == nil && change.ID != changeID {
+				err = fmt.Errorf("change id = %s, want %s", change.ID, changeID)
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent duplicate sync change failed: %v", err)
+		}
+	}
+
+	var count int
+	if err := node.pool.QueryRow(ctx, `select count(*) from steward_sync_changes where id = $1`, changeID).Scan(&count); err != nil {
+		t.Fatalf("count concurrent sync changes: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("concurrent duplicate sync change count = %d, want 1", count)
+	}
+}
+
 func TestStewardThreeNodeMeshConvergesAfterOfflineReplayAndPropagatesRevocation(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {

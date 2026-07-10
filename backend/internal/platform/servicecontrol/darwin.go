@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -40,25 +41,29 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 		Files:       []string{plistPath},
 		Environment: redactedEnvironment(env),
 		Commands: []string{
+			"write private launchd plist " + plistPath + " mode=0600",
 			commandString("launchctl", "bootstrap", parentDomain, plistPath),
 			commandString("launchctl", "enable", domain),
 		},
 	}
 	if options.DryRun {
-		result.Message = "dry run: " + serviceKind + " plist would be written and bootstrapped"
+		result.Message = "dry run: private " + serviceKind + " plist would be written and bootstrapped"
 		return result, nil
+	}
+	if err := ensureServicePathAbsent(plistPath, serviceKind+" plist"); err != nil {
+		return Result{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		return Result{}, fmt.Errorf("create %s dir: %w", serviceKind, err)
 	}
-	if err := os.WriteFile(plistPath, []byte(launchAgentPlist(options, env)), 0o644); err != nil {
+	if err := writeNewServiceFile(plistPath, []byte(launchAgentPlist(options, env)), 0o600); err != nil {
 		return Result{}, fmt.Errorf("write %s plist: %w", serviceKind, err)
 	}
 	if err := runCommand(ctx, "launchctl", "bootstrap", parentDomain, plistPath); err != nil {
-		return Result{}, err
+		return Result{}, errors.Join(err, rollbackDarwinInstall(domain, plistPath, true))
 	}
 	if err := runCommand(ctx, "launchctl", "enable", domain); err != nil {
-		return Result{}, err
+		return Result{}, errors.Join(err, rollbackDarwinInstall(domain, plistPath, true))
 	}
 	result.Message = serviceKind + " installed"
 	return result, nil
@@ -98,7 +103,7 @@ func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error
 		Files:       []string{plistPath},
 		Environment: redactedEnvironment(next),
 		Commands: []string{
-			"update EnvironmentVariables in " + plistPath,
+			"update private EnvironmentVariables in " + plistPath + " mode=0600",
 			commandString("launchctl", "kickstart", "-k", domain),
 		},
 	}
@@ -111,7 +116,7 @@ func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error
 		return Result{}, ctx.Err()
 	default:
 	}
-	if err := os.WriteFile(plistPath, []byte(updated), 0o644); err != nil {
+	if err := writeServiceFileAtomic(plistPath, []byte(updated), 0o600); err != nil {
 		return Result{}, fmt.Errorf("write %s plist: %w", serviceKind, err)
 	}
 	result.Message = serviceKind + " environment updated; kickstart the service for changes to take effect"
@@ -149,6 +154,19 @@ func uninstallPlatform(ctx context.Context, name string, scope string, dryRun bo
 	}
 	result.Message = serviceKind + " removed"
 	return result, nil
+}
+
+func rollbackDarwinInstall(domain string, plistPath string, bootstrapped bool) error {
+	var rollbackErrors []error
+	if bootstrapped {
+		if err := runCommand(context.Background(), "launchctl", "bootout", domain); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback launchd bootstrap: %w", err))
+		}
+	}
+	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
+		rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback launchd plist: %w", err))
+	}
+	return errors.Join(rollbackErrors...)
 }
 
 func startPlatform(ctx context.Context, name string, scope string, dryRun bool) (Result, error) {

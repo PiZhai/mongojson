@@ -582,9 +582,11 @@ func PlanInstall(targetPlatform string, input InstallOptions) (InstallPlan, erro
 		}
 		plan.Artifacts["service_type"] = serviceType
 		plan.Artifacts["plist"] = renderLaunchAgentPlan(options, redacted)
+		plan.Artifacts["plist_mode"] = "0600"
 	case "linux":
 		unitName := targetLinuxUnitName(options.Name)
 		unitPath := "~/.config/systemd/user/" + unitName
+		envPath := targetLinuxEnvironmentFile(options.Name, options.Scope)
 		systemctl := "systemctl --user"
 		serviceType := "Linux systemd user unit"
 		if options.Scope == ScopeSystem {
@@ -593,13 +595,15 @@ func PlanInstall(targetPlatform string, input InstallOptions) (InstallPlan, erro
 			serviceType = "Linux systemd system unit"
 		}
 		plan.Name = unitName
-		plan.Files = []string{unitPath}
+		plan.Files = []string{unitPath, envPath}
 		plan.Commands = []string{
 			systemctl + " daemon-reload",
 			systemctl + " enable " + unitName,
 		}
 		plan.Artifacts["service_type"] = serviceType
-		plan.Artifacts["systemd_unit"] = renderSystemdUnitPlan(options, redacted)
+		plan.Artifacts["systemd_unit"] = renderSystemdUnitPlan(options, envPath)
+		plan.Artifacts["environment_file"] = renderSystemdEnvironmentFile(redacted)
+		plan.Artifacts["environment_file_mode"] = "0600"
 	}
 	return plan, nil
 }
@@ -654,11 +658,15 @@ func targetLinuxUnitName(name string) string {
 	return name
 }
 
-func renderSystemdUnitPlan(options InstallOptions, env map[string]string) string {
-	envLines := make([]string, 0, len(env))
-	for _, item := range envList(env) {
-		envLines = append(envLines, "Environment="+strconv.Quote(item))
+func targetLinuxEnvironmentFile(name string, scope string) string {
+	unitName := targetLinuxUnitName(name)
+	if scope == ScopeSystem {
+		return "/etc/mongojson-steward/" + unitName + ".env"
 	}
+	return "~/.config/mongojson-steward/" + unitName + ".env"
+}
+
+func renderSystemdUnitPlan(options InstallOptions, envFilePath string) string {
 	wantedBy := "default.target"
 	if options.Scope == ScopeSystem {
 		wantedBy = "multi-user.target"
@@ -672,7 +680,7 @@ func renderSystemdUnitPlan(options InstallOptions, env map[string]string) string
 		"[Service]",
 		"Type=simple",
 		"WorkingDirectory=" + strconv.Quote(options.WorkDir),
-		strings.Join(envLines, "\n"),
+		"EnvironmentFile=" + strconv.Quote(envFilePath),
 		"ExecStart=" + shellQuotedCommand(append([]string{options.BinaryPath}, serviceRunArgs(options)...)),
 		"Restart=always",
 		"RestartSec=5",

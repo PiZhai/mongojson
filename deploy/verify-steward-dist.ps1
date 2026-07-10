@@ -146,29 +146,65 @@ foreach ($artifact in $manifest.artifacts) {
   if ($artifactTargets.ContainsKey($target)) {
     throw "Duplicate artifact target in manifest: $target"
   }
-  if ($artifactPaths.ContainsKey($relativePath)) {
-    throw "Duplicate artifact path in manifest: $relativePath"
-  }
   if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
     throw "Invalid sha256 for $relativePath"
   }
   $artifactTargets[$target] = $true
-  $artifactPaths[$relativePath] = $true
+
+  $fileRecords = @($artifact.files)
+  if ($fileRecords.Count -eq 0) {
+    $fileRecords = @([pscustomobject]@{ path = $relativePath; sha256 = $expectedHash })
+  }
+  $primaryFound = $false
+  foreach ($file in $fileRecords) {
+    $fileRelativePath = Normalize-ArtifactPath ([string]$file.path)
+    $fileExpectedHash = ([string]$file.sha256).ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($fileRelativePath) -or $fileExpectedHash -notmatch '^[a-f0-9]{64}$') {
+      throw "Invalid file record for target $target"
+    }
+    if ($artifactPaths.ContainsKey($fileRelativePath)) {
+      throw "Duplicate artifact path in manifest: $fileRelativePath"
+    }
+    $artifactPaths[$fileRelativePath] = $true
+    $filePath = Join-Path $distRoot $fileRelativePath
+    Assert-ChildPath -Parent $distRoot -Child $filePath -Label "Artifact path"
+    if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+      throw "Missing artifact file: $filePath"
+    }
+    $fileActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $filePath).Hash.ToLowerInvariant()
+    if ($fileActualHash -ne $fileExpectedHash) {
+      throw "Hash mismatch for $fileRelativePath"
+    }
+    if (-not $checksums.ContainsKey($fileRelativePath)) {
+      throw "SHA256SUMS is missing $fileRelativePath"
+    }
+    if ($checksums[$fileRelativePath] -ne $fileExpectedHash) {
+      throw "SHA256SUMS hash for $fileRelativePath does not match manifest"
+    }
+    if ($fileRelativePath -eq $relativePath) {
+      if ($fileExpectedHash -ne $expectedHash) {
+        throw "Primary binary hash for $relativePath does not match its file record"
+      }
+      $primaryFound = $true
+    }
+  }
+  if (-not $primaryFound) {
+    throw "Primary binary $relativePath is missing from target file records"
+  }
 
   $artifactPath = Join-Path $distRoot $relativePath
-  Assert-ChildPath -Parent $distRoot -Child $artifactPath -Label "Artifact path"
-  if (-not (Test-Path -LiteralPath $artifactPath)) {
-    throw "Missing artifact file: $artifactPath"
-  }
   $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath).Hash.ToLowerInvariant()
-  if ($actualHash -ne $expectedHash) {
-    throw "Hash mismatch for $relativePath"
-  }
-  if (-not $checksums.ContainsKey($relativePath)) {
-    throw "SHA256SUMS is missing $relativePath"
-  }
-  if ($checksums[$relativePath] -ne $expectedHash) {
-    throw "SHA256SUMS hash for $relativePath does not match manifest"
+  $uiRelativePath = Normalize-ArtifactPath ([string]$artifact.ui_dir)
+  if (-not [string]::IsNullOrWhiteSpace($uiRelativePath)) {
+    $uiIndexRelativePath = ($uiRelativePath.TrimEnd("/") + "/index.html")
+    if (-not $artifactPaths.ContainsKey($uiIndexRelativePath)) {
+      throw "Bundled UI index is missing from target file records: $uiIndexRelativePath"
+    }
+    $uiIndexPath = Join-Path $distRoot $uiIndexRelativePath
+    Assert-ChildPath -Parent $distRoot -Child $uiIndexPath -Label "Bundled UI index"
+    if (-not (Test-Path -LiteralPath $uiIndexPath -PathType Leaf)) {
+      throw "Bundled UI index is missing: $uiIndexPath"
+    }
   }
   if ($RunCurrentBinary -and $target -eq $currentTarget) {
     $currentSmoke = Invoke-CurrentBinarySmoke -BinaryPath $artifactPath -Manifest $manifest -Target $target
@@ -177,6 +213,8 @@ foreach ($artifact in $manifest.artifacts) {
     target = $target
     path = $relativePath
     sha256 = $actualHash
+    ui_dir = $uiRelativePath
+    file_count = $fileRecords.Count
   }
 }
 
@@ -207,6 +245,7 @@ $summary = [pscustomobject]@{
   commit = $manifest.commit
   required_targets = $RequiredTargets
   artifact_count = $verifiedArtifacts.Count
+  ui_included = [bool]$manifest.ui_included
   current_target = $currentTarget
   current_binary_smoke = $currentSmoke
   artifacts = $verifiedArtifacts

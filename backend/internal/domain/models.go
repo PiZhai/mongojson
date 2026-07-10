@@ -367,18 +367,45 @@ type StewardSyncSecurityStatus struct {
 	ConfigErrors               []string `json:"config_errors"`
 }
 
+type StewardDiscoveredPeer struct {
+	DeviceID             string    `json:"device_id"`
+	DeviceName           string    `json:"device_name"`
+	Platform             string    `json:"platform"`
+	PeerAPIBase          string    `json:"peer_api_base"`
+	PublicKey            string    `json:"public_key"`
+	PublicKeyFingerprint string    `json:"public_key_fingerprint"`
+	IssuedAt             time.Time `json:"issued_at"`
+	LastSeenAt           time.Time `json:"last_seen_at"`
+	ExpiresAt            time.Time `json:"expires_at"`
+	SignatureVerified    bool      `json:"signature_verified"`
+}
+
+type StewardPeerDiscoveryStatus struct {
+	Enabled               bool       `json:"enabled"`
+	Running               bool       `json:"running"`
+	ListenAddr            string     `json:"listen_addr,omitempty"`
+	Targets               []string   `json:"targets"`
+	CandidateCount        int        `json:"candidate_count"`
+	RejectedAnnouncements uint64     `json:"rejected_announcements"`
+	LastAnnouncementAt    *time.Time `json:"last_announcement_at,omitempty"`
+	LastDiscoveryAt       *time.Time `json:"last_discovery_at,omitempty"`
+	LastError             string     `json:"last_error,omitempty"`
+}
+
 type StewardSyncStatus struct {
-	LocalDevice      StewardDevice             `json:"local_device"`
-	Devices          []StewardDevice           `json:"devices"`
-	Permissions      []StewardDevicePermission `json:"permissions"`
-	Capabilities     []StewardDeviceCapability `json:"capabilities"`
-	Security         StewardSyncSecurityStatus `json:"security"`
-	PendingChanges   int                       `json:"pending_changes"`
-	PendingRelations int                       `json:"pending_relations"`
-	ConflictCount    int                       `json:"conflict_count"`
-	LastChangeAt     *time.Time                `json:"last_change_at,omitempty"`
-	RecentChanges    []StewardSyncChange       `json:"recent_changes"`
-	Conflicts        []StewardSyncConflict     `json:"conflicts"`
+	LocalDevice      StewardDevice              `json:"local_device"`
+	Devices          []StewardDevice            `json:"devices"`
+	Permissions      []StewardDevicePermission  `json:"permissions"`
+	Capabilities     []StewardDeviceCapability  `json:"capabilities"`
+	Security         StewardSyncSecurityStatus  `json:"security"`
+	Discovery        StewardPeerDiscoveryStatus `json:"discovery"`
+	DiscoveredPeers  []StewardDiscoveredPeer    `json:"discovered_peers"`
+	PendingChanges   int                        `json:"pending_changes"`
+	PendingRelations int                        `json:"pending_relations"`
+	ConflictCount    int                        `json:"conflict_count"`
+	LastChangeAt     *time.Time                 `json:"last_change_at,omitempty"`
+	RecentChanges    []StewardSyncChange        `json:"recent_changes"`
+	Conflicts        []StewardSyncConflict      `json:"conflicts"`
 }
 
 type StewardAutonomySettings struct {

@@ -7,6 +7,10 @@ param(
 
   [switch]$SkipTests,
 
+  [switch]$SkipUI,
+
+  [switch]$SkipFrontendBuild,
+
   [switch]$Clean
 )
 
@@ -94,6 +98,8 @@ Require-Command "go"
 
 $repoRoot = Resolve-RepoPath (Join-Path $PSScriptRoot "..")
 $backendDir = Join-Path $repoRoot "backend"
+$frontendDir = Join-Path $repoRoot "frontend"
+$frontendDist = Join-Path $frontendDir "dist"
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
   $OutputDir = Join-Path $backendDir "dist\steward"
 }
@@ -119,6 +125,26 @@ if ($Clean -and (Test-Path -LiteralPath $outputRoot)) {
 
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 
+if (-not $SkipUI) {
+  if (-not $SkipFrontendBuild) {
+    Require-Command "npm"
+    Push-Location $frontendDir
+    try {
+      Write-Host "[steward] Building bundled workspace"
+      npm run build
+      if ($LASTEXITCODE -ne 0) {
+        throw "npm run build failed with exit code $LASTEXITCODE"
+      }
+    } finally {
+      Pop-Location
+    }
+  }
+  $frontendIndex = Join-Path $frontendDist "index.html"
+  if (-not (Test-Path -LiteralPath $frontendIndex -PathType Leaf)) {
+    throw "Bundled steward workspace is missing index.html: $frontendIndex"
+  }
+}
+
 Push-Location $backendDir
 try {
   if (-not $SkipTests) {
@@ -143,30 +169,66 @@ try {
     }
     $artifactName = "steward-$safeVersion-$goos-$goarch"
     $artifactDir = Join-Path $outputRoot $artifactName
+    if (Test-Path -LiteralPath $artifactDir) {
+      Assert-ChildPath -Parent $outputRoot -Child $artifactDir
+      Remove-Item -LiteralPath $artifactDir -Recurse -Force
+    }
     New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
     $binaryPath = Join-Path $artifactDir ("steward" + $extension)
 
     Write-Host "[steward] Building $target -> $binaryPath"
     Invoke-GoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $binaryPath -BuildVersion $safeVersion -BuildCommit $buildCommit -BuildDate $buildDate
 
-    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $binaryPath).Hash.ToLowerInvariant()
-    $relativePath = $binaryPath.Substring($outputRoot.Length).TrimStart($PathSeparators) -replace "\\", "/"
+    $uiRelativePath = $null
+    if (-not $SkipUI) {
+      $uiDir = Join-Path $artifactDir "ui"
+      New-Item -ItemType Directory -Force -Path $uiDir | Out-Null
+      Copy-Item -Path (Join-Path $frontendDist "*") -Destination $uiDir -Recurse -Force
+      $uiRelativePath = $uiDir.Substring($outputRoot.Length).TrimStart($PathSeparators) -replace "\\", "/"
+    }
+
+    $artifactFiles = @()
+    $paths = @($binaryPath)
+    if (-not $SkipUI) {
+      $paths += @(Get-ChildItem -LiteralPath (Join-Path $artifactDir "ui") -Recurse -File | Select-Object -ExpandProperty FullName)
+    }
+    foreach ($path in $paths) {
+      $fileHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+      $fileRelativePath = $path.Substring($outputRoot.Length).TrimStart($PathSeparators) -replace "\\", "/"
+      $artifactFiles += [pscustomobject]@{
+        path = $fileRelativePath
+        sha256 = $fileHash
+      }
+    }
+    $binaryRecord = $artifactFiles[0]
     $artifacts += [pscustomobject]@{
       target = $target
-      path = $relativePath
-      sha256 = $hash
+      path = $binaryRecord.path
+      sha256 = $binaryRecord.sha256
+      ui_dir = $uiRelativePath
+      files = @($artifactFiles)
     }
   }
 
   $checksumsPath = Join-Path $outputRoot "SHA256SUMS.txt"
   $manifestPath = Join-Path $outputRoot "manifest.json"
-  $checksumLines = $artifacts | ForEach-Object { "$($_.sha256)  $($_.path)" }
+  $checksumRecords = @{}
+  foreach ($artifact in $artifacts) {
+    foreach ($file in $artifact.files) {
+      if ($checksumRecords.ContainsKey($file.path)) {
+        throw "Duplicate steward artifact path: $($file.path)"
+      }
+      $checksumRecords[$file.path] = $file.sha256
+    }
+  }
+  $checksumLines = $checksumRecords.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Value)  $($_.Name)" }
   Set-Content -LiteralPath $checksumsPath -Value $checksumLines -Encoding ASCII
   $manifest = [pscustomobject]@{
     name = "steward"
     version = $safeVersion
     commit = $buildCommit
     built_at = $buildDate
+    ui_included = -not $SkipUI
     artifacts = $artifacts
   }
   $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding ASCII

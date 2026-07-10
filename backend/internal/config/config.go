@@ -22,14 +22,20 @@ type Config struct {
 	FileRetention         time.Duration
 }
 
+const DefaultHTTPAddr = "127.0.0.1:18080"
+
 func Load() (Config, error) {
 	_ = godotenv.Load()
 
 	retentionHours := getenvInt("FILE_RETENTION_HOURS", 24)
+	allowRemoteManagement, err := getenvBool("STEWARD_ALLOW_REMOTE_MANAGEMENT", false)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		HTTPAddr:              strings.TrimSpace(getenv("HTTP_ADDR", "127.0.0.1:8080")),
+		HTTPAddr:              strings.TrimSpace(getenv("HTTP_ADDR", DefaultHTTPAddr)),
 		PeerHTTPAddr:          strings.TrimSpace(os.Getenv("STEWARD_PEER_HTTP_ADDR")),
-		AllowRemoteManagement: getenvBool("STEWARD_ALLOW_REMOTE_MANAGEMENT", false),
+		AllowRemoteManagement: allowRemoteManagement,
 		DatabaseURL:           getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/mongojson?sslmode=disable"),
 		StorageDir:            getenv("STORAGE_DIR", "./data"),
 		StewardUIDir:          strings.TrimSpace(os.Getenv("STEWARD_UI_DIR")),
@@ -64,14 +70,14 @@ func getenvInt(key string, fallback int) int {
 	return parsed
 }
 
-func getenvBool(key string, fallback bool) bool {
+func getenvBool(key string, fallback bool) (bool, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		return fallback
+		return false, fmt.Errorf("%s must be true or false", key)
 	}
-	return parsed
+	return parsed, nil
 }

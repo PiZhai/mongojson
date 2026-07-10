@@ -7,6 +7,8 @@ param(
 
   [string]$WatchInterval = "2s",
 
+  [switch]$SkipDistPreflight,
+
   [switch]$SkipPostgresE2E,
 
   [switch]$SkipServicePreflight,
@@ -253,6 +255,12 @@ try {
   $binary = Get-OrBuild-Binary -RepoRoot $repoRoot -BackendDir $backendDir -RunRoot $runRoot -BinaryPath $BinaryPath
   Add-Check $checks "local_readiness.binary" "ok" "steward local readiness binary is available" @{ path = $binary }
 
+  if (-not $SkipDistPreflight) {
+    Invoke-ReadinessStep -ID "dist_preflight" -ScriptPath (Join-Path $PSScriptRoot "run-steward-dist-preflight.ps1") -Parameters @{
+      EvidenceDir = (Join-Path $runRoot "dist-preflight")
+    } -Checks $checks -Steps $steps
+  }
+
   if (-not $SkipPostgresE2E) {
     Invoke-ReadinessStep -ID "postgres_e2e" -ScriptPath (Join-Path $PSScriptRoot "run-steward-postgres-e2e.ps1") -Parameters @{
       EvidenceDir = (Join-Path $runRoot "postgres-e2e")
@@ -305,6 +313,12 @@ try {
   if (-not $SkipRuntimeWatch) {
     Add-ManifestRequirement $manifestArgs "--min-watch-duration" $WatchDuration
   }
+  if (-not $SkipDistPreflight) {
+    Add-ManifestRequirement $manifestArgs "--require-kind" "dist-preflight"
+    foreach ($check in @("dist_preflight.build", "dist_preflight.integrity", "dist_preflight.targets", "dist_preflight.ui", "dist_preflight.current_binary")) {
+      Add-ManifestRequirement $manifestArgs "--require-check" $check
+    }
+  }
   if (-not $SkipPostgresE2E) {
     Add-ManifestRequirement $manifestArgs "--require-kind" "postgres-e2e"
     Add-ManifestRequirement $manifestArgs "--require-check" "postgres_e2e.go_test"
@@ -317,7 +331,7 @@ try {
   }
   if (-not $SkipServiceEnvPreflight) {
     Add-ManifestRequirement $manifestArgs "--require-kind" "service-env-preflight"
-    foreach ($check in @("service_env_preflight.plan", "service_env_preflight.redaction", "service_env_preflight.rotation", "service_env_preflight.verification_advice", "service_env_preflight.no_service_manager", "service_env_preflight.install_plan")) {
+    foreach ($check in @("service_env_preflight.plan", "service_env_preflight.redaction", "service_env_preflight.rotation", "service_env_preflight.verification_advice", "service_env_preflight.no_service_manager", "service_env_preflight.install_plan", "service_env_preflight.private_environment_artifacts")) {
       Add-ManifestRequirement $manifestArgs "--require-check" $check
     }
   }
@@ -413,6 +427,7 @@ $command = @(
   "-WatchInterval", $WatchInterval
 )
 foreach ($item in @(
+  @{ switch = $SkipDistPreflight; name = "-SkipDistPreflight" },
   @{ switch = $SkipPostgresE2E; name = "-SkipPostgresE2E" },
   @{ switch = $SkipServicePreflight; name = "-SkipServicePreflight" },
   @{ switch = $SkipServiceEnvPreflight; name = "-SkipServiceEnvPreflight" },

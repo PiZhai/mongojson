@@ -59,7 +59,10 @@ type Service struct {
 	agentID         string
 	advisor         AutonomyAdvisor
 	proposalScorer  AutonomyProposalScorer
+	proposalSources *autonomyProposalDiscovererRegistry
 	actionExecutors *autonomyActionExecutorRegistry
+	syncEntities    *syncEntityAdapterRegistry
+	peerDiscovery   PeerDiscoveryCatalog
 
 	advisorAuditMu           sync.Mutex
 	lastAdvisorFallbackAudit time.Time
@@ -85,12 +88,38 @@ func WithAutonomyProposalScorer(scorer AutonomyProposalScorer) ServiceOption {
 	}
 }
 
+func WithAutonomyProposalDiscoverer(discoverer AutonomyProposalDiscoverer) ServiceOption {
+	return func(s *Service) {
+		if s.proposalSources == nil {
+			s.proposalSources = newAutonomyProposalDiscovererRegistry()
+		}
+		s.proposalSources.register(discoverer)
+	}
+}
+
 func WithAutonomyActionExecutor(executor AutonomyActionExecutor) ServiceOption {
 	return func(s *Service) {
 		if s.actionExecutors == nil {
 			s.actionExecutors = newAutonomyActionExecutorRegistry()
 		}
 		s.actionExecutors.register(executor)
+	}
+}
+
+func WithSyncEntityAdapter(adapter SyncEntityAdapter) ServiceOption {
+	return func(s *Service) {
+		if s.syncEntities == nil {
+			s.syncEntities = newSyncEntityAdapterRegistry()
+		}
+		s.syncEntities.register(adapter)
+	}
+}
+
+func WithPeerDiscovery(discovery PeerDiscoveryCatalog) ServiceOption {
+	return func(s *Service) {
+		if discovery != nil {
+			s.peerDiscovery = discovery
+		}
 	}
 }
 
@@ -137,6 +166,7 @@ func NewService(db *database.DB, options ...ServiceOption) *Service {
 		agentID:        envOrDefault("STEWARD_AGENT_ID", DefaultAgentID),
 		advisor:        NewAutonomyAdvisorFromEnv(),
 		proposalScorer: NewRuleBasedAutonomyProposalScorer(),
+		peerDiscovery:  disabledPeerDiscovery{},
 	}
 	service.actionExecutors = newAutonomyActionExecutorRegistry(
 		newLocalTaskAutonomyExecutor(service, AutonomyActionCreateLocalTask, "创建本地低风险任务", "autonomous"),
@@ -145,6 +175,27 @@ func NewService(db *database.DB, options ...ServiceOption) *Service {
 		newReminderTaskAutonomyExecutor(service),
 		newKnowledgeSummaryAutonomyExecutor(service),
 		newReadOnlyDiagnosticsAutonomyExecutor(service),
+	)
+	service.proposalSources = newAutonomyProposalDiscovererRegistry(
+		newAutonomyProposalDiscoverer("event-follow-up", service.createEventFollowUpProposals),
+		newAutonomyProposalDiscoverer("stale-task-review", service.createStaleTaskProposals),
+		newAutonomyProposalDiscoverer("event-knowledge-summary", service.createEventKnowledgeSummaryProposals),
+		newAutonomyProposalDiscoverer("due-task-reminder", service.createDueTaskReminderProposals),
+		newAutonomyProposalDiscoverer("sync-conflict-diagnostics", service.createSyncConflictDiagnosticProposals),
+	)
+	service.syncEntities = newSyncEntityAdapterRegistry(
+		newSyncEntityAdapter(EntityTask, "sync.tasks", PermissionA3, service.applyTaskSyncChange),
+		newSyncEntityAdapter(EntityEvent, "sync.timeline", PermissionA3, service.applyEventSyncChange),
+		newSyncEntityAdapter(EntityIntent, "sync.tasks", PermissionA3, service.applyIntentSyncChange),
+		newSyncEntityAdapter(EntityMemory, "sync.memory", PermissionA3, service.applyMemorySyncChange),
+		newSyncEntityAdapter(EntityKnowledgeItem, "sync.knowledge", PermissionA3, service.applyKnowledgeItemSyncChange),
+		newSyncEntityAdapter(EntitySourceRef, "sync.knowledge", PermissionA3, service.applySourceRefSyncChange),
+		newSyncEntityAdapter(EntityDataTag, "sync.tags", PermissionA3, service.applyDataTagSyncChange),
+		newSyncEntityAdapter(EntityEntityTag, "sync.tags", PermissionA3, service.applyEntityTagSyncChange),
+		newSyncEntityAdapter(EntityTimeline, "sync.timeline", PermissionA3, service.applyTimelineSegmentSyncChange),
+		newSyncEntityAdapter(EntityAuditSummary, "sync.audit", PermissionA3, service.applyAuditSummarySyncChange),
+		newSyncEntityAdapter(EntityDeviceRevoke, "sync.devices", PermissionA3, service.applyDeviceRevocationSyncChange),
+		newSyncEntityAdapter(EntityDeviceCapability, "sync.devices", PermissionA1, service.applyDeviceCapabilitySyncChange),
 	)
 	for _, option := range options {
 		if option != nil {
@@ -160,6 +211,15 @@ func NewService(db *database.DB, options ...ServiceOption) *Service {
 	}
 	if service.actionExecutors == nil {
 		service.actionExecutors = newAutonomyActionExecutorRegistry()
+	}
+	if service.proposalSources == nil {
+		service.proposalSources = newAutonomyProposalDiscovererRegistry()
+	}
+	if service.syncEntities == nil {
+		service.syncEntities = newSyncEntityAdapterRegistry()
+	}
+	if service.peerDiscovery == nil {
+		service.peerDiscovery = disabledPeerDiscovery{}
 	}
 	return service
 }

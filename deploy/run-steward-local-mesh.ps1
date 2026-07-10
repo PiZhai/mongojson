@@ -7,6 +7,8 @@ param(
 
   [int]$BasePeerPort = 19181,
 
+  [int]$BaseDiscoveryPort = 19281,
+
   [int]$PostgresHostPort = 5432,
 
   [int]$StartupTimeoutSeconds = 60,
@@ -273,6 +275,7 @@ function New-MeshNodes {
     [string]$RunID,
     [int]$BaseManagementPort,
     [int]$BasePeerPort,
+    [int]$BaseDiscoveryPort,
     [int]$PostgresHostPort,
     [string]$EvidenceRoot
   )
@@ -285,6 +288,7 @@ function New-MeshNodes {
   foreach ($definition in $definitions) {
     $managementPort = $BaseManagementPort + [int]$definition.offset
     $peerPort = $BasePeerPort + [int]$definition.offset
+    $discoveryPort = $BaseDiscoveryPort + [int]$definition.offset
     $nodeRoot = Join-Path $EvidenceRoot ("node-" + $definition.id)
     $storageDir = Join-Path $nodeRoot "data"
     $logDir = Join-Path $nodeRoot "logs"
@@ -301,6 +305,7 @@ function New-MeshNodes {
       peer_api_base = "http://127.0.0.1:$peerPort/api"
       http_addr = "127.0.0.1:$managementPort"
       peer_http_addr = "127.0.0.1:$peerPort"
+      discovery_listen_addr = "127.0.0.1:$discoveryPort"
       database = $database
       database_url = "postgres://postgres:postgres@localhost:$PostgresHostPort/$database`?sslmode=disable"
       root = $nodeRoot
@@ -340,6 +345,8 @@ function Start-StewardNode {
   $env["STORAGE_DIR"] = $Node.storage_dir
   $env["STEWARD_AGENT_ID"] = $Node.id
   $env["STEWARD_PUBLIC_API_BASE"] = $Node.peer_api_base
+  $env["STEWARD_DEVICE_NAME"] = $Node.name
+  $env["STEWARD_DISCOVERY_LISTEN_ADDR"] = $Node.discovery_listen_addr
   $env["STEWARD_DEVICE_PRIVATE_KEY"] = $Node.private_key
   $env["STEWARD_DEVICE_PUBLIC_KEY"] = $Node.public_key
   $env["STEWARD_LOCAL_ENCRYPTION_KEY"] = $Node.local_key
@@ -349,20 +356,27 @@ function Start-StewardNode {
   $Node.process = $process
 }
 
+function Stop-StewardNode {
+  param([object]$Node)
+  $process = $Node.process
+  if ($null -eq $process) {
+    return
+  }
+  try {
+    if (-not $process.HasExited) {
+      $process.Kill()
+    }
+    $process.WaitForExit(5000) | Out-Null
+  } catch {
+  } finally {
+    $Node.process = $null
+  }
+}
+
 function Stop-StewardNodes {
   param([object[]]$Nodes)
   foreach ($node in $Nodes) {
-    $process = $node.process
-    if ($null -eq $process) {
-      continue
-    }
-    try {
-      if (-not $process.HasExited) {
-        $process.Kill()
-      }
-      $process.WaitForExit(5000) | Out-Null
-    } catch {
-    }
+    Stop-StewardNode -Node $node
   }
 }
 
@@ -461,6 +475,98 @@ function Run-MeshVerification {
   return Invoke-StewardCommand -BinaryPath $BinaryPath -Arguments $args
 }
 
+function Wait-MeshDiscovery {
+  param(
+    [object[]]$Nodes,
+    [int]$TimeoutSeconds
+  )
+  $deadline = (Get-Date).ToUniversalTime().AddSeconds($TimeoutSeconds)
+  $lastState = @{}
+  while ((Get-Date).ToUniversalTime() -lt $deadline) {
+    $allReady = $true
+    foreach ($node in $Nodes) {
+      try {
+        $response = Invoke-API -Method Get -URL ($node.api_base + "/steward/sync/status")
+        $discovery = $response.sync.discovery
+        $candidates = @($response.sync.discovered_peers)
+        $candidateIDs = @($candidates | ForEach-Object { $_.device_id } | Sort-Object -Unique)
+        $verified = @($candidates | Where-Object { -not $_.signature_verified }).Count -eq 0
+        $lastState[$node.id] = @{
+          running = $discovery.running
+          candidate_ids = $candidateIDs
+          rejected = $discovery.rejected_announcements
+        }
+        if (-not $discovery.enabled -or -not $discovery.running -or -not $verified -or $candidateIDs.Count -lt ($Nodes.Count - 1)) {
+          $allReady = $false
+        }
+      } catch {
+        $allReady = $false
+        $lastState[$node.id] = @{ error = $_.Exception.Message }
+      }
+    }
+    if ($allReady) {
+      return [pscustomobject]@{ nodes = $lastState }
+    }
+    Start-Sleep -Milliseconds 200
+  }
+  throw "mesh discovery did not converge before timeout: $($lastState | ConvertTo-Json -Depth 8 -Compress)"
+}
+
+function Run-OfflineCatchUpProbe {
+  param(
+    [string]$BinaryPath,
+    [object]$SourceNode,
+    [object]$OfflineNode,
+    [hashtable]$SharedEnv,
+    [int]$StartupTimeoutSeconds
+  )
+
+  Stop-StewardNode -Node $OfflineNode
+  Start-Sleep -Milliseconds 500
+
+  $taskResponse = Invoke-API -Method Post -URL ($SourceNode.api_base + "/steward/tasks") -Body @{
+    type = "verification_offline_catch_up"
+    title = "local mesh offline catch-up probe"
+    description = "created while $($OfflineNode.id) was offline"
+    priority = "normal"
+    source = "manual"
+    data_level = "D0"
+    permission_level = "A3"
+    risk_level = "low"
+    user_confirmed = $true
+  }
+  $taskID = $taskResponse.task.id
+  if ([string]::IsNullOrWhiteSpace($taskID)) {
+    throw "offline catch-up task response did not include task.id"
+  }
+
+  Start-StewardNode -BinaryPath $BinaryPath -Node $OfflineNode -SharedEnv $SharedEnv
+  Wait-NodeReady -Node $OfflineNode -TimeoutSeconds $StartupTimeoutSeconds
+
+  $syncResponse = Invoke-API -Method Post -URL ($SourceNode.api_base + "/steward/devices/$($OfflineNode.id)/sync")
+  $syncErrors = @($syncResponse.sync.errors)
+  if ($syncErrors.Count -gt 0) {
+    throw "offline catch-up sync reported errors: $($syncErrors -join '; ')"
+  }
+
+  $tasksResponse = Invoke-API -Method Get -URL ($OfflineNode.api_base + "/steward/tasks?limit=100")
+  $replicatedTask = @($tasksResponse.tasks | Where-Object { $_.id -eq $taskID } | Select-Object -First 1)
+  if ($replicatedTask.Count -ne 1) {
+    throw "offline catch-up task $taskID was not visible on recovered node $($OfflineNode.id)"
+  }
+
+  return [pscustomobject]@{
+    source_agent_id = $SourceNode.id
+    recovered_agent_id = $OfflineNode.id
+    task_id = $taskID
+    pulled = $syncResponse.sync.pulled
+    pushed = $syncResponse.sync.pushed
+    imported = $syncResponse.sync.imported
+    applied = $syncResponse.sync.applied
+    remote_visible = $true
+  }
+}
+
 function Run-AutonomyExecutionProbe {
   param([object]$Node)
   $proposalBody = @{
@@ -515,6 +621,8 @@ $checks = New-Object System.Collections.ArrayList
 $nodes = @()
 $binary = ""
 $meshResult = $null
+$discoveryProbe = $null
+$offlineCatchUpProbe = $null
 $autonomyProbe = $null
 $errorMessage = ""
 
@@ -528,7 +636,7 @@ try {
   Invoke-StewardJSON -BinaryPath $binary -Arguments @("version") | Out-Null
   Add-Check $checks "local_mesh.version" "ok" "steward binary returned version metadata" $null
 
-  $nodes = @(New-MeshNodes -RunID $runID -BaseManagementPort $BaseManagementPort -BasePeerPort $BasePeerPort -PostgresHostPort $PostgresHostPort -EvidenceRoot $evidenceRoot)
+  $nodes = @(New-MeshNodes -RunID $runID -BaseManagementPort $BaseManagementPort -BasePeerPort $BasePeerPort -BaseDiscoveryPort $BaseDiscoveryPort -PostgresHostPort $PostgresHostPort -EvidenceRoot $evidenceRoot)
   Initialize-MeshDatabases -RepoRoot $repoRoot -Nodes $nodes -Checks $checks
 
   $syncKey = Invoke-StewardJSON -BinaryPath $binary -Arguments @("sync-keygen", "--key-id", $SyncKeyID)
@@ -543,6 +651,10 @@ try {
     "STEWARD_AUTONOMY_INTERVAL" = "2s"
     "STEWARD_AUTONOMY_LIMIT" = "12"
     "STEWARD_LLM_PROVIDER" = "disabled"
+    "STEWARD_DISCOVERY_ENABLED" = "true"
+    "STEWARD_DISCOVERY_TARGETS" = (($nodes | ForEach-Object { $_.discovery_listen_addr }) -join ",")
+    "STEWARD_DISCOVERY_INTERVAL" = "500ms"
+    "STEWARD_DISCOVERY_TTL" = "3s"
   }
 
   foreach ($node in $nodes) {
@@ -562,6 +674,9 @@ try {
   }
   Add-Check $checks "local_mesh.ready" "ok" "all local mesh management APIs reported ready" $null
 
+  $discoveryProbe = Wait-MeshDiscovery -Nodes $nodes -TimeoutSeconds $StartupTimeoutSeconds
+  Add-Check $checks "local_mesh.peer_discovery" "ok" "all local mesh nodes discovered the other signed candidates before manual registration" $discoveryProbe
+
   Register-MeshPeers -Nodes $nodes -Checks $checks
 
   $meshEvidenceDir = Join-Path $evidenceRoot "mesh-evidence"
@@ -572,6 +687,9 @@ try {
   } else {
     Add-Check $checks "local_mesh.verify_mesh" "error" "steward verify mesh failed" @{ exit_code = $meshResult.exit_code; output = $meshResult.output }
   }
+
+  $offlineCatchUpProbe = Run-OfflineCatchUpProbe -BinaryPath $binary -SourceNode $nodes[0] -OfflineNode $nodes[2] -SharedEnv $sharedEnv -StartupTimeoutSeconds $StartupTimeoutSeconds
+  Add-Check $checks "local_mesh.offline_catch_up" "ok" "a task created while one peer was offline became visible after that peer restarted and synchronized" $offlineCatchUpProbe
 
   $autonomyProbe = Run-AutonomyExecutionProbe -Node $nodes[0]
   Add-Check $checks "local_mesh.autonomy_execute" "ok" "S4 low-risk autonomy proposal simulated and executed through real management API" $autonomyProbe
@@ -615,6 +733,7 @@ $payload = [ordered]@{
         logical_platform = $_.logical_platform
         api_base = $_.api_base
         peer_api_base = $_.peer_api_base
+        discovery_listen_addr = $_.discovery_listen_addr
         database = $_.database
         local_key_id = $_.local_key_id
         log_dir = $_.log_dir
@@ -622,6 +741,8 @@ $payload = [ordered]@{
     })
     mesh_exit_code = if ($null -ne $meshResult) { $meshResult.exit_code } else { $null }
     mesh_output = if ($null -ne $meshResult) { $meshResult.output } else { $null }
+    discovery_probe = $discoveryProbe
+    offline_catch_up_probe = $offlineCatchUpProbe
     autonomy_probe = $autonomyProbe
     checks = @($checks)
   }
@@ -631,6 +752,7 @@ $command = @(
   "deploy/run-steward-local-mesh.ps1",
   "-BaseManagementPort", "$BaseManagementPort",
   "-BasePeerPort", "$BasePeerPort",
+  "-BaseDiscoveryPort", "$BaseDiscoveryPort",
   "-SyncKeyID", $SyncKeyID
 )
 
