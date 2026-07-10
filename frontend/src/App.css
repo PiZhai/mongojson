@@ -266,14 +266,9 @@
   height: 100vh;
   overflow-x: hidden;
   overflow-y: auto;
-  /* 架构契约：MusicMiniPlayer/MusicQueueDrawer 渲染在 .app-content 之外
-     （与其平级，见 AppShell.tsx），但仍需要响应内容区宽度变化。这里
-     复用 app-content 这个容器名，使这些壳层级全局组件也能被
-     @container app-content 查询命中——查询时浏览器会取最近的同名
-     祖先，.app-content 内部元素命中 .app-content 自身，.app-main 的
-     其他直接子元素（如 MusicMiniPlayer）则命中这里。两者宽度只相差
-     .app-content 的左右 padding（28px），对本项目的断点判断可忽略。 */
-  container: app-content / inline-size;
+  /* MusicMiniPlayer/MusicQueueDrawer 是 .app-content 的同级元素，使用
+     独立容器名避免它们与页面内容在临界宽度读取不同的同名容器。 */
+  container: shell-main / inline-size;
 }
 
 .app-header {
@@ -984,10 +979,7 @@
   color: var(--text-strong);
 }
 
-/* 断点值收敛自权威表：原 1099px 是历史遗留的游离数值，与
-   content.doubleColumnMin(1400) 语义一致（双列/单列切换），
-   原 759px 同理收敛为 content.compactBelow(720)。 */
-@container app-content (max-width: 1400px) {
+@container app-content (max-width: 1099px) {
   .watch-party-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -998,7 +990,7 @@
   }
 }
 
-@container app-content (max-width: 720px) {
+@container app-content (max-width: 759px) {
   .watch-party-shell {
     padding: 12px;
   }

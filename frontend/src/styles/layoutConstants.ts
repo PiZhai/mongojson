@@ -36,9 +36,16 @@ export interface LayoutBreakpoint {
 
 export type LayoutBreakpointKey =
   | 'shell.stackedBelow'
-  | 'content.doubleColumnMin'
+  | 'content.editorSplitBelow'
+  | 'memo.cardDockBelow'
   | 'content.outlineHideBelow'
   | 'content.compactBelow'
+  | 'music.workbenchBelow'
+  | 'music.compactBelow'
+  | 'music.shellWorkbenchBelow'
+  | 'music.shellCompactBelow'
+  | 'watchParty.stackBelow'
+  | 'watchParty.compactBelow'
 
 export interface LayoutConstants {
   description: string

@@ -100,7 +100,7 @@ export function VisualizationWorkspace() {
   }
 
   return (
-    <div className="page-shell">
+    <div className="page-shell visualization-page-shell">
       <Panel
         actions={
           <>
@@ -134,8 +134,8 @@ export function VisualizationWorkspace() {
         eyebrow="Visualize"
         title="图表配置"
       >
-        <div className="workspace-grid">
-          <div className="panel">
+        <div className="workspace-grid visualization-workspace-grid">
+          <div className="panel visualization-input-panel">
             <div className="panel-header">
               <div className="panel-header-copy">
                 <div className="panel-eyebrow">Input</div>

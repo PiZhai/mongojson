@@ -20,9 +20,16 @@
       "queryType": "media",
       "containerName": null
     },
-    "content.doubleColumnMin": {
-      "value": 1400,
-      "formula": "outlineHideBelow(980) + workspaceGap(18) + workspaceSecondaryMax(400) = 1398, rounded up to 1400 for a small safety margin. The moment .tool-layout switches from single-column to double-column, .tool-primary's width instantly drops to (toolWorkspaceWidth - workspaceGap - workspaceSecondaryMax). This threshold must be high enough that this post-switch primary width never falls below content.outlineHideBelow, otherwise the Vditor outline would flicker hidden right at the column-split boundary (this was the second, narrower non-monotonic dip discovered after fixing the shell-layer bug: 1319 caused primaryWidth to drop to 901px at the split point, well under 980).",
+    "content.editorSplitBelow": {
+      "value": 1100,
+      "formula": "Two code editors or generic work areas need roughly 2 x 520px plus their 14px gap. At or below this content width they stack, while a 1440px desktop remains horizontal with either sidebar state.",
+      "layer": "content",
+      "queryType": "container",
+      "containerName": "app-content"
+    },
+    "memo.cardDockBelow": {
+      "value": 1058,
+      "formula": "workspacePrimaryMin(640) + workspaceSecondaryMax(400) + workspaceGap(18) = 1058. Below this width the memo editor and floating-card rail cannot coexist without overflow.",
       "layer": "content",
       "queryType": "container",
       "containerName": "tool-workspace"
@@ -37,6 +44,48 @@
     "content.compactBelow": {
       "value": 720,
       "formula": "workspacePrimaryMin(640) + minimum horizontal padding(2x40) ~= 720. Below this container width, panel headers/toolbars/forms switch to a stacked, single-column compact mode.",
+      "layer": "content",
+      "queryType": "container",
+      "containerName": "app-content"
+    },
+    "music.workbenchBelow": {
+      "value": 1180,
+      "formula": "Retains the music workbench's established desktop layout until the content area can no longer comfortably fit its 300px sidebar and main library.",
+      "layer": "content",
+      "queryType": "container",
+      "containerName": "app-content"
+    },
+    "music.compactBelow": {
+      "value": 760,
+      "formula": "Retains the established compact music layout threshold for controls, lyrics, and media cards.",
+      "layer": "content",
+      "queryType": "container",
+      "containerName": "app-content"
+    },
+    "music.shellWorkbenchBelow": {
+      "value": 1208,
+      "formula": "music.workbenchBelow(1180) + app-content horizontal padding(28). MusicMiniPlayer and MusicQueueDrawer are siblings of app-content and query app-main instead.",
+      "layer": "shell",
+      "queryType": "container",
+      "containerName": "shell-main"
+    },
+    "music.shellCompactBelow": {
+      "value": 788,
+      "formula": "music.compactBelow(760) + app-content horizontal padding(28). Keeps shell-level player controls aligned with the content layout.",
+      "layer": "shell",
+      "queryType": "container",
+      "containerName": "shell-main"
+    },
+    "watchParty.stackBelow": {
+      "value": 1099,
+      "formula": "Retains the established width at which the 340px Watch Party side panel moves below the video stage.",
+      "layer": "content",
+      "queryType": "container",
+      "containerName": "app-content"
+    },
+    "watchParty.compactBelow": {
+      "value": 759,
+      "formula": "Retains the established compact Watch Party controls and one-column side-panel threshold.",
       "layer": "content",
       "queryType": "container",
       "containerName": "app-content"
