@@ -628,9 +628,9 @@ export function WatchPartyWorkspace() {
   const mediaMatchesRoom = !remoteState?.media_id || !localVideo || remoteState.media_id === localVideo.mediaId
 
   return (
-    <div className="page-shell watch-party-shell">
-      <div className="watch-party-grid">
-        <section className="watch-stage">
+    <div className="page-shell watch-party-shell layout-frame" data-layout-region="watch-workspace">
+      <div className="watch-party-grid layout-min-grid" data-layout-region="watch-grid">
+        <section className="watch-stage layout-cell" data-layout-region="watch-stage">
           <div className={`watch-video-frame${controlsVisible ? '' : ' watch-video-frame-idle'}`} onPointerDown={showControls} onPointerMove={showControls} ref={videoFrameRef}>
             {localVideo ? (
               <>
@@ -801,7 +801,7 @@ export function WatchPartyWorkspace() {
           </div>
         </section>
 
-        <aside className="watch-side-panel">
+        <aside className="watch-side-panel layout-cell" data-layout-region="watch-rail">
           <section className="watch-panel">
             <div className="watch-panel-heading">
               <span>Room</span>

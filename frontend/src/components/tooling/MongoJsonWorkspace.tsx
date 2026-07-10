@@ -23,7 +23,7 @@ export function MongoJsonWorkspace() {
   }
 
   return (
-    <div className="page-shell mongo-json-page-shell">
+    <div className="page-shell mongo-json-page-shell layout-frame" data-layout-region="mongo-workspace">
       <ModeSwitch mode={mode} onModeChange={setMode} />
       {mode === 'format' ? (
         <FormatMode

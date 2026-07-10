@@ -17,7 +17,7 @@ export function ResultPane({
   actions,
 }: ResultPaneProps) {
   return (
-    <div className="editor-pane">
+    <div className="editor-pane layout-cell" data-layout-region="editor-pane">
       <div className="editor-pane-header">
         <span className="editor-pane-title">{title}</span>
         {actions ? <div className="editor-pane-actions">{actions}</div> : null}

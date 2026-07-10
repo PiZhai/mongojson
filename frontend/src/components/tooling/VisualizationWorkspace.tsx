@@ -100,7 +100,7 @@ export function VisualizationWorkspace() {
   }
 
   return (
-    <div className="page-shell visualization-page-shell">
+    <div className="page-shell visualization-page-shell layout-frame" data-layout-region="visualization-workspace">
       <Panel
         actions={
           <>
@@ -134,8 +134,8 @@ export function VisualizationWorkspace() {
         eyebrow="Visualize"
         title="图表配置"
       >
-        <div className="workspace-grid visualization-workspace-grid">
-          <div className="panel visualization-input-panel">
+        <div className="workspace-grid visualization-workspace-grid layout-min-grid" data-layout-region="visualization-grid">
+          <div className="panel visualization-input-panel layout-cell" data-layout-region="visualization-input">
             <div className="panel-header">
               <div className="panel-header-copy">
                 <div className="panel-eyebrow">Input</div>
@@ -145,7 +145,7 @@ export function VisualizationWorkspace() {
             <CodeEditor language="json" onChange={setInput} value={input} />
           </div>
 
-          <div className="stack">
+          <div className="stack layout-cell" data-layout-region="visualization-rail">
             <div className="panel">
               <div className="panel-header">
                 <div className="panel-header-copy">

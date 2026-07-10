@@ -186,7 +186,6 @@ export function MemoDocsWorkspace() {
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null)
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null)
   const [dragOverPosition, setDragOverPosition] = useState<FloatingCardDropPosition>('after')
-  const [newFloatingCardColor, setNewFloatingCardColor] = useState(DEFAULT_FLOATING_CARD_COLOR)
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState('')
@@ -346,7 +345,7 @@ export function MemoDocsWorkspace() {
   }
 
   const addFloatingCard = () => {
-    persistFloatingCards((cards) => [...cards, createFloatingCard('', newFloatingCardColor)])
+    persistFloatingCards((cards) => [...cards, createFloatingCard('', DEFAULT_FLOATING_CARD_COLOR)])
   }
 
   const updateFloatingCard = (cardId: string, content: string) => {
@@ -424,9 +423,9 @@ export function MemoDocsWorkspace() {
   }
 
   return (
-    <div className="memo-focus-shell tool-workspace">
-      <div className="memo-focus-body tool-layout">
-        <section className="memo-focus-card tool-primary" aria-labelledby="memo-page-title">
+    <div className="memo-focus-shell tool-workspace layout-frame" data-layout-region="memo-workspace">
+      <div className="memo-focus-body tool-layout layout-min-grid" data-layout-region="memo-grid">
+        <section className="memo-focus-card tool-primary layout-cell" aria-labelledby="memo-page-title" data-layout-region="memo-primary">
           <div className="memo-editor-shell">
             <div className="memo-title-row">
               <div className="memo-focus-heading">
@@ -459,27 +458,7 @@ export function MemoDocsWorkspace() {
           />
         </section>
 
-        <aside className="memo-floating-panel tool-secondary" aria-label="随手记悬浮卡片栏">
-          <div className="memo-floating-panel-header">
-            <span className="memo-floating-panel-title">悬浮卡片</span>
-            <div className="memo-floating-panel-actions">
-              <FloatingCardColorPicker
-                id="memo-new-floating-card-color"
-                label="新卡片颜色"
-                onChange={setNewFloatingCardColor}
-                value={newFloatingCardColor}
-              />
-              <button
-                aria-label="添加悬浮卡片"
-                className="memo-floating-icon-button"
-                onClick={addFloatingCard}
-                title="添加卡片"
-                type="button"
-              >
-                +
-              </button>
-            </div>
-          </div>
+        <aside className="memo-floating-panel tool-secondary layout-cell" aria-label="随手记悬浮卡片栏" data-layout-region="memo-card-rail">
           <div className="memo-floating-card-list">
             {floatingCards.map((card, index) => {
               const isDragging = draggingCardId === card.id

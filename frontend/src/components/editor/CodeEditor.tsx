@@ -27,7 +27,7 @@ export function CodeEditor({
   diagnostics = [],
 }: CodeEditorProps) {
   return (
-    <div className="editor-host">
+    <div className="editor-host layout-cell" data-layout-region="editor-host">
       <Suspense
         fallback={
           <div className="editor-loading" role="status">

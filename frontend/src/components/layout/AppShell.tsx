@@ -202,6 +202,7 @@ export function AppShell() {
   return (
     <div
       className="app-shell"
+      data-layout-region="app-shell"
       data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}
     >
       <a className="skip-link" href="#main-content">
@@ -267,7 +268,7 @@ export function AppShell() {
             </div>
           </div>
         </header>
-        <div className="app-content">
+        <div className="app-content" data-layout-region="app-content">
           <Outlet />
         </div>
         <MusicMiniPlayer />

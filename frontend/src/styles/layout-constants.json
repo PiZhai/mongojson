@@ -1,94 +1,58 @@
 {
-  "description": "Authoritative source of truth for all responsive layout breakpoints and sizing tokens used in frontend/src/App.css and frontend/src/index.css. Do not introduce any @media/@container max-width/min-width literal that is not listed in `breakpoints` below. Values here must stay in sync with the CSS custom properties declared in index.css :root (checked by scripts/validate-breakpoints.cjs).",
+  "description": "Authoritative source of truth for the project-wide minimum-grid layout. Desktop and landscape layouts keep their columns and scroll inside the workspace when space is scarce. Only portrait viewports at or below mobilePortraitMax switch to a stacked layout.",
   "sizeTokens": {
     "sidebarExpandedWidth": 228,
     "sidebarCollapsedWidth": 72,
-    "workspaceGap": 18,
-    "workspacePrimaryMin": 640,
-    "workspacePrimaryMax": 920,
-    "workspaceSecondaryMin": 320,
-    "workspaceSecondaryMax": 400,
-    "workspaceOutlineMin": 180,
-    "workspaceOutlineMax": 260,
-    "contentPadding": 14
+    "contentPadding": 14,
+    "gapXs": 8,
+    "gapSm": 10,
+    "gapMd": 14,
+    "gapLg": 20,
+    "editorPaneMin": 420,
+    "cardTileMin": 220,
+    "summaryTileMin": 180,
+    "formFieldMin": 180,
+    "inspectPrimaryMin": 720,
+    "inspectRailMin": 280,
+    "inspectWorkspaceMin": 1014,
+    "jsonWorkspaceMin": 854,
+    "mongoWorkspaceMin": 854,
+    "visualizationInputMin": 420,
+    "visualizationRailMin": 360,
+    "visualizationWorkspaceMin": 794,
+    "memoOutlineMin": 140,
+    "memoOutlineMax": 200,
+    "memoEditorMin": 520,
+    "memoPrimaryMin": 660,
+    "memoCardRailMin": 380,
+    "memoCardRailMax": 400,
+    "memoWorkspaceMin": 1080,
+    "musicSidebarMin": 260,
+    "musicSidebarMax": 300,
+    "musicMainMin": 620,
+    "musicWorkspaceMin": 894,
+    "musicMiniInfoMin": 190,
+    "musicMiniPlaybackMin": 360,
+    "musicMiniActionsMin": 210,
+    "musicMiniWorkspaceMin": 788,
+    "watchStageMin": 640,
+    "watchRailMin": 340,
+    "watchWorkspaceMin": 996
   },
   "breakpoints": {
-    "shell.stackedBelow": {
-      "value": 1080,
-      "formula": "sidebarExpandedWidth(228) + workspacePrimaryMin(640) + safety buffer(~212) ~= 1080. Below this viewport width the sidebar can no longer sit side-by-side with a usable content area, so it collapses into a stacked top bar instead of a side column.",
+    "shell.mobilePortraitMax": {
+      "value": 768,
+      "formula": "The only project-wide structural reflow: common portrait phone width. Desktop, tablet landscape and phone landscape retain their minimum grids.",
       "layer": "shell",
       "queryType": "media",
       "containerName": null
     },
-    "content.editorSplitBelow": {
-      "value": 1100,
-      "formula": "Two code editors or generic work areas need roughly 2 x 520px plus their 14px gap. At or below this content width they stack, while a 1440px desktop remains horizontal with either sidebar state.",
-      "layer": "content",
+    "component.controlsCompactBelow": {
+      "value": 400,
+      "formula": "Component-local compact controls threshold used by narrow panels and the 380-400px memo card rail; it never changes the page grid.",
+      "layer": "component",
       "queryType": "container",
-      "containerName": "app-content"
-    },
-    "memo.cardDockBelow": {
-      "value": 1058,
-      "formula": "workspacePrimaryMin(640) + workspaceSecondaryMax(400) + workspaceGap(18) = 1058. Below this width the memo editor and floating-card rail cannot coexist without overflow.",
-      "layer": "content",
-      "queryType": "container",
-      "containerName": "tool-workspace"
-    },
-    "content.outlineHideBelow": {
-      "value": 980,
-      "formula": "workspacePrimaryMin(640) + workspaceOutlineMin(180) + safety buffer(160, editor padding + scrollbar) ~= 980. Below this tool-primary container width, the primary editor and the outline can no longer both keep a readable width, so the outline is hidden to protect the editor.",
-      "layer": "content",
-      "queryType": "container",
-      "containerName": "tool-primary"
-    },
-    "content.compactBelow": {
-      "value": 720,
-      "formula": "workspacePrimaryMin(640) + minimum horizontal padding(2x40) ~= 720. Below this container width, panel headers/toolbars/forms switch to a stacked, single-column compact mode.",
-      "layer": "content",
-      "queryType": "container",
-      "containerName": "app-content"
-    },
-    "music.workbenchBelow": {
-      "value": 1180,
-      "formula": "Retains the music workbench's established desktop layout until the content area can no longer comfortably fit its 300px sidebar and main library.",
-      "layer": "content",
-      "queryType": "container",
-      "containerName": "app-content"
-    },
-    "music.compactBelow": {
-      "value": 760,
-      "formula": "Retains the established compact music layout threshold for controls, lyrics, and media cards.",
-      "layer": "content",
-      "queryType": "container",
-      "containerName": "app-content"
-    },
-    "music.shellWorkbenchBelow": {
-      "value": 1208,
-      "formula": "music.workbenchBelow(1180) + app-content horizontal padding(28). MusicMiniPlayer and MusicQueueDrawer are siblings of app-content and query app-main instead.",
-      "layer": "shell",
-      "queryType": "container",
-      "containerName": "shell-main"
-    },
-    "music.shellCompactBelow": {
-      "value": 788,
-      "formula": "music.compactBelow(760) + app-content horizontal padding(28). Keeps shell-level player controls aligned with the content layout.",
-      "layer": "shell",
-      "queryType": "container",
-      "containerName": "shell-main"
-    },
-    "watchParty.stackBelow": {
-      "value": 1099,
-      "formula": "Retains the established width at which the 340px Watch Party side panel moves below the video stage.",
-      "layer": "content",
-      "queryType": "container",
-      "containerName": "app-content"
-    },
-    "watchParty.compactBelow": {
-      "value": 759,
-      "formula": "Retains the established compact Watch Party controls and one-column side-panel threshold.",
-      "layer": "content",
-      "queryType": "container",
-      "containerName": "app-content"
+      "containerName": null
     }
   }
 }

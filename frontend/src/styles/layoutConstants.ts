@@ -1,29 +1,47 @@
-/**
- * Type-safe accessors for the authoritative layout breakpoint/sizing data
- * defined in `layout-constants.json`. Test code and any future tooling
- * (Storybook, debug overlays, etc.) should import from here rather than
- * hardcoding breakpoint numbers a second time.
- *
- * The JSON file remains the single source of truth; this module only adds
- * TypeScript types and a typed re-export so consumers get compile-time
- * safety and autocomplete.
- */
+/** Type-safe access to the project-wide minimum-grid layout contract. */
 import layoutConstantsJson from './layout-constants.json'
 
 export interface LayoutSizeTokens {
   sidebarExpandedWidth: number
   sidebarCollapsedWidth: number
-  workspaceGap: number
-  workspacePrimaryMin: number
-  workspacePrimaryMax: number
-  workspaceSecondaryMin: number
-  workspaceSecondaryMax: number
-  workspaceOutlineMin: number
-  workspaceOutlineMax: number
   contentPadding: number
+  gapXs: number
+  gapSm: number
+  gapMd: number
+  gapLg: number
+  editorPaneMin: number
+  cardTileMin: number
+  summaryTileMin: number
+  formFieldMin: number
+  inspectPrimaryMin: number
+  inspectRailMin: number
+  inspectWorkspaceMin: number
+  jsonWorkspaceMin: number
+  mongoWorkspaceMin: number
+  visualizationInputMin: number
+  visualizationRailMin: number
+  visualizationWorkspaceMin: number
+  memoOutlineMin: number
+  memoOutlineMax: number
+  memoEditorMin: number
+  memoPrimaryMin: number
+  memoCardRailMin: number
+  memoCardRailMax: number
+  memoWorkspaceMin: number
+  musicSidebarMin: number
+  musicSidebarMax: number
+  musicMainMin: number
+  musicWorkspaceMin: number
+  musicMiniInfoMin: number
+  musicMiniPlaybackMin: number
+  musicMiniActionsMin: number
+  musicMiniWorkspaceMin: number
+  watchStageMin: number
+  watchRailMin: number
+  watchWorkspaceMin: number
 }
 
-export type LayoutLayer = 'shell' | 'content'
+export type LayoutLayer = 'shell' | 'component'
 export type LayoutQueryType = 'media' | 'container'
 
 export interface LayoutBreakpoint {
@@ -35,17 +53,8 @@ export interface LayoutBreakpoint {
 }
 
 export type LayoutBreakpointKey =
-  | 'shell.stackedBelow'
-  | 'content.editorSplitBelow'
-  | 'memo.cardDockBelow'
-  | 'content.outlineHideBelow'
-  | 'content.compactBelow'
-  | 'music.workbenchBelow'
-  | 'music.compactBelow'
-  | 'music.shellWorkbenchBelow'
-  | 'music.shellCompactBelow'
-  | 'watchParty.stackBelow'
-  | 'watchParty.compactBelow'
+  | 'shell.mobilePortraitMax'
+  | 'component.controlsCompactBelow'
 
 export interface LayoutConstants {
   description: string
@@ -54,12 +63,9 @@ export interface LayoutConstants {
 }
 
 export const layoutConstants: LayoutConstants = layoutConstantsJson as LayoutConstants
+export const sizeTokens = layoutConstants.sizeTokens
+export const breakpoints = layoutConstants.breakpoints
 
-export const sizeTokens: LayoutSizeTokens = layoutConstants.sizeTokens
-
-export const breakpoints: Record<LayoutBreakpointKey, LayoutBreakpoint> = layoutConstants.breakpoints
-
-/** Convenience accessor: returns the numeric pixel value for a breakpoint key. */
 export function breakpointValue(key: LayoutBreakpointKey): number {
   return breakpoints[key].value
 }

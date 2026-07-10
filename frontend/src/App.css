@@ -1,17 +1,5 @@
-/* === 架构契约（responsive-layout-architecture spec）===
-   本文件中，.app-shell 及其 [data-sidebar] 选择器只允许存在唯一一个
-   视口宽度断点：下方的 @media (max-width: 1080px)。
-   侧边栏预留宽度必须是视口宽度的非递增函数——即"视口越宽，预留给
-   侧边栏的宽度只能持平或变窄，不能变宽"。禁止再引入类似
-   "1081px~1500px 之间强制切换成另一种视觉状态，跨过该区间后又跳回
-   原状态"的中间区间规则，那正是本次修复的故障根因（侧边栏折叠按钮
-   在该区间内点击后视觉无变化）。
-   .app-content 是壳层与内容层之间唯一的宽度传递边界，内容层
-   （.tool-workspace/.page-shell/.watch-party-shell 等）之后的所有
-   响应式规则必须用 @container，不允许再引入 @media。
-   断点/尺寸数值权威来源：frontend/src/styles/layout-constants.json，
-   由 npm run validate:breakpoints 校验一致性。
-   === */
+/* The shell keeps its side-by-side grid at every desktop/landscape width.
+   Only a common portrait-phone viewport activates the stacked navigation. */
 
 .app-shell {
   display: grid;
@@ -330,7 +318,7 @@
   container: app-content / inline-size;
 }
 
-@media (max-width: 1080px) {
+@media (orientation: portrait) and (max-width: 768px) {
   .app-shell,
   .app-shell[data-sidebar='collapsed'] {
     grid-template-columns: 1fr;
@@ -397,10 +385,10 @@
 
 .watch-party-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(var(--layout-watch-stage-min), 1fr) var(--layout-watch-rail-min);
   gap: 16px;
   width: 100%;
-  min-width: 0;
+  min-width: var(--layout-watch-workspace-min);
 }
 
 .watch-stage,
@@ -979,20 +967,14 @@
   color: var(--text-strong);
 }
 
-@container app-content (max-width: 1099px) {
-  .watch-party-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .watch-side-panel {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@container app-content (max-width: 759px) {
+@media (orientation: portrait) and (max-width: 768px) {
   .watch-party-shell {
     padding: 12px;
+  }
+
+  .watch-party-grid {
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
   }
 
   .watch-video-controls {

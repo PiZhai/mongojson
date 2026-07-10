@@ -54,7 +54,7 @@ export function JsonWorkspace() {
   }
 
   return (
-    <div className="page-shell">
+    <div className="page-shell json-page-shell layout-frame" data-layout-region="json-workspace">
       <Panel
         actions={
           <>
@@ -98,8 +98,8 @@ export function JsonWorkspace() {
         eyebrow="JSON"
         title="工作区"
       >
-        <div className="editor-split">
-          <div className="editor-pane">
+        <div className="editor-split layout-min-grid" data-layout-region="json-editors">
+          <div className="editor-pane layout-cell">
               <div className="editor-pane-header">
                 <span className="editor-pane-title">Input</span>
                 <div className="editor-pane-actions">

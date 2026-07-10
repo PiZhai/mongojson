@@ -432,9 +432,9 @@ export function MusicWorkspace() {
   }
 
   return (
-    <div className="page-shell music-page-shell">
-      <div className="music-workbench">
-        <aside className="music-sidebar" aria-label="音乐工作台侧栏">
+    <div className="page-shell music-page-shell layout-frame" data-layout-region="music-workspace">
+      <div className="music-workbench layout-min-grid" data-layout-region="music-grid">
+        <aside className="music-sidebar layout-cell" aria-label="音乐工作台侧栏" data-layout-region="music-sidebar">
           <section className="music-sidebar-card music-source-card">
             <div className="music-section-heading">
               <div>
@@ -641,7 +641,7 @@ export function MusicWorkspace() {
 
         </aside>
 
-        <div className="music-main-column">
+        <div className="music-main-column layout-cell" data-layout-region="music-main">
           <section className="music-lyrics-stage">
             <div className="music-lyrics-stage-header">
               <div>

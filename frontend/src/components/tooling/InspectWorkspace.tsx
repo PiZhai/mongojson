@@ -76,7 +76,7 @@ export function InspectWorkspace() {
   }
 
   return (
-    <div className="page-shell inspect-page-shell">
+    <div className="page-shell inspect-page-shell layout-frame layout-min-grid" data-layout-region="inspect-workspace">
       <Panel
         actions={
           <>
@@ -91,8 +91,8 @@ export function InspectWorkspace() {
         eyebrow="Inspect"
         title="粘贴诊断"
       >
-        <div className="editor-split">
-          <div className="editor-pane">
+        <div className="editor-split layout-min-grid" data-layout-region="inspect-editors">
+          <div className="editor-pane layout-cell">
             <div className="editor-pane-header">
               <span className="editor-pane-title">Raw Input</span>
             </div>
@@ -103,7 +103,7 @@ export function InspectWorkspace() {
         <StatusBanner right={`${kindLabels[result.kind]} · ${Math.round(result.confidence * 100)}%`} status={status} />
       </Panel>
 
-      <div className="workspace-grid">
+      <div className="workspace-grid layout-cell" data-layout-region="inspect-rail">
         <Panel eyebrow="Actions" title="推荐下一步">
           <div className="stack panel-body-compact">
             {result.suggestedActions.length > 0 ? (
