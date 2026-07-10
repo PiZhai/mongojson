@@ -206,57 +206,6 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
 
   const primaryDiffPath = diffSummary.changed[0] ?? diffSummary.leftOnly[0] ?? diffSummary.rightOnly[0] ?? null
 
-  const contextTrail = useMemo(() => {
-    const base = ['MongoDB JSON', activeModeLabel]
-
-    if (mode === 'diff') {
-      return {
-        crumb: diffFocus ? [...base, diffFocus.path] : [...base, '差异路径'],
-        helper: diffFocus
-          ? `${diffFocus.side === 'left' ? '左侧' : '右侧'}第 ${diffFocus.line} 行，继续沿字段路径 drill down。`
-          : '从差异摘要点击字段，可直接跳到对应行并保留上下文。',
-      }
-    }
-
-    if (mode === 'table') {
-      const selectedPath = tablePreview.selectedCells[0]?.path
-      return {
-        crumb: tableData ? [...base, `第 ${selectedRow + 1} 行`, selectedPath ?? '字段结构'] : [...base, '字段结构'],
-        helper: tableData
-          ? `当前筛选命中 ${tablePreview.filteredSchema.length} 个字段。${tableQuery ? `筛选词为 ${tableQuery}。` : ''}${tableTypeFilter !== 'all' ? ` 类型筛查为 ${tableTypeFilter === 'mixed' ? 'mixed' : '可缺失'}。` : ''} 行预览与字段列表同步。`
-          : '构建表格后，可沿字段路径和文档行继续下钻。',
-      }
-    }
-
-    if (mode === 'shell') {
-      return {
-        crumb: parsedShell ? [...base, parsedShell.collection, shellFocus?.label ?? '语句摘要'] : [...base, '语句摘要'],
-        helper: parsedShell
-          ? `已识别 ${parsedShell.methods.length} 个方法调用和 ${parsedShell.operators.length} 个操作符。${shellFocus ? ` 当前定位到${shellFocus.kind === 'collection' ? '集合' : shellFocus.kind === 'method' ? '方法' : '操作符'} ${shellFocus.label} 的第 ${shellFocus.line} 行。` : ''}`
-          : '识别集合、方法链和操作符后，可从摘要跳回输入区。',
-      }
-    }
-
-    if (mode === 'repair') {
-      return {
-        crumb: [...base, '标准 JSON 修复'],
-        helper: '显式修复常见 JSON 破损输入，输出标准 JSON；MongoDB shell 类型会转换成普通 JSON 值。',
-      }
-    }
-
-    if (mode === 'escape' || mode === 'unescape') {
-      return {
-        crumb: [...base, '字符串处理'],
-        helper: mode === 'escape' ? '将 JSON 转成适合嵌入代码或文本的字符串。' : '将转义后的字符串还原为可读 JSON 文本。',
-      }
-    }
-
-    return {
-      crumb: [...base, '文本整理'],
-      helper: '在输入、输出和状态栏之间快速往返，完成 Extended JSON 的标准化处理。',
-    }
-  }, [activeModeLabel, diffFocus, mode, parsedShell, selectedRow, shellFocus, tableData, tablePreview.filteredSchema.length, tablePreview.selectedCells, tableQuery, tableTypeFilter])
-
   const liveStatus = useMemo((): ToolStatus => {
     if (mode === 'format') {
       if (!formatInputCheck.ok) {
@@ -510,7 +459,6 @@ export function useMongoJsonWorkspaceState(mode: MongoMode) {
   return {
     activeModeLabel,
     arrayMatchKey,
-    contextTrail,
     copied,
     copyText,
     diffFocus,

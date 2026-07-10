@@ -29,9 +29,4 @@ export type SummaryTile = {
   accent: 'left' | 'right' | 'changed' | 'neutral'
 }
 
-export type ContextTrail = {
-  crumb: string[]
-  helper: string
-}
-
 export type StatusSetter = (status: ToolStatus) => void

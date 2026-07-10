@@ -1158,6 +1158,10 @@ a {
   align-content: start;
 }
 
+.mongo-json-page-shell > .mode-strip {
+  flex: 0 0 auto;
+}
+
 .mongo-json-page-shell > .panel {
   flex: 0 0 auto;
   overflow: visible;
@@ -1540,7 +1544,6 @@ a {
 }
 
 .mode-strip,
-.context-strip,
 .summary-strip {
   display: flex;
   align-items: center;
@@ -1591,40 +1594,6 @@ a {
   background: var(--surface);
   color: var(--accent);
   box-shadow: 0 3px 8px rgba(0, 122, 255, 0.1);
-}
-
-.context-strip {
-  justify-content: space-between;
-}
-
-.context-strip-copy {
-  min-width: 0;
-}
-
-.context-breadcrumb {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.context-breadcrumb-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.context-breadcrumb-separator {
-  color: var(--text-muted);
-}
-
-.context-strip-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 .summary-strip {
@@ -3124,8 +3093,7 @@ button.path-chip,
     flex-direction: column;
   }
 
-  .toolbar,
-  .context-strip-actions {
+  .toolbar {
     justify-content: flex-start;
   }
 

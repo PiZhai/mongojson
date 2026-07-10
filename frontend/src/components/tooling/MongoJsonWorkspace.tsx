@@ -1,6 +1,4 @@
 import { useSearchParams } from 'react-router-dom'
-import { ContextActions } from './mongo-json/ContextActions'
-import { ContextStrip } from './mongo-json/ContextStrip'
 import { DiffMode } from './mongo-json/DiffMode'
 import { EscapeMode } from './mongo-json/EscapeMode'
 import { FormatMode } from './mongo-json/FormatMode'
@@ -27,28 +25,6 @@ export function MongoJsonWorkspace() {
   return (
     <div className="page-shell mongo-json-page-shell">
       <ModeSwitch mode={mode} onModeChange={setMode} />
-      <ContextStrip
-        actions={
-          <ContextActions
-            diffFocus={workspace.diffFocus}
-            jumpToDiffPath={workspace.jumpToDiffPath}
-            mode={mode}
-            primaryDiffPath={workspace.primaryDiffPath}
-            selectedRow={workspace.selectedRow}
-            setDiffFocus={workspace.setDiffFocus}
-            setSelectedRow={workspace.setSelectedRow}
-            setShellFocus={workspace.setShellFocus}
-            setTableQuery={workspace.setTableQuery}
-            setTableTypeFilter={workspace.setTableTypeFilter}
-            shellFocus={workspace.shellFocus}
-            tableDataExists={Boolean(workspace.tableData)}
-            tableQuery={workspace.tableQuery}
-            tableTypeFilter={workspace.tableTypeFilter}
-          />
-        }
-        trail={workspace.contextTrail}
-      />
-
       {mode === 'format' ? (
         <FormatMode
           copied={workspace.copied}
