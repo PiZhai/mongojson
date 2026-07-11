@@ -42,13 +42,23 @@ const (
 	StatusExecuted  = "executed"
 	StatusApproved  = "approved"
 
+	PermissionA0  = "A0"
 	PermissionA1  = "A1"
+	PermissionA2  = "A2"
 	PermissionA3  = "A3"
 	PermissionA4  = "A4"
+	PermissionA5  = "A5"
+	PermissionA6  = "A6"
+	PermissionA7  = "A7"
+	PermissionA8  = "A8"
+	PermissionA9  = "A9"
 	DataD0        = "D0"
 	DataD1        = "D1"
 	DataD2        = "D2"
 	DataD3        = "D3"
+	DataD4        = "D4"
+	DataD5        = "D5"
+	DataD6        = "D6"
 	ResultOK      = "success"
 	ResultBlocked = "blocked"
 	ResultFailed  = "failed"
@@ -61,6 +71,7 @@ type Service struct {
 	proposalScorer  AutonomyProposalScorer
 	proposalSources *autonomyProposalDiscovererRegistry
 	actionExecutors *autonomyActionExecutorRegistry
+	retryPolicy     autonomyRetryPolicy
 	syncEntities    *syncEntityAdapterRegistry
 	peerDiscovery   PeerDiscoveryCatalog
 
@@ -166,6 +177,7 @@ func NewService(db *database.DB, options ...ServiceOption) *Service {
 		agentID:        envOrDefault("STEWARD_AGENT_ID", DefaultAgentID),
 		advisor:        NewAutonomyAdvisorFromEnv(),
 		proposalScorer: NewRuleBasedAutonomyProposalScorer(),
+		retryPolicy:    autonomyRetryPolicyFromEnv(),
 		peerDiscovery:  disabledPeerDiscovery{},
 	}
 	service.actionExecutors = newAutonomyActionExecutorRegistry(
@@ -406,6 +418,11 @@ func (s *Service) GetAgentStatus(ctx context.Context) (domain.StewardAgentStatus
 		return domain.StewardAgentStatus{}, fmt.Errorf("get steward agent status: %w", err)
 	}
 	_ = json.Unmarshal([]byte(collectorsJSON), &status.EnabledCollectors)
+	loops, err := s.listDaemonLoopStatuses(ctx)
+	if err != nil {
+		return domain.StewardAgentStatus{}, err
+	}
+	status.BackgroundLoops = loops
 	return status, nil
 }
 

@@ -133,6 +133,13 @@ try {
   }
   Add-Check $checks "dist_preflight.targets" "ok" "Windows, macOS Intel/Apple Silicon, and Linux amd64/arm64 targets are present" @{ targets = $actualTargets }
 
+  if ([string]::IsNullOrWhiteSpace([string]$verification.go_version) -or $verification.current_binary_smoke.go_version -ne $verification.go_version) {
+    throw "distribution Go toolchain metadata is missing or does not match the current binary"
+  }
+  Add-Check $checks "dist_preflight.toolchain" "ok" "distribution manifest and current binary report the same Go toolchain" @{
+    go_version = $verification.go_version
+  }
+
   $invalidUI = @($verification.artifacts | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.ui_dir) -or [int]$_.file_count -le 1 })
   if (-not $verification.ui_included -or $invalidUI.Count -ne 0) {
     throw "one or more steward target directories do not include the bundled workspace"

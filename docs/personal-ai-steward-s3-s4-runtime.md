@@ -4,13 +4,19 @@
 
 ## 当前实现边界
 
+面向实际操作者的 Windows、macOS、Linux 完整发布流程见 [三端打包、安装与验证教程](personal-ai-steward-three-platform-deployment-guide.md)。本文继续作为服务模型、同步协议、安全策略和 evidence 门禁的实现基线。
+
 当前实现已经具备：
 
 - Go 后端 API 服务和可复用运行器，管理面与跨设备 Peer 面使用独立路由和独立监听器。
 - `steward` CLI 入口。
+- 构建工具链基线为 Go `1.26.5` 或同系列更高补丁版本。Windows 多进程同步压力验证曾在 Go `1.26.1` 的标准库 overlapped I/O 路径触发进程级 access violation；升级到 `1.26.5` 后同一三节点 mesh 连续三轮及完整 readiness 均通过，因此不再接受 1.26.1 作为 S3/S4 发布工具链。
 - Windows Service、macOS LaunchAgent/LaunchDaemon、Linux systemd user/system unit 的安装、卸载、启动、停止和状态查询命令；Windows 固定为 system scope，macOS/Linux 默认使用 user scope，显式 `--scope system` 才进入系统级服务路径。
 - 服务进程内的后台守护循环：心跳默认开启，可信 peer 同步和自主扫描可通过 interval 显式开启。
+- 后台循环故障域状态：heartbeat、sync、autonomy 分别持久化启用/运行状态、间隔、最近尝试/成功、有界错误摘要和连续失败次数。单个 peer 的同步故障只让 sync 循环显示降级，不写入或覆盖 Agent 全局错误，也不让本地管理 API、心跳、自主扫描或其他健康 peer 停止工作；修复后成功一轮会清零该循环失败状态。
 - 本地设备身份和设备权限表；权限策略已接入出站读取与入站导入，不是仅展示配置。
+- S3 设备身份登记契约：管理 API 只能登记 `peer`，必须提供非本机 agent id，并严格校验 Windows/darwin/Linux/unknown 平台、A0-A9 权限和无凭据、无 query/fragment、以 `/api` 结尾的 Peer 地址；任何请求都不能覆盖本机 `local` 角色、同步开关或权限。同步心跳仍只能刷新已认证 peer 的描述性字段。`verify runtime` 的 `s3.device.policy_contract` 会反向检查数据库中恰好一个本机角色、其他设备均为 peer、吊销设备已关闭同步，以及所有设备权限记录使用已定义 capability/policy/权限等级。
+- S3 同步变更契约：本地 outbox 只允许本机来源和已注册实体，远端导入必须携带 UUID change/entity id、`create/update/delete` 操作、正版本、D0-D6 数据级别和已登记可信来源；payload 中显式携带的权限必须为 A0-A9，数据级别必须与 envelope 一致。同一 change id 只能幂等重放完全相同的不可变内容。单批中的畸形 change 会被逐条拒绝、脱敏审计且不落库，批次仍返回成功以允许同步水位越过永久坏数据；签名设备不能通过省略 payload device 绕过设备权限。`sync-status` 和工作台显示全量历史扫描结果，`verify runtime` 的 `s3.sync.change_contract` 会把任何遗留脏记录变成失败门禁。
 - 默认关闭的签名局域网候选发现：`STEWARD_DISCOVERY_ENABLED=true` 后通过 UDP multicast 或显式 UDP targets 广播 Ed25519 自签名设备公告；接收端验证协议版本、时间窗、公钥和签名，只在内存中保存最多 256 个带 TTL 的候选。过期时间由签名内的签发时间计算，重复播放旧公告不能延长候选寿命。公告验签只证明“公告未被篡改且发送者持有公告内公钥”，不等于设备已受信任；发现层不会自动登记、信任、同步、配对或修改服务环境。工作台和 `sync-status` 会明确显示候选尚未信任，并展示公钥指纹、过期时间、拒绝公告计数和运行状态。
 - 核心 S2 实体、来源引用、标签、实体标签和时间线片段的同步变更队列。
 - 同步变更导入和自动应用接口。
@@ -42,18 +48,22 @@
 - S4 大模型建议器失败隔离：供应商请求、超时或响应解析连续失败会打开短暂熔断；熔断状态、连续失败次数、下次重试时间和脱敏最近错误会出现在 `advisor` 状态和工作台中。隐私等级拦截属于本地策略拒绝，不计入供应商失败。
 - S4 模型输出 guardrail：如果模型建议文本包含外发、删除、付款、凭据、系统配置、提交/发布等高风险动作，系统会拒收模型文本并回退到本地规则生成的候选。
 - S4 提案状态机：`dismissed` 和 `executed` 为终态；高风险、A4 及以上或 `never` 策略提案不能被批准为自主执行；审批通过只会推进低风险执行审批，不会解锁高风险自动化。
+- S4 严格策略契约：设置更新只接受 `suggest_only` / `controlled`，自动权限上限只能是 A0-A3；规则只接受已定义 policy 和 A0-A9；提案只接受已定义风险、权限和 D0-D6 数据级别。未知值直接返回 400 且不会写库，中风险及以上按高风险路径阻断自动执行。审批状态机和执行入口会重新校验持久化提案，因此升级前遗留或数据库外部写入的非法提案即使被标成 `approved` 也只能转为 `blocked`，不能进入执行器；`verify runtime` 的 `s4.autonomy.policy_contract` 同时检查历史设置和规则。
+- S4 策略变更屏障：自主扫描和真实执行持有 PostgreSQL advisory shared gate，暂停、模式/自动权限更新和规则更新持有 exclusive gate。暂停或策略收紧请求必须等待在途扫描/执行结束后才返回，因此返回后不会再出现使用旧设置启动的动作。提案仍保留创建时规则快照用于解释，但执行入口会复核当前规则；规则已禁用、改为 `never`、动作不再匹配或权限上限降低时，旧 `auto` 提案不能复用历史授权。工作台显示屏障状态，`verify runtime` 和最终 evidence 通过 `s4.autonomy.policy_gate` 强制确认扫描、执行、设置、规则和当前规则复核五项契约。
+- S4 执行失败恢复：自动策略失败后按运行记录执行指数退避，默认最多尝试 3 次，达到上限后把 proposal 置为 `blocked` 并停止后台重试；失败次数、下次自动重试时间和耗尽状态随 proposal 返回。用户只能对确有失败执行记录的 proposal 显式调用 `retry`，每次人工恢复都会单独写入审计。
 - 工作台中的同步、自主、设备、冲突、审批和运行记录视图。
-- `steward verify runtime` 运行时验收命令，通过本机管理 API 检查 health/ready、Agent、S3 同步安全状态、S4 自主规则和已启用 advisor 的可观测安全配置，并可选写入低风险探针验证同步队列和自主候选生成。启用发现时还会要求发现循环运行、至少成功发送过一次公告、最近没有发送错误、候选计数一致且所有暴露候选均已验签。
+- `steward verify runtime` 运行时验收命令，通过本机管理 API 检查 health/ready、Agent、S3 同步安全、设备身份/权限契约、同步变更历史契约、S4 自主规则、严格策略契约和已启用 advisor 的可观测安全配置，并可选写入低风险探针验证同步队列和自主候选生成。启用发现时还会要求发现循环运行、至少成功发送过一次公告、最近没有发送错误、候选计数一致且所有暴露候选均已验签。
 - `steward verify service` 服务级验收命令，会同时检查系统服务管理器状态和 S3/S4 runtime 验收结果。
 - `steward verify peers` peer 验收命令，可遍历已登记 peer 做设备信任挑战，并可选执行一次 pull/import/push 同步；显式加 `--write-probes` 时会创建一组低风险本地关系探针，包括任务、来源引用、标签、实体标签、事件和时间线片段，同步后由本机服务使用 HMAC/Ed25519 签名调用对端只读实体探针，验证“本机写入的数据及其核心关系已在对端可见”，不再远程访问通用搜索 API。
 - `steward verify mesh` 多节点验收命令，可传入多个本地或通过 SSH/VPN 安全隧道映射到回环地址的管理 API，对每个节点复用 runtime 和 peer 验收，形成 Windows/macOS/Linux 三端矩阵结果；不要求把管理 API 暴露到局域网。
 - `verify --evidence-dir` 验收证据落盘：runtime、service、peers 和 mesh 验收都可以把完整 JSON 结果保存为 timestamped evidence 文件；失败结果也会先落盘，命令输出会返回 `evidence_path`，便于收集 24 小时常驻、密钥轮换和三端 mesh 验收材料。`verify evidence` 可汇总 evidence 目录并检查 kind、平台、agent、kind+platform、platform+agent、kind+platform+agent、关键 check、check+platform、kind+check+platform、全通过、全局最小 watch 时长和逐平台最小 watch 时长覆盖。
 - 本机真实三进程 mesh 验证脚本：`deploy/run-steward-local-mesh.ps1` 会启动三个真实 `steward run` 进程、三个临时 Postgres 数据库、三组独立管理/Peer API 和三组独立 UDP 发现监听；在人工登记前要求每个节点发现另外两个签名候选，再执行双向设备注册、`verify mesh --sync --write-probes` 和一次 S4 低风险 autonomy 模拟/执行。脚本还会停止一个 peer，在其他节点本地创建任务，再重启该 peer、显式同步并检查任务在恢复节点可见，以验证离线期间本地写入和重新上线后的增量追赶；最终生成 `local-mesh` 与嵌套 `mesh` evidence。该脚本只能证明当前宿主机上的多进程、多数据库、后台循环和 CLI 验收链路，不等同于三台物理 Windows/macOS/Linux 设备验收。
 - 配对 bootstrap 预检脚本：`deploy/run-steward-pairing-bootstrap-preflight.ps1` 会生成签名且加密共享同步材料的配对包、接收端当前服务环境、`pairing bootstrap --require-signature --strict-security` 输出和 `pairing-bootstrap-preflight` evidence，验证配对材料解密、脱敏、service env plan、scope-aware 验收建议和下一步命令建议，不登记 peer、不写服务、不访问管理 API、不调用模型端点。
-- 本机真实进程 S4 advisor 验证脚本：`deploy/run-steward-advisor-e2e.ps1` 会启动一个真实 `steward run` 进程、临时 Postgres 数据库和本地 OpenAI-compatible loopback 模型端点，运行 `verify runtime --advisor-probe --advisor-privacy-probe`，并检查 D0 探针确实到达模型端点、D2 隐私探针没有提交给模型。该脚本也支持显式切到外部 OpenAI-compatible 端点，但默认不调用外部服务。
+- 本机真实进程 S4 advisor 验证脚本：`deploy/run-steward-advisor-e2e.ps1` 会启动一个真实 `steward run` 进程、临时 Postgres 数据库和可控的本地 OpenAI-compatible loopback 模型端点。除运行 `verify runtime --advisor-probe --advisor-privacy-probe` 并检查 D0 到达模型、D2 在本地阻断外，默认 mock 模式还会注入请求超时和 HTTP 失败，验证连续失败打开熔断、熔断期间不再访问上游、本地规则 proposal 仍然生成、fallback 失败审计可查，以及冷却后成功探针会关闭熔断并清零失败状态。该脚本也支持显式切到外部 OpenAI-compatible 端点；外部模式只做 live/privacy probe，不对真实服务注入确定性故障。
 - 本机真实进程 watch 验证脚本：`deploy/run-steward-runtime-watch.ps1` 会启动一个真实 `steward run` 进程和临时 Postgres 数据库，运行 `verify runtime --watch-duration ... --watch-interval ... --write-probes`，生成 `runtime-watch` 与嵌套 `runtime` evidence，并证明后台心跳在 watch 窗口内推进。默认窗口较短，适合本机回归；最终 24 小时验收仍要显式放大参数并在目标设备上运行。
 - 三端发布预检脚本：`deploy/run-steward-dist-preflight.ps1` 会构建 Windows amd64、macOS amd64/arm64、Linux amd64/arm64 五个自包含目录，要求每个目标都带有工作台，逐文件验证 manifest/SHA-256，并运行当前平台二进制版本 smoke，生成 `dist-preflight` evidence。
 - 本机 S3/S4 readiness 汇总脚本：`deploy/run-steward-local-readiness.ps1` 会在一次新 run 目录内串联三端发布预检、Postgres E2E、服务安装预检、服务环境预检、配对 bootstrap 预检、本机 mesh、advisor E2E 和 runtime watch，并用 `verify evidence` 生成统一 manifest 和 `local-readiness` evidence。该脚本用于实机三端前的本机总门禁，不替代真实 Windows/macOS/Linux 服务安装、24 小时常驻和跨设备同步验收。
+- 目标主机系统服务安装 E2E 脚本：`deploy/run-steward-service-install-e2e.ps1` 默认只在 `-PlanOnly` 下执行 strict dry-run；真实安装必须显式 `-ConfirmInstall`，并要求稳定发布二进制、稳定工作目录和管理员/root 权限。脚本从受保护 JSON 或当前进程环境读取服务配置，不把密钥放入记录的命令，安装后启动原生服务并执行 strict service verification、advisor 探针和默认 24 小时 watch，生成脱敏 `service-install-e2e` wrapper evidence 与嵌套 `service` evidence。
 - 实机最终证据采集脚本：`deploy/run-steward-s3s4-final-host.ps1` 用同一套参数在每台真实设备上调用 `verify service`、`verify mesh` 和本机 `verify evidence`，默认执行 24 小时 watch、S4 D0 live advisor probe、D2 privacy probe、S3 peer relation write probes，并生成 `s3s4-final-host` wrapper evidence。该脚本不安装服务、不改服务环境、不登记 peer，只把最终验收命令、结果和 evidence 写入指定目录；三台设备的输出合并后再用 `verify evidence --preset s3s4-final-system` 作为高权限完成门禁。
 
 当前仍未完成：
@@ -67,10 +77,11 @@
 
 S3/S4 领域实现按变化原因拆分，新增能力时不得把传输、安全策略和业务编排重新堆入单个文件：
 
-- `s3.go` 只聚合同步总览；`s3_devices.go`、`s3_changes.go`、`s3_sync.go`、`s3_conflict_service.go` 分别负责设备生命周期、outbox 变更仓储、pull/import/push 编排和冲突队列。`s3_contracts.go` 保存协议常量和公开输入输出契约；`s3_security.go` 集中安全状态计算与入站认证；`s3_transport.go` 只负责 Peer HTTP、请求签名、端点校验和同步窗口；`s3_encryption.go`、`s3_device_keys.go` 和 `s3_permissions.go` 分别负责加密、设备密钥与权限判定。
+- `s3.go` 只聚合同步总览；`s3_devices.go`、`s3_changes.go`、`s3_sync.go`、`s3_conflict_service.go` 分别负责设备生命周期、outbox 变更仓储、pull/import/push 编排和冲突队列。`s3_change_policy.go` 是本地/远端 change 规范化、不可变 ID、payload 等级和历史状态校验的唯一归属；`s3_contracts.go` 保存协议常量和公开输入输出契约；`s3_security.go` 集中安全状态计算与入站认证；`s3_transport.go` 只负责 Peer HTTP、请求签名、端点校验和同步窗口；`s3_encryption.go`、`s3_device_keys.go` 和 `s3_permissions.go` 分别负责加密、设备密钥与权限判定。
 - S3 实体应用通过 `SyncEntityAdapter` 注册表分发，适配器必须同时声明实体类型、设备同步权限类别和默认权限级别，权限校验与应用逻辑不再维护两份实体映射。`s3_entity_content.go`、`s3_entity_relations.go`、`s3_entity_timeline.go`、`s3_entity_system.go` 分别拥有内容实体、标签/来源关系、时间线关系和审计/设备实体；`s3_entities.go` 只保留共享常量、payload 解析和通用完成逻辑。
 - `internal/platform/peerdiscovery` 独立负责发现协议签名/验签、UDP 监听与广播、TTL 和有界候选内存目录；`app.Server` 只管理其生命周期和就绪状态，Steward 领域层通过 `PeerDiscoveryCatalog` 只读接口获取快照。发现包不依赖数据库，也不能调用设备登记或权限接口；ready 检查会识别发现循环退出、尚未成功广播或持续发送错误。
-- `s4.go` 只聚合自主总览并编排一轮扫描；`s4_defaults.go`、`s4_settings.go`、`s4_proposals.go`、`s4_proposal_execution.go`、`s4_approvals.go` 和 `s4_runs.go` 分别负责默认规则、设置/规则、提案、执行、审批和运行记录。`s4_contracts.go` 保存公开输入契约，`s4_policy.go` 是审批状态机、风险和权限级别的唯一判定位置，`s4_repository.go` 保存领域读取与扫描，执行器和模型建议器由 `s4_execution*.go`、`s4_advisor*.go` 隔离。
+- `daemon.go` 只负责编排三个独立定时循环和生命周期，`daemon_status.go` 负责持久化循环级运行状态；同步或自主错误不得再借用 Agent 全局 `last_error` 传递。新增后台循环必须显式配置状态、记录每轮结果，并保持与其他循环并发隔离。
+- `s4.go` 只聚合自主总览并编排一轮扫描；`s4_defaults.go`、`s4_settings.go`、`s4_proposals.go`、`s4_proposal_execution.go`、`s4_approvals.go` 和 `s4_runs.go` 分别负责默认规则、设置/规则、提案、执行、审批和运行记录。`s4_contracts.go` 保存公开输入契约，`s4_policy.go` 是审批状态机、风险、权限级别和当前规则复核的唯一判定位置，`s4_policy_gate.go` 只负责跨进程读写屏障；`s4_repository.go` 保存领域读取与扫描，执行器和模型建议器由 `s4_execution*.go`、`s4_advisor*.go` 隔离。
 - S4 候选来源通过 `AutonomyProposalDiscoverer` 注册表按稳定顺序运行；同名注册会替换实现但不改变顺序。新增候选来源应注册独立发现器，新增低风险动作应注册独立执行器，新增同步实体应注册带权限声明的适配器；任何新增动作仍必须复用 `s4_policy.go` 和执行器 guardrail，不得在调用点复制或绕过安全判定。
 - CLI 顶层 `cmd/steward/main.go` 只负责进程入口、顶层命令路由、共享 HTTP 客户端和环境读取；`commands_service.go`、`commands_devices.go`、`commands_autonomy.go` 分别拥有服务生命周期、设备权限和自主控制命令的参数解析、校验、请求构造及帮助文本。配对继续由 `pairing*.go` 负责。
 - 验收入口 `verify.go` 只分发子命令；`verify_runtime.go`、`verify_service.go`、`verify_peers.go`、`verify_mesh.go` 分别拥有对应验收编排，`verify_types.go` 固定 JSON 契约，`verify_support.go` 保存共享只读解析。Evidence manifest 再按 `types`、`coverage`、`checks`、`requirements` 拆分，新增最终门禁时必须选择唯一归属，不得把平台、Agent、服务作用域和 advisor 规则复制到多个验证模块。
@@ -210,6 +221,9 @@ go run ./cmd/steward service uninstall
   --require-agent-id windows-main `
   --require-agent-id macbook-main `
   --require-agent-id linux-main `
+  --require-kind-platform-agent service-install-e2e:windows:windows-main `
+  --require-kind-platform-agent service-install-e2e:darwin:macbook-main `
+  --require-kind-platform-agent service-install-e2e:linux:linux-main `
   --require-kind-platform-agent service:windows:windows-main `
   --require-kind-platform-agent service:darwin:macbook-main `
   --require-kind-platform-agent service:linux:linux-main `
@@ -243,15 +257,87 @@ go run ./cmd/steward service uninstall
 该命令会读取 `steward-verify-*.json`，汇总通过/失败数量、已覆盖 kind、已覆盖平台、已覆盖 agent、已覆盖 service scope、已覆盖 service name、已覆盖 advisor provider/model/max data level、已覆盖 kind+platform、已覆盖 platform+agent、已覆盖 kind+platform+agent、已覆盖 platform+service scope、已覆盖 kind+platform+service scope、已覆盖 platform+service name、已覆盖 kind+platform+service name、已覆盖 platform+advisor provider/model/max data level、已覆盖 kind+platform+advisor provider/model/max data level、已覆盖 check、已覆盖 check+platform、已覆盖 kind+check+platform、最大 watch 样本数、最大 watch 时间跨度和每个平台的最大 watch 时间跨度。`--preset s3s4-final-system` 是高权限真实三端完成门槛，会自动要求：
 
 - 所有 evidence 通过。
-- `service`、`mesh` 和 `s3s4-final-host` 三类 evidence 都存在。
-- Windows、macOS、Linux 三个平台都存在 `service`、`mesh` 与 `s3s4-final-host` evidence。
+- `service-install-e2e`、`service`、`mesh` 和 `s3s4-final-host` 四类 evidence 都存在。
+- Windows、macOS、Linux 三个平台都存在 `service-install-e2e`、`service`、`mesh` 与 `s3s4-final-host` evidence。
 - 每个平台至少覆盖 `24h` watch span，并启用逐平台 watch 检查。
-- Windows、macOS、Linux 三个平台的 `service` evidence 都来自 `system` 服务作用域。
-- `service` evidence 里每个平台都有 `service.status`、`service.runtime`、`service.watch`、`service.watch.heartbeat`、`s3.sync.security.strict`、`s3.sync.security.expected_sync_key`、`s3.sync.security.expected_local_key`、`s4.autonomy.status`、`s4.advisor.probe` 和 `s4.advisor.privacy_probe`。
-- `mesh` evidence 里每个平台都有 `mesh.watch`、`mesh.watch.heartbeat`、`s3.peers.present`、`s3.peers.status`、`s3.sync.security.strict`、`s3.sync.security.expected_sync_key`、`s3.sync.security.expected_local_key`、`s3.peer_probe.task/source_ref/data_tag/entity_tag/event/timeline_segment/relations`、`s4.autonomy.status`、`s4.advisor.probe` 和 `s4.advisor.privacy_probe`。
+- Windows、macOS、Linux 三个平台的 `service-install-e2e` 与 `service` evidence 都来自 `system` 服务作用域。
+- `service-install-e2e` evidence 里每个平台都有 `service_install_e2e.binary`、`service_install_e2e.redaction`、`service_install_e2e.command` 和 `service_install_e2e.install`；`-PlanOnly` 只生成 `service_install_e2e.plan`，不能满足最终预设。
+- `service` evidence 里每个平台都有 `service.status`、`service.runtime`、`service.watch`、`service.watch.heartbeat`、`daemon.loops.status`、`s3.sync.security.strict`、`s3.sync.security.expected_sync_key`、`s3.sync.security.expected_local_key`、`s4.autonomy.status`、`s4.autonomy.retry_policy`、`s4.advisor.probe` 和 `s4.advisor.privacy_probe`。
+- `mesh` evidence 里每个平台都有 `mesh.watch`、`mesh.watch.heartbeat`、`daemon.loops.status`、`s3.peers.present`、`s3.peers.status`、`s3.sync.security.strict`、`s3.sync.security.expected_sync_key`、`s3.sync.security.expected_local_key`、`s3.peer_probe.task/source_ref/data_tag/entity_tag/event/timeline_segment/relations`、`s4.autonomy.status`、`s4.autonomy.retry_policy`、`s4.advisor.probe` 和 `s4.advisor.privacy_probe`。
 - `s3s4-final-host` wrapper evidence 里每个平台都有 `agent_id`、`s3s4_final_host.binary`、`s3s4_final_host.service`、`s3s4_final_host.mesh` 和 `s3s4_final_host.local_manifest`，证明每台真实设备都跑过最终采集脚本并通过本机 manifest 门禁；`-PlanOnly` 只会生成 `s3s4_final_host.plan`，不能满足最终预设。
 
-`--require-agent-id` 用于确认目标设备 ID 出现在 evidence 中，`--require-kind-platform-agent KIND:PLATFORM:AGENT_ID` 用于确认指定类型的 evidence 来自指定平台上的指定设备，例如 `mesh:darwin:macbook-main` 或 `s3s4-final-host:darwin:macbook-main`。`--require-kind-platform-service-scope KIND:PLATFORM:SCOPE` 用于确认指定类型的 evidence 来自目标服务作用域，例如 `service:linux:system`；`s3s4-final-system` 已内置三端 system scope 要求。`--require-kind-platform-service-name KIND:PLATFORM:NAME` 用于确认指定类型的 evidence 检查的是预期平台服务名，例如 `service:windows:MongojsonSteward`。服务名是部署命名，不由 `s3s4-final-system` 预设自动决定；最终归档建议显式传入 Windows、macOS、Linux 三端的目标服务名。`--require-kind-platform-advisor-provider/model/max-data-level` 用于确认通过的 S4 advisor 检查来自目标 provider、模型和数据级别上限，而不是任意可用模型。`s3s4-final-system` 会要求 advisor probe 和 privacy probe 存在，但不会替你决定模型名称；最终归档应显式传入目标模型。 如果某台 macOS/Linux 设备刻意采用用户级服务，应改用 `--preset s3s4-final` 并显式传入对应 `service:<platform>:user` 要求，最终 manifest 会明确记录这个选择。`--latest-per-kind` 只纳入每种 evidence kind 的最新文件，适合对持续追加的本机回归目录做当前状态门禁；最终归档审计建议去掉它，让历史失败也参与判断。生成的 `manifest.json` 是最终人工复核入口；它不能替代原始 evidence 和服务日志，但能避免只凭文件数量误判 S3/S4 已完成。
+`--require-agent-id` 用于确认目标设备 ID 出现在 evidence 中，`--require-kind-platform-agent KIND:PLATFORM:AGENT_ID` 用于确认指定类型的 evidence 来自指定平台上的指定设备，例如 `service-install-e2e:darwin:macbook-main`、`mesh:darwin:macbook-main` 或 `s3s4-final-host:darwin:macbook-main`。`--require-kind-platform-service-scope KIND:PLATFORM:SCOPE` 用于确认指定类型的 evidence 来自目标服务作用域，例如 `service-install-e2e:linux:system` 或 `service:linux:system`；`s3s4-final-system` 已内置两类三端 system scope 要求。`--require-kind-platform-service-name KIND:PLATFORM:NAME` 用于确认指定类型的 evidence 检查的是预期平台服务名，例如 `service:windows:MongojsonSteward`。服务名是部署命名，不由 `s3s4-final-system` 预设自动决定；最终归档建议显式传入 Windows、macOS、Linux 三端的目标服务名。`--require-kind-platform-advisor-provider/model/max-data-level` 用于确认通过的 S4 advisor 检查来自目标 provider、模型和数据级别上限，而不是任意可用模型。`s3s4-final-system` 会要求 advisor probe 和 privacy probe 存在，但不会替你决定模型名称；最终归档应显式传入目标模型。 如果某台 macOS/Linux 设备刻意采用用户级服务，应改用 `--preset s3s4-final` 并显式传入对应 `service-install-e2e:<platform>:user` 与 `service:<platform>:user` 要求，最终 manifest 会明确记录这个选择。`--latest-per-kind` 只纳入每种 evidence kind 的最新文件，适合对持续追加的本机回归目录做当前状态门禁；最终归档审计建议去掉它，让历史失败也参与判断。生成的 `manifest.json` 是最终人工复核入口；它不能替代原始 evidence 和服务日志，但能避免只凭文件数量误判 S3/S4 已完成。
+
+## 实机系统服务安装 E2E
+
+`deploy/run-steward-service-install-e2e.ps1` 负责单台目标设备的原生服务安装、启动和安装后验收。它与 `run-steward-s3s4-final-host.ps1` 分工明确：前者改变本机 service manager 状态，后者只验证已经安装的服务和三端 mesh。
+
+服务环境文件必须是“键和值均为字符串”的扁平 JSON 对象，例如：
+
+```json
+{
+  "HTTP_ADDR": "127.0.0.1:18080",
+  "STEWARD_PEER_HTTP_ADDR": ":18081",
+  "DATABASE_URL": "<postgres-url>",
+  "STORAGE_DIR": "<stable-data-dir>",
+  "STEWARD_AGENT_ID": "windows-main",
+  "STEWARD_PUBLIC_API_BASE": "http://192.168.1.10:18081/api",
+  "STEWARD_SYNC_SECRET": "<24-plus-character-secret>",
+  "STEWARD_DEVICE_PRIVATE_KEY": "<ed25519-private-key>",
+  "STEWARD_DEVICE_PUBLIC_KEY": "<ed25519-public-key>",
+  "STEWARD_SYNC_ENCRYPTION_KEY": "<aes-256-gcm-key>",
+  "STEWARD_SYNC_ENCRYPTION_KEY_ID": "home-sync-v2",
+  "STEWARD_LOCAL_ENCRYPTION_KEY": "<local-aes-256-gcm-key>",
+  "STEWARD_LOCAL_ENCRYPTION_KEY_ID": "windows-local-v1",
+  "STEWARD_HEARTBEAT_INTERVAL": "1m",
+  "STEWARD_SYNC_INTERVAL": "5m",
+  "STEWARD_AUTONOMY_INTERVAL": "15m",
+  "STEWARD_LOG_DIR": "<stable-log-dir>",
+  "STEWARD_LLM_PROVIDER": "openai-compatible",
+  "STEWARD_LLM_BASE_URL": "<model-base-url>",
+  "STEWARD_LLM_MODEL": "<model-name>",
+  "STEWARD_LLM_API_KEY": "<model-api-key>",
+  "STEWARD_LLM_MAX_DATA_LEVEL": "D1"
+}
+```
+
+Windows 上应移除 `Everyone`、`BUILTIN\\Users` 和 `Authenticated Users` 的读取权限；macOS/Linux 使用 owner-only `0600`。真实安装不会接受 `-AllowInsecureConfigFile`，该开关只允许在 `-PlanOnly` 下排查配置。也可以不落配置文件，先在受控终端中设置同名进程环境变量，再显式传入 `-UseProcessEnvironment`。
+
+先执行不触碰服务管理器的计划：
+
+```powershell
+.\deploy\run-steward-service-install-e2e.ps1 `
+  -PlanOnly `
+  -ConfigFile C:\secure\steward-service-env.json `
+  -ServiceScope system `
+  -EvidenceDir .\evidence\s3s4\install-plan
+```
+
+确认发布目录、监听地址、设备 ID、key ID、数据库和模型配置后，在管理员/root 终端执行真实安装。`-BinaryPath` 和 `-WorkDir` 在真实安装时必须是不会随临时 evidence 清理而消失的稳定路径：
+
+```powershell
+.\deploy\run-steward-service-install-e2e.ps1 `
+  -ConfirmInstall `
+  -BinaryPath "C:\Program Files\MongojsonSteward\steward.exe" `
+  -WorkDir "C:\ProgramData\MongojsonSteward" `
+  -ConfigFile "C:\ProgramData\MongojsonSteward\service-env.json" `
+  -ServiceName MongojsonSteward `
+  -ServiceScope system `
+  -WatchDuration 24h `
+  -WatchInterval 5m `
+  -EvidenceDir "C:\ProgramData\MongojsonSteward\evidence"
+```
+
+macOS/Linux 使用 PowerShell 7 (`pwsh`) 运行同一脚本，替换二进制和工作目录路径，并在 system scope 下以 root 执行。默认会调用 `service install --strict-security --start --verify`，同时启用 D0 advisor live probe、D2 privacy probe 和 24 小时 service watch；只有非最终调试才应使用 `-SkipAdvisorProbe` 或 `-SkipAdvisorPrivacyProbe`。`-AdvisorProbeEachSample` 会在每个 watch 样本再次调用模型，可能产生真实调用成本。
+
+安装或安装后验证失败时，脚本会保留已经创建的服务和日志供排查，不会静默卸载。人工确认需要清理时运行：
+
+```powershell
+steward service stop --name <service-name> --scope system
+steward service uninstall --name <service-name> --scope system
+```
+
+`service-install-e2e` evidence 只记录配置来源、配置键名、非敏感设备/key ID、脱敏命令结果和检查状态；若下层 CLI 意外输出敏感值，wrapper 会先替换为 `<redacted>` 并把 redaction check 标记为失败。该 evidence 证明“该目标主机执行过真实安装入口”，但最终完成仍要求继续采集下面的三端 service/mesh/final-host evidence。
 
 ## 实机最终 Evidence
 
@@ -286,37 +372,29 @@ macOS 和 Linux 设备只替换 `-EvidenceDir`、`-LocalAgentID`、`-LocalPlatfo
 
 该脚本不安装服务、不改服务环境、不登记 peer、不写业务数据之外的验证探针。`--write-probes` 只创建 S3/S4 低风险验证实体，用于证明任务、来源引用、标签、实体标签、事件和时间线片段关系可以同步并被 peer 签名探针确认。默认启用 advisor live probe 与 privacy probe，因此必须显式传入 `-ExpectedAdvisorProvider`、`-ExpectedAdvisorModel` 和 `-ExpectedAdvisorMaxDataLevel`，让最终 evidence 证明目标模型身份和数据级别上限，而不是任意可用模型；非最终 smoke 可同时传入 `-SkipAdvisorProbe -SkipAdvisorPrivacyProbe` 跳过这项要求。`-AllowIncompleteMesh` 只适合未建立完整三端隧道的调试场景，会放宽三平台和三 agent id 的早期校验，不能用于最终完成验收。`-AllowUserServiceScope` 只适合刻意验证用户级服务的非 system 路线；不传该开关时，脚本会在 evidence 目录创建前拒绝 `-ServiceScope user`。`-PlanOnly` 输出的 `commands.local_manifest` 会展示本机 manifest 的完整门禁参数，包括 service scope、service name、agent identity 和 advisor provider/model/max data level，适合部署前复核。
 
-三台设备各自完成后，把三个 evidence 子目录合并到同一个归档目录，例如：
+三台设备各自完成后，把三个 `run-steward-s3s4-final-host.ps1` 运行目录传到同一台协调机。复制 `deploy/steward-s3s4-final-system.example.json` 为本机 inventory，填写三个本地 evidence 路径、真实 agent id 和目标 advisor 身份；inventory 只保存标识和路径，不能写 API key、同步密钥或本地加密密钥。
 
-```text
-evidence/s3s4/windows/...
-evidence/s3s4/macos/...
-evidence/s3s4/linux/...
-```
-
-然后运行最终门禁：
+先检查将执行的命令，再运行最终归档：
 
 ```powershell
-.\bin\steward.exe verify evidence `
-  --dir .\evidence\s3s4 `
-  --preset s3s4-final-system `
-  --require-agent-id windows-main `
-  --require-agent-id macbook-main `
-  --require-agent-id linux-main `
-  --require-kind-platform-agent service:windows:windows-main `
-  --require-kind-platform-agent service:darwin:macbook-main `
-  --require-kind-platform-agent service:linux:linux-main `
-  --require-kind-platform-service-name service:windows:MongojsonSteward `
-  --require-kind-platform-service-name service:darwin:com.mongojson.steward `
-  --require-kind-platform-service-name service:linux:mongojson-steward `
-  --require-kind-platform-agent mesh:windows:windows-main `
-  --require-kind-platform-agent mesh:darwin:macbook-main `
-  --require-kind-platform-agent mesh:linux:linux-main `
-  --require-kind-platform-agent s3s4-final-host:windows:windows-main `
-  --require-kind-platform-agent s3s4-final-host:darwin:macbook-main `
-  --require-kind-platform-agent s3s4-final-host:linux:linux-main `
-  --output .\evidence\s3s4\manifest.json
+.\deploy\run-steward-s3s4-final-system.ps1 `
+  -InventoryFile .\deploy\steward-s3s4-final-system.json `
+  -PlanOnly
+
+.\deploy\run-steward-s3s4-final-system.ps1 `
+  -InventoryFile .\deploy\steward-s3s4-final-system.json `
+  -BinaryPath .\bin\steward.exe `
+  -EvidenceDir .\evidence\s3s4-final-system
 ```
+
+协调脚本不会连接远程设备、安装服务或读取服务配置。它会先对每个来源目录独立要求对应平台的 `service-install-e2e`、`service`、`mesh`、`s3s4-final-host`、agent id、system scope、服务名、advisor provider/model/max data level 和至少 24 小时 watch；只有三个来源都通过，才复制文件名为 `steward-verify-*.json` 的 evidence。复制后的每个文件都会记录相对路径、字节数和 SHA-256，然后由现有 `verify evidence --preset s3s4-final-system` 做统一门禁。输出目录包含：
+
+- `hosts/<platform>/`：按平台隔离的 evidence 副本。
+- `reports/preflight-<platform>.json`：每个来源包的独立 manifest。
+- `final-manifest.json`：三端统一最终 manifest。
+- `steward-verify-s3s4-final-system-*-pass|fail.json`：inventory、命令、文件哈希和最终结果的 wrapper evidence。
+
+仍可直接调用 `steward verify evidence --preset s3s4-final-system` 做底层排障，但正式归档应使用协调脚本，避免手工参数遗漏、错误混入其他主机目录或丢失来源文件哈希。
 
 `-PlanOnly` 可用于三端部署前打印将要执行的命令并生成 `s3s4-final-host` plan evidence；它不会访问 API，也不会构建二进制。`-AllowIncompleteMesh` 只适合本机 smoke 或隧道未完全建立时调试，不能用于最终完成验收。`-AllowUserServiceScope` 只能用于明确不走 `s3s4-final-system` 的用户级服务验收。
 
@@ -640,6 +718,7 @@ go run ./cmd/steward run
 - `STEWARD_HEARTBEAT_INTERVAL`，默认 `1m`。
 - `STEWARD_SYNC_INTERVAL`，默认不写入，`0` 表示不自动同步。
 - `STEWARD_AUTONOMY_INTERVAL`，默认不写入，`0` 表示不自动扫描自主候选。
+- `STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS`、`STEWARD_AUTONOMY_RETRY_BACKOFF` 和 `STEWARD_AUTONOMY_RETRY_MAX_BACKOFF`，默认分别为 `3`、`5m` 和 `1h`；自动执行失败后使用指数退避，达到尝试上限后停止自动重试。可通过 `--autonomy-retry-max-attempts`、`--autonomy-retry-backoff` 和 `--autonomy-retry-max-backoff` 写入系统服务环境。
 - `STEWARD_DISCOVERY_ENABLED`、`STEWARD_DEVICE_NAME`、`STEWARD_DISCOVERY_LISTEN_ADDR`、`STEWARD_DISCOVERY_TARGETS`、`STEWARD_DISCOVERY_INTERVAL` 和 `STEWARD_DISCOVERY_TTL`，默认不写入且发现关闭；传入 `--discovery-enabled` 后由安装器写入。默认监听/广播组是 `239.255.77.77:18777`，显式 targets 可用于 multicast 不可用的受控网络或本机多进程验证。服务安装和运行进程都会严格拒绝无法解析的开关、非正时长和不满足 `TTL >= 2 * interval` 的配置。
 - `STEWARD_LLM_PROVIDER`、`STEWARD_LLM_BASE_URL`、`STEWARD_LLM_MODEL`、`STEWARD_LLM_API_KEY`、`STEWARD_LLM_ALLOW_NO_API_KEY` 等大模型建议器配置，默认不写入，只有传入 `--llm-*` 或当前环境已有对应值时才写入；未显式启用时 S4 只使用本地规则生成候选。
 - `STEWARD_LLM_TIMEOUT`、`STEWARD_LLM_MAX_DATA_LEVEL`、`STEWARD_LLM_FAILURE_THRESHOLD` 和 `STEWARD_LLM_FAILURE_COOLDOWN` 等建议器控制配置，默认不写入；服务未设置时运行时使用本地默认值，通常只有接入外部模型或不稳定本地模型网关时才需要调整。
@@ -650,6 +729,7 @@ go run ./cmd/steward run
 - `STEWARD_SYNC_SECRET` 缺失或过短。
 - S4 advisor 启用后缺少 `STEWARD_LLM_MODEL`，缺少 API key 且不是显式 loopback no-key 模式，或 `STEWARD_LLM_MAX_DATA_LEVEL` 高于 `D1`。
 - S4 advisor 的 provider、base URL、timeout、failure threshold 或 failure cooldown 格式不合法。
+- S4 自动重试次数不在 `1-20`，退避时长不在 `(0,24h]`，或最大退避小于初始退避。
 - `STEWARD_DEVICE_PRIVATE_KEY` / `STEWARD_DEVICE_PUBLIC_KEY` 不是有效 Ed25519 key，或公私钥不匹配。
 - `STEWARD_SYNC_ENCRYPTION_KEY` / `STEWARD_LOCAL_ENCRYPTION_KEY` 不是 32 字节 AES key，或缺少对应 key id。
 - `STEWARD_SYNC_ENCRYPTION_PREVIOUS_KEYS` / `STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS` 不是逗号分隔的 `key_id:base64` 格式。
@@ -805,6 +885,8 @@ Linux:   --agent-id linux-lab --name mongojson-steward
 ## 后台守护循环
 
 `steward run` 启动后会创建 `steward.Daemon`，所有后台动作都通过同一个 `Service` 聚合入口执行，避免 HTTP handler、CLI 和定时任务各自实现一套业务逻辑。
+
+Daemon 启动时会为 `heartbeat`、`sync`、`autonomy` 三个循环写入独立状态；关闭的循环也会以 `enabled=false` 保留配置可见性。每轮执行完成后更新自己的 `last_success_at`、`last_error` 和 `consecutive_failures`，进程停止或父 context 结束时将 `running` 置为 `false`。`GET /api/steward/agent` 的 `background_loops` 返回这些状态，工作台会把运行、关闭、停止和降级次数显示在 Agent 区域。`verify runtime` 的 `daemon.loops.status` 要求 heartbeat 存在且所有已启用循环仍在运行；循环处于运行中但某个 peer 暂时失败时仍通过该就绪检查，同时在 detail 中报告 degraded 数量。
 
 当前守护循环：
 
@@ -1570,6 +1652,7 @@ STEWARD_LLM_FAILURE_COOLDOWN=1m
 - D2/D3/D4 等超过 `STEWARD_LLM_MAX_DATA_LEVEL` 的输入会在本地被拒绝，拒绝不会增加连续失败次数，也不会打开熔断。
 - 候选增强失败时，服务最多每 5 分钟写入一条 `autonomy.advisor.fallback` 审计，标记已使用本地规则回退；该审计不可同步，且只保存错误摘要，不保存模型输入正文。
 - `GET /api/steward/autonomy` 会返回 `advisor` 状态，包含 provider、model、max data level、熔断状态、连续失败次数、下次重试时间和脱敏最近错误；`steward verify runtime` 会检查 `s4.advisor.status` 是否可见。
+- `GET /api/steward/autonomy` 同时返回 `retry_policy`；每个 proposal 返回 `failed_attempts`、`retry_eligible`、`retry_exhausted` 和可选 `auto_retry_at`。自动扫描只选择退避已到期且未耗尽的 `auto` proposal，状态由持久化运行记录派生，服务重启不会清空失败次数。
 - `POST /api/steward/autonomy/advisor/probe` 会执行一次 advisor 探针并写审计；D0 live 探针通过 `verify runtime --advisor-probe`、`verify service --advisor-probe` 或 `verify mesh --advisor-probe` 调用，watch 模式下可显式追加 `--advisor-probe-each-sample` 做每样本模型长跑验收；D2 隐私阻断探针通过 `--advisor-privacy-probe` 调用。
 - 即使模型输出了外发、删除、付款、凭据读取、提交/发布或系统配置建议，S4 会拒收该模型文本并回退到本地规则候选；执行路径仍只允许低风险本地候选进入审批和模拟，高风险/A4+ 仍会被阻断。
 
@@ -1584,6 +1667,7 @@ PATCH /api/steward/autonomy/rules/{id}
 POST /api/steward/autonomy/proposals/{id}/simulate
 POST /api/steward/autonomy/proposals/{id}/approve
 POST /api/steward/autonomy/proposals/{id}/execute
+POST /api/steward/autonomy/proposals/{id}/retry
 POST /api/steward/autonomy/proposals/{id}/dismiss
 POST /api/steward/autonomy/proposals/bulk-dismiss
 POST /api/steward/autonomy/approvals/{id}/approve
@@ -1671,6 +1755,7 @@ go test ./internal/httpapi -run TestSteward -count=1 -timeout 300s -v
 
 - 手动同步：一端创建任务后通过真实 HTTP pull/import/push 同步到另一端，另一端离线积压的任务能在下一次同步中补齐到本端。
 - 后台同步：启动 `steward.Daemon` 的短间隔同步循环，不直接调用 `SyncDevice`，验证常驻进程能自动把可信 peer 的本地任务推送到对端，也能自动拉取 peer 新增任务。
+- 后台同步故障隔离：同时登记健康 peer 和不可达 peer，验证不可达设备保留 `last_sync_error` 和 sync 循环连续失败状态时，健康 peer 仍能收到任务，本地事件写入、heartbeat 和 autonomy 循环继续；修复 peer 地址后自动补齐积压并清零失败状态。
 - 三节点 mesh：Windows、macOS、Linux 三个逻辑节点完成任务中继收敛、离线重返补齐和第三方设备撤销传播。
 - 设备权限：双向 `sync.memory=deny` 过滤、允许类型继续同步、拒绝审计以及过滤游标推进。
 - S3 复杂关系：时间线段乱序补链、同名标签 alias 合并、来源引用和实体标签先于目标实体到达，以及 source_ref/entity_tag 删除重放。
@@ -1760,10 +1845,10 @@ steward --api http://127.0.0.1:19380/api verify runtime --strict-security --advi
 
 ```powershell
 cd backend
-go run ./cmd/steward verify evidence --dir .\dist\steward-advisor-e2e --require-passing --require-kind advisor-e2e --require-kind runtime --require-platform windows --require-check advisor_e2e.verify_runtime --require-check advisor_e2e.advisor_request_count --require-kind-check-platform runtime:s4.advisor.probe:windows --require-kind-check-platform runtime:s4.advisor.privacy_probe:windows
+go run ./cmd/steward verify evidence --dir .\dist\steward-advisor-e2e --require-passing --require-kind advisor-e2e --require-kind runtime --require-platform windows --require-check advisor_e2e.verify_runtime --require-check advisor_e2e.advisor_request_count --require-check advisor_e2e.timeout --require-check advisor_e2e.circuit_open --require-check advisor_e2e.circuit_short_circuit --require-check advisor_e2e.local_fallback --require-check advisor_e2e.failure_audit --require-check advisor_e2e.recovery --require-kind-check-platform runtime:s4.advisor.probe:windows --require-kind-check-platform runtime:s4.advisor.privacy_probe:windows
 ```
 
-默认 mock 模式下，请求日志应只有一次模型调用：D0 `advisor-probe` 会到达 OpenAI-compatible 端点，D2 `advisor-privacy-probe` 必须在本地被拒绝，不能提交给模型。若要用真实外部或本地模型网关验收，可显式传入 `-UseExternalAdvisor -AdvisorBaseURL <base-url> -AdvisorModel <model> -AdvisorAPIKey <key>`；这会产生真实模型调用成本和外部依赖，仍建议只发送 D0/D1 探针数据。
+默认 mock 模式先验证一次 D0 模型调用和 D2 本地阻断，再注入一次超时和一次 HTTP 失败；达到阈值后，第三次失败探针必须被本地熔断且不增加模型请求数。熔断期间脚本还会创建事件并运行自主扫描，要求本地规则 proposal 与 fallback 审计仍然产生；冷却后恢复成功调用并清零失败状态。若要用真实外部或本地模型网关验收，可显式传入 `-UseExternalAdvisor -AdvisorBaseURL <base-url> -AdvisorModel <model> -AdvisorAPIKey <key>`；外部模式不注入故障，这会产生真实模型调用成本和外部依赖，仍建议只发送 D0/D1 探针数据。
 
 这类 evidence 能证明 S4 advisor 的进程级配置加载、OpenAI-compatible HTTP 调用、strict runtime 可观测状态、D0 live 探针和 D2 隐私拦截链路；它不能替代真实外部或本地模型服务的长时间稳定性验收，也不能替代系统服务安装后的模型调用验收。
 
@@ -1829,7 +1914,9 @@ steward verify evidence --dir <run-root> --require-passing ...
 - 汇总 manifest：`backend/dist/steward-local-readiness/run-*/manifest.json`。
 - 子脚本 evidence：同一 run 目录下的 `dist-preflight/`、`postgres-e2e/`、`service-preflight/`、`service-env-preflight/`、`pairing-bootstrap-preflight/`、`local-mesh/`、`advisor-e2e/`、`runtime-watch/`。
 
-2026-07-10 当前工作树的完整本机门禁已通过，证据位于 `backend/dist/steward-local-readiness/run-20260710T133127.1129739Z/`：8 个阶段全部通过，manifest 收录 11 个 evidence 文件，11 个通过、0 个失败；dist preflight 的五个发布目标均包含校验通过的工作台；三进程 mesh 的 12 个检查全部通过，每个节点都发现另外两个签名候选且拒绝计数为 0，离线追赶结果在恢复节点可见；advisor E2E 只有一次 D0 模型请求，D2 privacy probe 在本地阻断；runtime watch 在 8 秒窗口内采集 5 个通过样本并确认心跳推进。该证据仍只代表 Windows 宿主机上的本地多进程门禁。
+2026-07-11 当前工作树使用 Go `1.26.5` 的完整本机门禁已通过，最新证据位于 `backend/dist/steward-local-readiness/run-20260711T141852.4191853Z/`：8 个阶段全部通过，统一 manifest 收录 11 个 evidence 文件，执行 72 个 manifest 检查，并强制要求 10 个 kind、49 个 check 和 9 个 kind/check/platform 组合；wrapper 的 `local_readiness.manifest_contract` 会反向确认动态要求未在 PowerShell 参数构造中丢失。
+
+门禁覆盖后台循环、S3 设备身份/权限与同步变更历史契约、S4 严格策略、有界重试和策略变更屏障，以及 advisor 的 D0/D2 探针、超时、熔断、回退、失败审计和恢复。Postgres E2E 已验证同步故障隔离与恢复、畸形 change 逐条拒绝且水位不卡住、非法设备/自主策略输入不污染持久化状态、高风险与历史脏提案无法进入执行器、失败退避与人工恢复；并连续验证暂停/规则更新等待在途扫描和执行结束，更新返回后旧授权不再生效，当前 `never`、禁用或降权规则能撤销既有 `auto` 提案的执行资格。dist preflight、服务安装/环境预检、配对 bootstrap、三进程 mesh、advisor E2E 和 runtime watch 均通过。该证据仍只代表 Windows 宿主机上的本地多进程门禁，不能代替三台真实设备和 24 小时 system service evidence。
 
 轻量 smoke 可跳过耗时较高的 Postgres、mesh 和 advisor 进程链路：
 
@@ -1949,5 +2036,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:18080/api/steward/autonomy/
 - 尚未在 Windows、macOS、Linux 三端分别真实安装并验证长时间后台常驻。
 - 尚未在三端真实服务管理器上验证 `service env plan/apply --strict-security` 写入环境、重启服务和密钥轮换后的长时间运行。
 - 已有本机多临时数据库的真实 HTTP 同步集成测试、本机三进程 `steward run` mesh 验证，以及本机单进程 runtime watch evidence，覆盖签名候选发现、手动同步、后台 Daemon 自动同步、对端可见性、复杂关系写入探针、离线积压补齐、设备信任挑战、后台心跳推进和 S4 低风险执行；尚未在 Windows、macOS、Linux 三台真实设备上重复该验收。
+- 后台同步故障域已由三数据库 E2E 验证：不可达 peer 不会阻断健康 peer、本地写入、heartbeat 或 autonomy，恢复后会自动清除错误并追平；尚未在真实三端网络断连、系统休眠和服务重启组合下收集长时间 evidence。
 - 已有 OpenAI-compatible adapter 单元测试、模型输出 guardrail 单元测试、模型建议器失败熔断单元测试、D0 live 探针 API、D2 privacy probe API、`verify --advisor-probe` / `verify --advisor-privacy-probe` 验收入口、`--advisor-probe-each-sample` 长时间模型调用验收入口，以及本机真实 `steward run` + loopback OpenAI-compatible mock 端点的 advisor E2E evidence；尚未用真实外部或本地模型服务跑通实机 live 调用、超时、失败回退和长期稳定性。
+- S4 业务执行失败已具备持久化失败计数、指数退避、自动尝试上限、耗尽阻断、显式人工重试和独立审计，并由 Postgres HTTP E2E 覆盖；尚未在三端真实后台服务中制造业务执行器故障并收集长时间恢复 evidence。
 - 时间线段乱序补链、同名标签别名合并、来源引用与实体标签乱序重放和关系删除已有 Postgres 集成测试；仍尚未在真实三端下验证长时间离线重放和复杂删除顺序。

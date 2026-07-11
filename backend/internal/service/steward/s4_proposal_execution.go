@@ -35,11 +35,51 @@ func (s *Service) SimulateAutonomyProposal(ctx context.Context, id string) (doma
 }
 
 func (s *Service) ExecuteAutonomyProposal(ctx context.Context, id string) (domain.StewardAutonomousRun, error) {
+	return s.executeAutonomyProposal(ctx, id, false)
+}
+
+func (s *Service) RetryAutonomyProposal(ctx context.Context, id string) (domain.StewardAutonomousRun, error) {
+	run, err := s.executeAutonomyProposal(ctx, id, true)
+	status := ResultFailed
+	output := "manual autonomy retry failed"
+	var errorSummary *string
+	if err == nil {
+		status = mapRunStatusToAudit(run.Status)
+		output = "manual autonomy retry completed with status " + run.Status
+	} else {
+		summary := strings.TrimSpace(err.Error())
+		errorSummary = &summary
+	}
+	confirmed := true
+	_, _ = s.recordAudit(ctx, AuditInput{
+		Actor:           "user",
+		Action:          "autonomy.retry",
+		TargetType:      "autonomy_proposal",
+		TargetID:        stringPtr(id),
+		Source:          "manual",
+		PermissionLevel: PermissionA3,
+		DataLevel:       DataD2,
+		InputSummary:    id,
+		OutputSummary:   output,
+		UserConfirmed:   &confirmed,
+		ResultStatus:    status,
+		ErrorSummary:    errorSummary,
+	})
+	return run, err
+}
+
+func (s *Service) executeAutonomyProposal(ctx context.Context, id string, manualRetry bool) (domain.StewardAutonomousRun, error) {
 	lease, err := acquireAutonomyExecutionLease(ctx, s.db.Pool, id)
 	if err != nil {
 		return domain.StewardAutonomousRun{}, err
 	}
 	defer lease.Release()
+	gatedCtx, policyGate, err := acquireAutonomyPolicyReadGate(ctx, s.db.Pool)
+	if err != nil {
+		return domain.StewardAutonomousRun{}, err
+	}
+	defer policyGate.Release()
+	ctx = gatedCtx
 
 	settings, err := s.GetAutonomySettings(ctx)
 	if err != nil {
@@ -49,6 +89,26 @@ func (s *Service) ExecuteAutonomyProposal(ctx context.Context, id string) (domai
 	if err != nil {
 		return domain.StewardAutonomousRun{}, err
 	}
+	if issue := autonomyProposalPolicyIssue(proposal); issue != "" {
+		run, runErr := s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
+			proposal.TriggerReason, "invalid persisted proposal policy blocked execution", issue)
+		if runErr != nil {
+			return domain.StewardAutonomousRun{}, runErr
+		}
+		if proposal.Status != ProposalDismissed && proposal.Status != ProposalExecuted {
+			_, _ = s.updateProposalStatusLocked(ctx, id, ProposalBlocked, "autonomy.proposal.invalid_policy")
+		}
+		return run, nil
+	}
+	if manualRetry {
+		latestFailed, retryErr := s.latestAutonomyExecutionFailed(ctx, proposal.ID)
+		if retryErr != nil {
+			return domain.StewardAutonomousRun{}, retryErr
+		}
+		if !latestFailed || !proposal.RetryEligible {
+			return domain.StewardAutonomousRun{}, fmt.Errorf("autonomy proposal has no failed execution eligible for retry")
+		}
+	}
 	if proposal.Status == ProposalExecuted {
 		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "proposal already executed; duplicate execution skipped", "inspect the created task or create a new proposal")
@@ -57,7 +117,7 @@ func (s *Service) ExecuteAutonomyProposal(ctx context.Context, id string) (domai
 		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "proposal was dismissed; execution skipped", "create a new proposal if this action is still needed")
 	}
-	if proposal.Status == ProposalBlocked {
+	if proposal.Status == ProposalBlocked && !manualRetry {
 		_, _ = s.createApprovalRequest(ctx, &proposal.ID, "manual high-risk review", proposal.RiskLevel, proposal.ImpactSummary)
 		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "proposal is blocked from autonomous execution", "manual review is required outside autonomy")
@@ -66,7 +126,19 @@ func (s *Service) ExecuteAutonomyProposal(ctx context.Context, id string) (domai
 		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "autonomy paused; execution skipped", "resume autonomy before executing")
 	}
-	if proposal.Status != ProposalApproved && proposal.Policy != AutonomyPolicyAuto {
+	automaticAllowed := proposal.Policy == AutonomyPolicyAuto
+	if proposal.RuleID != nil {
+		var currentRuleIssue string
+		automaticAllowed, currentRuleIssue, err = s.currentRuleExecutionPolicy(ctx, proposal)
+		if err != nil {
+			return domain.StewardAutonomousRun{}, err
+		}
+		if currentRuleIssue != "" {
+			return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
+				proposal.TriggerReason, "current autonomy rule blocked execution", currentRuleIssue)
+		}
+	}
+	if proposal.Status != ProposalApproved && !automaticAllowed {
 		_, _ = s.createApprovalRequest(ctx, &proposal.ID, "approve autonomous execution", "proposal needs explicit approval", proposal.ImpactSummary)
 		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "approval required before execution", "approve proposal or change rule policy")
@@ -95,12 +167,10 @@ func (s *Service) ExecuteAutonomyProposal(ctx context.Context, id string) (domai
 	}
 	execution, err := executor.Execute(ctx, proposal)
 	if err != nil {
-		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunFailed,
-			proposal.TriggerReason, "autonomy action execution failed", err.Error())
+		return s.recordAutonomyExecutionFailure(ctx, proposal, "autonomy action execution failed", err)
 	}
 	if err := validateAutonomyExecutionResult(executor, execution, true); err != nil {
-		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunFailed,
-			proposal.TriggerReason, "autonomy action execution returned an invalid result", err.Error())
+		return s.recordAutonomyExecutionFailure(ctx, proposal, "autonomy action execution returned an invalid result", err)
 	}
 	var createdTaskID *string
 	if execution.TargetType == "task" && strings.TrimSpace(execution.TargetID) != "" {
@@ -136,6 +206,26 @@ func (s *Service) ExecuteAutonomyProposal(ctx context.Context, id string) (domai
 		OutputSummary:   execution.ImpactSummary,
 		ResultStatus:    ResultOK,
 	})
+	return run, nil
+}
+
+func (s *Service) recordAutonomyExecutionFailure(ctx context.Context, proposal domain.StewardAutonomyProposal, impact string, cause error) (domain.StewardAutonomousRun, error) {
+	run, err := s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunFailed,
+		proposal.TriggerReason, impact, cause.Error())
+	if err != nil {
+		return domain.StewardAutonomousRun{}, err
+	}
+	if proposal.Policy != AutonomyPolicyAuto {
+		return run, nil
+	}
+	if err := s.populateAutonomyRetryState(ctx, &proposal); err != nil {
+		return domain.StewardAutonomousRun{}, err
+	}
+	if proposal.RetryExhausted {
+		if _, err := s.updateProposalStatusLocked(ctx, proposal.ID, ProposalBlocked, "autonomy.retry.exhausted"); err != nil {
+			return domain.StewardAutonomousRun{}, err
+		}
+	}
 	return run, nil
 }
 

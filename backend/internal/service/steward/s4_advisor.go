@@ -400,6 +400,10 @@ func dataLevelRank(level string) int {
 		return 3
 	case "D4":
 		return 4
+	case "D5":
+		return 5
+	case "D6":
+		return 6
 	default:
 		return 9
 	}

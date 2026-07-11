@@ -563,7 +563,7 @@ important flags:
                                       with verify evidence, require a specific service name
   --require-kind-platform-advisor-model service:windows:<model>
                                       with verify evidence, require a specific S4 advisor model
-  --preset s3s4-final-system           require physical Windows/macOS/Linux S3/S4 final gate, final-host wrapper, and system service scope
+  --preset s3s4-final-system           require physical Windows/macOS/Linux install, service, mesh, final-host, and system-scope evidence
 
 examples:
   steward verify runtime --strict-security --write-probes

@@ -25,6 +25,10 @@ func (s *Service) GetSyncStatus(ctx context.Context) (domain.StewardSyncStatus, 
 	if err != nil {
 		return domain.StewardSyncStatus{}, err
 	}
+	changeContract, err := s.GetSyncChangeContract(ctx)
+	if err != nil {
+		return domain.StewardSyncStatus{}, err
+	}
 	conflicts, err := s.ListSyncConflicts(ctx, StatusOpen, 12)
 	if err != nil {
 		return domain.StewardSyncStatus{}, err
@@ -67,5 +71,6 @@ func (s *Service) GetSyncStatus(ctx context.Context) (domain.StewardSyncStatus, 
 		LastChangeAt:     lastChangeAt,
 		RecentChanges:    changes,
 		Conflicts:        conflicts,
+		ChangeContract:   changeContract,
 	}, nil
 }

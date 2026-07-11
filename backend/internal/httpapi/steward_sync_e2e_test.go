@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -171,6 +174,132 @@ func TestStewardSyncChangeCreationIsAtomicForConcurrentDuplicateID(t *testing.T)
 	if count != 1 {
 		t.Fatalf("concurrent duplicate sync change count = %d, want 1", count)
 	}
+	collision := input
+	collision.Operation = steward.SyncDelete
+	if _, err := node.service.CreateSyncChange(ctx, collision); !errors.Is(err, steward.ErrSyncChangeInvalid) {
+		t.Fatalf("immutable sync change id collision error = %v, want ErrSyncChangeInvalid", err)
+	}
+	registerPeer(t, ctx, node, "macbook-main", "MacBook Main", "darwin", "http://127.0.0.1:28081/api")
+	remoteCollision := collision
+	remoteCollision.OriginDeviceID = "macbook-main"
+	result, err := node.service.ImportSyncChanges(ctx, steward.ImportSyncChangesInput{
+		Device: steward.RegisterDeviceInput{
+			ID: "macbook-main", DeviceName: "MacBook Main", Platform: "darwin", Role: steward.DeviceRolePeer,
+			SyncEnabled: boolPointerValue(true), PermissionLevel: steward.PermissionA3, APIBaseURL: "http://127.0.0.1:28081/api",
+		},
+		Changes: []steward.CreateSyncChangeInput{remoteCollision},
+	})
+	if err != nil || result.Denied != 1 || result.Skipped != 1 || result.Imported != 0 {
+		t.Fatalf("remote immutable id collision did not use skip semantics: result=%+v err=%v", result, err)
+	}
+}
+
+func TestStewardSyncSkipsMalformedPeerChangesWithoutCursorStall(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the malformed sync change contract test")
+	}
+	t.Setenv("STEWARD_SYNC_REQUIRE_AUTH", "true")
+	t.Setenv("STEWARD_SYNC_SECRET", "test-shared-secret-for-malformed-change-contract")
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	windows := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "change_contract_windows"), "windows-main")
+	mac := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "change_contract_mac"), "macbook-main")
+	registerPeer(t, ctx, windows, "macbook-main", "MacBook Main", "darwin", mac.peerAPIBase)
+	registerPeer(t, ctx, mac, "windows-main", "Windows Main", "windows", windows.peerAPIBase)
+
+	malformed := []struct {
+		id        string
+		operation string
+		origin    string
+		version   int
+		dataLevel string
+		payload   map[string]any
+	}{
+		{id: uuid.NewString(), operation: "upsert", origin: "windows-main", version: 1, dataLevel: steward.DataD0, payload: map[string]any{}},
+		{id: uuid.NewString(), operation: steward.SyncUpdate, origin: "windows-main", version: 1, dataLevel: "secret", payload: map[string]any{}},
+		{id: uuid.NewString(), operation: steward.SyncUpdate, origin: "windows-main", version: 0, dataLevel: steward.DataD0, payload: map[string]any{}},
+		{id: uuid.NewString(), operation: steward.SyncUpdate, origin: "windows-main", version: 1, dataLevel: steward.DataD0, payload: map[string]any{"permission_level": "root"}},
+	}
+	var lastMalformedSequence int64
+	for _, item := range malformed {
+		payload, err := json.Marshal(item.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := windows.pool.QueryRow(ctx, `
+			insert into steward_sync_changes (
+				id, entity_type, entity_id, operation, origin_device_id, version, data_level,
+				payload, payload_hash, sync_status, created_at
+			) values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,now())
+			returning sequence
+		`, item.id, steward.EntityTask, uuid.NewString(), item.operation, item.origin, item.version, item.dataLevel,
+			string(payload), testPayloadHash(payload), steward.SyncPending).Scan(&lastMalformedSequence); err != nil {
+			t.Fatalf("insert malformed sync change: %v", err)
+		}
+	}
+	senderStatus, err := windows.service.GetSyncStatus(ctx)
+	if err != nil {
+		t.Fatalf("load sender sync contract: %v", err)
+	}
+	if senderStatus.ChangeContract.Healthy || senderStatus.ChangeContract.InvalidChanges != len(malformed) {
+		t.Fatalf("sender historical contract did not expose malformed rows: %+v", senderStatus.ChangeContract)
+	}
+
+	validTask, err := windows.service.CreateTask(ctx, steward.CreateTaskInput{
+		Title: "valid task after malformed peer changes", Source: "verification",
+		DataLevel: steward.DataD0, PermissionLevel: steward.PermissionA3, RiskLevel: "low",
+	})
+	if err != nil {
+		t.Fatalf("create valid task: %v", err)
+	}
+	first, err := windows.service.SyncDevice(ctx, "macbook-main")
+	if err != nil {
+		t.Fatalf("sync malformed window: %+v: %v", first, err)
+	}
+	if first.Denied != len(malformed) || first.Pushed < len(malformed)+1 {
+		t.Fatalf("malformed window result = %+v", first)
+	}
+	assertTaskVisibleThroughHTTP(t, mac, validTask.ID, validTask.Title)
+
+	for _, item := range malformed {
+		var count int
+		if err := mac.pool.QueryRow(ctx, `select count(*) from steward_sync_changes where id = $1`, item.id).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("malformed change %s persisted: count=%d err=%v", item.id, count, err)
+		}
+	}
+	var invalidAudits int
+	if err := mac.pool.QueryRow(ctx, `select count(*) from steward_audit_logs where action = 'sync.change.invalid'`).Scan(&invalidAudits); err != nil || invalidAudits != len(malformed) {
+		t.Fatalf("invalid change audits = %d, want %d: %v", invalidAudits, len(malformed), err)
+	}
+
+	second, err := windows.service.SyncDevice(ctx, "macbook-main")
+	if err != nil {
+		t.Fatalf("repeat sync after malformed window: %+v: %v", second, err)
+	}
+	if second.Denied != 0 {
+		t.Fatalf("malformed changes were replayed after cursor advance: %+v", second)
+	}
+	var lastSentSequence int64
+	if err := windows.pool.QueryRow(ctx, `select last_sent_sequence from steward_devices where id = 'macbook-main'`).Scan(&lastSentSequence); err != nil {
+		t.Fatalf("load peer cursor: %v", err)
+	}
+	if lastSentSequence < lastMalformedSequence {
+		t.Fatalf("last_sent_sequence=%d did not advance beyond malformed sequence %d", lastSentSequence, lastMalformedSequence)
+	}
+	status, err := mac.service.GetSyncStatus(ctx)
+	if err != nil {
+		t.Fatalf("load receiver sync status: %v", err)
+	}
+	if !status.ChangeContract.Healthy || status.ChangeContract.InvalidChanges != 0 {
+		t.Fatalf("receiver contract was poisoned: %+v", status.ChangeContract)
+	}
+}
+
+func testPayloadHash(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 func TestStewardThreeNodeMeshConvergesAfterOfflineReplayAndPropagatesRevocation(t *testing.T) {
@@ -302,6 +431,79 @@ func TestStewardDevicePermissionsFilterBothSyncDirectionsAndAdvanceCursor(t *tes
 	}
 	if deniedAudits == 0 {
 		t.Fatalf("denied incoming sync change was not audited")
+	}
+}
+
+func TestStewardDeviceRegistrationProtectsLocalIdentityThroughHTTP(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed device registration policy test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "device_registration_policy"), "windows-main")
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "overwrite local identity", body: `{"id":"windows-main","role":"peer","sync_enabled":false,"permission_level":"A1"}`},
+		{name: "claim local role", body: `{"id":"macbook-main","role":"local"}`},
+		{name: "unknown platform", body: `{"id":"macbook-main","platform":"macos"}`},
+		{name: "invalid permission", body: `{"id":"macbook-main","permission_level":"root"}`},
+		{name: "URL credentials", body: `{"id":"macbook-main","api_base_url":"https://user:pass@peer.example/api"}`},
+		{name: "non peer API path", body: `{"id":"macbook-main","api_base_url":"https://peer.example/management"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response, err := node.server.Client().Post(node.apiBase+"/steward/devices", "application/json", strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %s, want 400", response.Status)
+			}
+		})
+	}
+
+	var role, permission string
+	var syncEnabled bool
+	if err := node.pool.QueryRow(ctx, `
+		select role, sync_enabled, permission_level from steward_devices where id = 'windows-main'
+	`).Scan(&role, &syncEnabled, &permission); err != nil {
+		t.Fatalf("read local device after rejected registrations: %v", err)
+	}
+	if role != steward.DeviceRoleLocal || !syncEnabled || permission != steward.PermissionA3 {
+		t.Fatalf("rejected registration changed local identity: role=%s enabled=%t permission=%s", role, syncEnabled, permission)
+	}
+	var deviceCount int
+	if err := node.pool.QueryRow(ctx, `select count(*) from steward_devices`).Scan(&deviceCount); err != nil {
+		t.Fatalf("count devices after rejected registrations: %v", err)
+	}
+	if deviceCount != 1 {
+		t.Fatalf("rejected registrations inserted devices: count=%d", deviceCount)
+	}
+
+	response, err := node.server.Client().Post(node.apiBase+"/steward/devices", "application/json", strings.NewReader(
+		`{"id":"macbook-main","platform":"DARWIN","permission_level":"a2","api_base_url":"https://peer.example/api/"}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("valid peer registration status = %s, want 201", response.Status)
+	}
+	var payload struct {
+		Device domain.StewardDevice `json:"device"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode registered peer: %v", err)
+	}
+	if payload.Device.Role != steward.DeviceRolePeer || payload.Device.Platform != "darwin" ||
+		payload.Device.PermissionLevel != steward.PermissionA2 || payload.Device.APIBaseURL != "https://peer.example/api" {
+		t.Fatalf("registered peer was not canonicalized: %+v", payload.Device)
 	}
 }
 
@@ -602,6 +804,99 @@ func TestStewardDaemonSyncsTrustedPeersInBackground(t *testing.T) {
 		t.Fatalf("create daemon mac task: %v", err)
 	}
 	waitForTaskVisibleThroughHTTP(t, ctx, windowsNode, macTask.ID, macTaskTitle)
+}
+
+func TestStewardDaemonSyncFailureIsolatedFromLocalWorkAndRecovers(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed steward daemon failure isolation test")
+	}
+
+	t.Setenv("STEWARD_SYNC_REQUIRE_AUTH", "true")
+	t.Setenv("STEWARD_SYNC_SECRET", "test-shared-secret-for-steward-daemon-isolation")
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	windows := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "daemon_isolation_windows"), "windows-main")
+	mac := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "daemon_isolation_mac"), "macbook-main")
+	linux := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "daemon_isolation_linux"), "linux-lab")
+
+	registerPeer(t, ctx, windows, "linux-lab", "Linux Lab", "linux", "http://127.0.0.1:1/api")
+	registerPeer(t, ctx, windows, "macbook-main", "MacBook Main", "darwin", mac.peerAPIBase)
+	registerPeer(t, ctx, mac, "windows-main", "Windows Main", "windows", windows.peerAPIBase)
+	registerPeer(t, ctx, linux, "windows-main", "Windows Main", "windows", windows.peerAPIBase)
+
+	daemonCtx, stopDaemon := context.WithCancel(ctx)
+	defer stopDaemon()
+	daemon := steward.NewDaemon(windows.service, steward.DaemonOptions{
+		HeartbeatInterval: 25 * time.Millisecond,
+		SyncInterval:      50 * time.Millisecond,
+		AutonomyInterval:  50 * time.Millisecond,
+	})
+	daemon.Start(daemonCtx)
+	t.Cleanup(daemon.Stop)
+
+	task, err := windows.service.CreateTask(ctx, steward.CreateTaskInput{
+		Title:           "sync failure isolation task " + strconv.FormatInt(time.Now().UnixNano(), 36),
+		Description:     "healthy peer and local work must continue while another peer is offline",
+		Source:          "verification",
+		DataLevel:       steward.DataD0,
+		PermissionLevel: steward.PermissionA3,
+		RiskLevel:       "low",
+	})
+	if err != nil {
+		t.Fatalf("create local task while peer is unavailable: %v", err)
+	}
+	if _, err := windows.service.CreateEvent(ctx, steward.CreateEventInput{
+		Title:           "local event during sync degradation",
+		Summary:         "local management writes remain available",
+		Source:          "verification",
+		DataLevel:       steward.DataD0,
+		PermissionLevel: steward.PermissionA3,
+	}); err != nil {
+		t.Fatalf("create local event while peer is unavailable: %v", err)
+	}
+	waitForTaskVisibleThroughHTTP(t, ctx, mac, task.ID, task.Title)
+
+	waitForStewardCondition(t, ctx, "degraded sync loop with healthy local loops", func() (bool, string) {
+		agent, err := windows.service.GetAgentStatus(ctx)
+		if err != nil {
+			return false, err.Error()
+		}
+		loops := daemonLoopsByName(agent.BackgroundLoops)
+		syncLoop := loops["sync"]
+		heartbeatLoop := loops["heartbeat"]
+		autonomyLoop := loops["autonomy"]
+		ok := agent.Status == steward.StatusRunning && agent.LastError == nil &&
+			syncLoop.Running && syncLoop.ConsecutiveFailures > 0 && syncLoop.LastError != nil &&
+			heartbeatLoop.LastSuccessAt != nil && autonomyLoop.LastSuccessAt != nil
+		return ok, fmt.Sprintf("agent=%+v loops=%+v", agent, loops)
+	})
+	devices, err := windows.service.ListDevices(ctx)
+	if err != nil {
+		t.Fatalf("list devices during sync degradation: %v", err)
+	}
+	linuxDevice := findStewardDevice(devices, "linux-lab")
+	if linuxDevice == nil || linuxDevice.LastSyncError == nil {
+		t.Fatalf("unavailable peer did not retain last_sync_error: %+v", linuxDevice)
+	}
+
+	registerPeer(t, ctx, windows, "linux-lab", "Linux Lab", "linux", linux.peerAPIBase)
+	waitForTaskVisibleThroughHTTP(t, ctx, linux, task.ID, task.Title)
+	waitForStewardCondition(t, ctx, "sync loop recovery", func() (bool, string) {
+		agent, err := windows.service.GetAgentStatus(ctx)
+		if err != nil {
+			return false, err.Error()
+		}
+		devices, err := windows.service.ListDevices(ctx)
+		if err != nil {
+			return false, err.Error()
+		}
+		linuxDevice := findStewardDevice(devices, "linux-lab")
+		syncLoop := daemonLoopsByName(agent.BackgroundLoops)["sync"]
+		ok := linuxDevice != nil && linuxDevice.LastSyncError == nil && syncLoop.LastSuccessAt != nil && syncLoop.ConsecutiveFailures == 0 && syncLoop.LastError == nil
+		return ok, fmt.Sprintf("device=%+v sync_loop=%+v", linuxDevice, syncLoop)
+	})
 }
 
 func TestStewardDaemonStartIsIdempotentAndStopTerminatesAllLoops(t *testing.T) {
@@ -1033,6 +1328,153 @@ func TestStewardAutonomyProposalScoresPersistAndOrderThroughHTTP(t *testing.T) {
 	}
 }
 
+func TestStewardAutonomyControlRejectsInvalidValuesThroughHTTP(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed steward autonomy validation test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "autonomy_validation"), "windows-main")
+	settingsBefore, err := node.service.GetAutonomySettings(ctx)
+	if err != nil {
+		t.Fatalf("load autonomy settings: %v", err)
+	}
+	rulesBefore, err := node.service.ListAutonomyRules(ctx)
+	if err != nil || len(rulesBefore) == 0 {
+		t.Fatalf("load autonomy rules: rules=%d err=%v", len(rulesBefore), err)
+	}
+	ruleBefore := rulesBefore[0]
+	var proposalsBefore int
+	if err := node.pool.QueryRow(ctx, `select count(*) from steward_autonomy_proposals`).Scan(&proposalsBefore); err != nil {
+		t.Fatalf("count autonomy proposals: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "unknown mode", method: http.MethodPatch, path: "/steward/autonomy/settings", body: `{"mode":"automatic"}`},
+		{name: "A4 automatic permission", method: http.MethodPatch, path: "/steward/autonomy/settings", body: `{"max_auto_permission":"A4"}`},
+		{name: "unknown rule policy", method: http.MethodPatch, path: "/steward/autonomy/rules/" + ruleBefore.ID, body: `{"policy":"allow"}`},
+		{name: "unknown proposal risk", method: http.MethodPost, path: "/steward/autonomy/proposals", body: `{"title":"invalid","risk_level":"unknown"}`},
+		{name: "unknown proposal data level", method: http.MethodPost, path: "/steward/autonomy/proposals", body: `{"title":"invalid","data_level":"secret"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request, err := http.NewRequestWithContext(ctx, tt.method, node.apiBase+tt.path, strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			response, err := node.server.Client().Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %s, want 400", response.Status)
+			}
+		})
+	}
+
+	settingsAfter, err := node.service.GetAutonomySettings(ctx)
+	if err != nil {
+		t.Fatalf("reload autonomy settings: %v", err)
+	}
+	if settingsAfter.Mode != settingsBefore.Mode || settingsAfter.MaxAutoPermission != settingsBefore.MaxAutoPermission || settingsAfter.UpdatedAt != settingsBefore.UpdatedAt {
+		t.Fatalf("invalid settings request mutated state: before=%+v after=%+v", settingsBefore, settingsAfter)
+	}
+	rulesAfter, err := node.service.ListAutonomyRules(ctx)
+	if err != nil {
+		t.Fatalf("reload autonomy rules: %v", err)
+	}
+	var ruleAfter domain.StewardAutonomyRule
+	for _, rule := range rulesAfter {
+		if rule.ID == ruleBefore.ID {
+			ruleAfter = rule
+			break
+		}
+	}
+	if ruleAfter.ID == "" {
+		t.Fatalf("autonomy rule %s disappeared", ruleBefore.ID)
+	}
+	if ruleAfter.Policy != ruleBefore.Policy || ruleAfter.MaxPermissionLevel != ruleBefore.MaxPermissionLevel || ruleAfter.UpdatedAt != ruleBefore.UpdatedAt {
+		t.Fatalf("invalid rule request mutated state: before=%+v after=%+v", ruleBefore, ruleAfter)
+	}
+	var proposalsAfter int
+	if err := node.pool.QueryRow(ctx, `select count(*) from steward_autonomy_proposals`).Scan(&proposalsAfter); err != nil {
+		t.Fatalf("count autonomy proposals after rejection: %v", err)
+	}
+	if proposalsAfter != proposalsBefore {
+		t.Fatalf("invalid proposal request inserted rows: before=%d after=%d", proposalsBefore, proposalsAfter)
+	}
+
+	mediumBody := `{"title":"medium-risk plan","action":"create_local_task","risk_level":"medium","permission_level":"A3","data_level":"D0","policy":"auto"}`
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, node.apiBase+"/steward/autonomy/proposals", strings.NewReader(mediumBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := node.server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("medium-risk proposal status = %s, want 201", response.Status)
+	}
+	var mediumPayload struct {
+		Proposal domain.StewardAutonomyProposal `json:"proposal"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&mediumPayload); err != nil {
+		t.Fatalf("decode medium-risk proposal: %v", err)
+	}
+	if mediumPayload.Proposal.Status != steward.ProposalBlocked {
+		t.Fatalf("medium-risk auto proposal was not blocked: %+v", mediumPayload.Proposal)
+	}
+	var approvalCount int
+	if err := node.pool.QueryRow(ctx, `
+		select count(*) from steward_approval_requests
+		where proposal_id = $1 and status = $2
+	`, mediumPayload.Proposal.ID, steward.ApprovalPending).Scan(&approvalCount); err != nil {
+		t.Fatalf("count medium-risk approval requests: %v", err)
+	}
+	if approvalCount != 1 {
+		t.Fatalf("medium-risk proposal approval count = %d, want 1", approvalCount)
+	}
+
+	legacyProposal, err := node.service.CreateAutonomyProposal(ctx, steward.CreateAutonomyProposalInput{
+		Title: "legacy invalid policy", Action: steward.AutonomyActionCreateLocalTask,
+		RiskLevel: "low", PermissionLevel: steward.PermissionA3, DataLevel: steward.DataD0,
+		Policy: steward.AutonomyPolicyConfirm,
+	})
+	if err != nil {
+		t.Fatalf("create legacy policy probe: %v", err)
+	}
+	if _, err := node.pool.Exec(ctx, `
+		update steward_autonomy_proposals set policy = 'allow', status = $1 where id = $2
+	`, steward.ProposalApproved, legacyProposal.ID); err != nil {
+		t.Fatalf("inject legacy invalid proposal policy: %v", err)
+	}
+	legacyRun := postAutonomyRun(t, node, "/steward/autonomy/proposals/"+legacyProposal.ID+"/execute")
+	if legacyRun.Status != steward.RunBlocked || !strings.Contains(legacyRun.ImpactSummary, "invalid persisted") {
+		t.Fatalf("legacy invalid proposal was not blocked: %+v", legacyRun)
+	}
+	var legacyStatus, legacyTargetID string
+	if err := node.pool.QueryRow(ctx, `
+		select status, execution_target_id from steward_autonomy_proposals where id = $1
+	`, legacyProposal.ID).Scan(&legacyStatus, &legacyTargetID); err != nil {
+		t.Fatalf("read legacy invalid proposal result: %v", err)
+	}
+	if legacyStatus != steward.ProposalBlocked || legacyTargetID != "" {
+		t.Fatalf("legacy invalid proposal execution state: status=%s target=%s", legacyStatus, legacyTargetID)
+	}
+}
+
 func TestStewardAutonomyActionExecutorRunsThroughHTTP(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {
@@ -1120,6 +1562,116 @@ func TestStewardAutonomyActionExecutorRunsThroughHTTP(t *testing.T) {
 	}
 	if !hasTaskID(tasks, executedProposal.ExecutionTargetID) {
 		t.Fatalf("executed target task %s is not present", executedProposal.ExecutionTargetID)
+	}
+}
+
+func TestStewardAutonomyAutomaticFailureBacksOffAndManualRetryRecovers(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed autonomy retry integration test")
+	}
+
+	t.Setenv("STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS", "2")
+	t.Setenv("STEWARD_AUTONOMY_RETRY_BACKOFF", "1h")
+	t.Setenv("STEWARD_AUTONOMY_RETRY_MAX_BACKOFF", "1h")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	executor := &flakyAutonomyExecutor{failUntil: 2}
+	node := newStewardHTTPNode(
+		t,
+		ctx,
+		temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "autonomy_retry"),
+		"windows-main",
+		steward.WithAutonomyActionExecutor(executor),
+	)
+
+	overview, err := node.service.GetAutonomyOverview(ctx)
+	if err != nil {
+		t.Fatalf("load autonomy overview: %v", err)
+	}
+	rule := findAutonomyRuleByName(overview.Rules, "event-follow-up-candidate")
+	if rule == nil {
+		t.Fatal("event follow-up rule not found")
+	}
+	autoPolicy := steward.AutonomyPolicyAuto
+	if _, err := node.service.UpdateAutonomyRule(ctx, rule.ID, steward.UpdateAutonomyRuleInput{Policy: &autoPolicy}); err != nil {
+		t.Fatalf("enable automatic rule: %v", err)
+	}
+	if _, err := node.service.UpdateAutonomySettings(ctx, steward.UpdateAutonomySettingsInput{Mode: steward.AutonomyModeControlled}); err != nil {
+		t.Fatalf("enable controlled autonomy mode: %v", err)
+	}
+	sourceID := uuid.NewString()
+	proposal, err := node.service.CreateAutonomyProposal(ctx, steward.CreateAutonomyProposalInput{
+		RuleID:           &rule.ID,
+		SourceEntityType: "verification",
+		SourceEntityID:   &sourceID,
+		Action:           steward.AutonomyActionCreateFollowUpTask,
+		Title:            "retry recovery probe",
+		TriggerReason:    "verify bounded automatic retries",
+		RiskLevel:        "low",
+		PermissionLevel:  steward.PermissionA3,
+		DataLevel:        steward.DataD0,
+		Policy:           steward.AutonomyPolicyAuto,
+		ImpactSummary:    "test executor only",
+	})
+	if err != nil {
+		t.Fatalf("create retry proposal: %v", err)
+	}
+
+	if _, err := node.service.RunAutonomyCycle(ctx, 10); err != nil {
+		t.Fatalf("run first autonomy cycle: %v", err)
+	}
+	if executor.Calls() != 1 {
+		t.Fatalf("first autonomy cycle executor calls = %d, want 1", executor.Calls())
+	}
+	proposals, err := node.service.ListAutonomyProposals(ctx, "", 20)
+	if err != nil {
+		t.Fatalf("list proposals after first failure: %v", err)
+	}
+	retrying := findAutonomyProposalByID(proposals, proposal.ID)
+	if retrying == nil || retrying.FailedAttempts != 1 || !retrying.RetryEligible || retrying.RetryExhausted || retrying.AutoRetryAt == nil || retrying.Status != steward.ProposalCandidate {
+		t.Fatalf("unexpected first retry state: %+v", retrying)
+	}
+
+	if _, err := node.service.RunAutonomyCycle(ctx, 10); err != nil {
+		t.Fatalf("run backoff autonomy cycle: %v", err)
+	}
+	if executor.Calls() != 1 {
+		t.Fatalf("backoff cycle retried executor, calls = %d", executor.Calls())
+	}
+
+	failedRetry := postAutonomyRun(t, node, "/steward/autonomy/proposals/"+proposal.ID+"/retry")
+	if failedRetry.Status != steward.RunFailed || executor.Calls() != 2 {
+		t.Fatalf("unexpected exhausted retry: run=%+v calls=%d", failedRetry, executor.Calls())
+	}
+	proposals, err = node.service.ListAutonomyProposals(ctx, "", 20)
+	if err != nil {
+		t.Fatalf("list proposals after exhausted retry: %v", err)
+	}
+	exhausted := findAutonomyProposalByID(proposals, proposal.ID)
+	if exhausted == nil || exhausted.Status != steward.ProposalBlocked || exhausted.FailedAttempts != 2 || !exhausted.RetryExhausted || !exhausted.RetryEligible || exhausted.AutoRetryAt != nil {
+		t.Fatalf("unexpected exhausted retry state: %+v", exhausted)
+	}
+
+	executor.SetFailUntil(2)
+	recovered := postAutonomyRun(t, node, "/steward/autonomy/proposals/"+proposal.ID+"/retry")
+	if recovered.Status != steward.RunSuccess || executor.Calls() != 3 {
+		t.Fatalf("unexpected manual recovery: run=%+v calls=%d", recovered, executor.Calls())
+	}
+	proposals, err = node.service.ListAutonomyProposals(ctx, "", 20)
+	if err != nil {
+		t.Fatalf("list proposals after recovery: %v", err)
+	}
+	completed := findAutonomyProposalByID(proposals, proposal.ID)
+	if completed == nil || completed.Status != steward.ProposalExecuted || completed.RetryEligible {
+		t.Fatalf("unexpected recovered proposal state: %+v", completed)
+	}
+	var retryAudits int
+	if err := node.pool.QueryRow(ctx, `select count(*) from steward_audit_logs where action = 'autonomy.retry' and target_id = $1`, proposal.ID).Scan(&retryAudits); err != nil {
+		t.Fatalf("count manual retry audits: %v", err)
+	}
+	if retryAudits != 2 {
+		t.Fatalf("manual retry audit count = %d, want 2", retryAudits)
 	}
 }
 
@@ -1395,6 +1947,300 @@ func TestStewardAutonomyPauseBlocksScanningAndExecution(t *testing.T) {
 	}
 }
 
+func TestStewardAutonomyPolicyGateLinearizesPauseWithInFlightWork(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the autonomy policy gate test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	discoverer := newBlockingAutonomyDiscoverer()
+	executor := newBlockingAutonomyExecutor()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "autonomy_policy_gate"), "windows-main",
+		steward.WithAutonomyProposalDiscoverer(discoverer),
+		steward.WithAutonomyActionExecutor(executor),
+	)
+
+	cycleDone := make(chan error, 1)
+	go func() {
+		_, err := node.service.RunAutonomyCycle(ctx, 10)
+		cycleDone <- err
+	}()
+	waitForSignal(t, ctx, discoverer.started, "autonomy discoverer start")
+	pauseDone := make(chan error, 1)
+	paused := true
+	go func() {
+		_, err := node.service.UpdateAutonomySettings(ctx, steward.UpdateAutonomySettingsInput{Paused: &paused})
+		pauseDone <- err
+	}()
+	assertNoSignal(t, pauseDone, 150*time.Millisecond, "pause returned while discovery was still active")
+	close(discoverer.release)
+	if err := <-cycleDone; err != nil {
+		t.Fatalf("finish in-flight autonomy cycle: %v", err)
+	}
+	if err := <-pauseDone; err != nil {
+		t.Fatalf("pause after autonomy cycle: %v", err)
+	}
+
+	paused = false
+	if _, err := node.service.UpdateAutonomySettings(ctx, steward.UpdateAutonomySettingsInput{Paused: &paused}); err != nil {
+		t.Fatalf("resume autonomy before execution gate test: %v", err)
+	}
+	proposal, err := node.service.CreateAutonomyProposal(ctx, steward.CreateAutonomyProposalInput{
+		Action: executor.Capability().Action, Title: "policy gate execution probe", TriggerReason: "verify linearized pause",
+		RiskLevel: "low", PermissionLevel: steward.PermissionA3, DataLevel: steward.DataD0, Policy: steward.AutonomyPolicyAuto,
+	})
+	if err != nil {
+		t.Fatalf("create policy gate proposal: %v", err)
+	}
+	executionDone := make(chan struct {
+		run domain.StewardAutonomousRun
+		err error
+	}, 1)
+	go func() {
+		run, err := node.service.ExecuteAutonomyProposal(ctx, proposal.ID)
+		executionDone <- struct {
+			run domain.StewardAutonomousRun
+			err error
+		}{run: run, err: err}
+	}()
+	waitForSignal(t, ctx, executor.started, "autonomy executor start")
+	pauseDone = make(chan error, 1)
+	paused = true
+	go func() {
+		_, err := node.service.UpdateAutonomySettings(ctx, steward.UpdateAutonomySettingsInput{Paused: &paused})
+		pauseDone <- err
+	}()
+	rules, err := node.service.ListAutonomyRules(ctx)
+	if err != nil || len(rules) == 0 {
+		t.Fatalf("load rule for policy gate update: rules=%d err=%v", len(rules), err)
+	}
+	ruleUpdateDone := make(chan error, 1)
+	scope := rules[0].ScopeSummary
+	go func() {
+		_, err := node.service.UpdateAutonomyRule(ctx, rules[0].ID, steward.UpdateAutonomyRuleInput{ScopeSummary: &scope})
+		ruleUpdateDone <- err
+	}()
+	assertNoSignal(t, pauseDone, 150*time.Millisecond, "pause returned while an executor was still active")
+	assertNoSignal(t, ruleUpdateDone, 150*time.Millisecond, "rule update returned while an executor was still active")
+	close(executor.release)
+	executed := <-executionDone
+	if executed.err != nil || executed.run.Status != steward.RunSuccess {
+		t.Fatalf("finish in-flight execution: run=%+v err=%v", executed.run, executed.err)
+	}
+	if err := <-pauseDone; err != nil {
+		t.Fatalf("pause after execution: %v", err)
+	}
+	if err := <-ruleUpdateDone; err != nil {
+		t.Fatalf("rule update after execution: %v", err)
+	}
+
+	blocked, err := node.service.CreateAutonomyProposal(ctx, steward.CreateAutonomyProposalInput{
+		Action: executor.Capability().Action, Title: "post-pause execution probe", TriggerReason: "must remain blocked",
+		RiskLevel: "low", PermissionLevel: steward.PermissionA3, DataLevel: steward.DataD0, Policy: steward.AutonomyPolicyAuto,
+	})
+	if err != nil {
+		t.Fatalf("create post-pause proposal: %v", err)
+	}
+	run, err := node.service.ExecuteAutonomyProposal(ctx, blocked.ID)
+	if err != nil || run.Status != steward.RunBlocked {
+		t.Fatalf("post-pause execution was not blocked: run=%+v err=%v", run, err)
+	}
+	if calls := executor.callCount(); calls != 1 {
+		t.Fatalf("executor call count=%d after pause, want 1", calls)
+	}
+}
+
+func TestStewardAutonomyExecutionRevalidatesCurrentRule(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the current autonomy rule execution test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "autonomy_current_rule"), "windows-main")
+	rules, err := node.service.ListAutonomyRules(ctx)
+	if err != nil {
+		t.Fatalf("list autonomy rules: %v", err)
+	}
+	var followUpRule *domain.StewardAutonomyRule
+	for index := range rules {
+		if rules[index].Action == steward.AutonomyActionCreateFollowUpTask {
+			followUpRule = &rules[index]
+			break
+		}
+	}
+	if followUpRule == nil {
+		t.Fatalf("follow-up autonomy rule is missing")
+	}
+	auto := steward.AutonomyPolicyAuto
+	if _, err := node.service.UpdateAutonomyRule(ctx, followUpRule.ID, steward.UpdateAutonomyRuleInput{Policy: &auto}); err != nil {
+		t.Fatalf("enable automatic follow-up rule: %v", err)
+	}
+	event, err := node.service.CreateEvent(ctx, steward.CreateEventInput{
+		Type: "manual_note", Title: "current rule revalidation source", Summary: "rule changes must revoke stale auto authority",
+		Source: "verification", DataLevel: steward.DataD0, PermissionLevel: steward.PermissionA3,
+	})
+	if err != nil {
+		t.Fatalf("create rule revalidation event: %v", err)
+	}
+	proposal, err := node.service.CreateAutonomyProposal(ctx, steward.CreateAutonomyProposalInput{
+		RuleID: &followUpRule.ID, SourceEntityType: steward.EntityEvent, SourceEntityID: &event.ID,
+		Action: steward.AutonomyActionCreateFollowUpTask, Title: "stale auto authority probe", TriggerReason: "rule was auto when proposed",
+		RiskLevel: "low", PermissionLevel: steward.PermissionA3, DataLevel: steward.DataD0, Policy: steward.AutonomyPolicyAuto,
+	})
+	if err != nil {
+		t.Fatalf("create rule-bound proposal: %v", err)
+	}
+	approvalEvent, err := node.service.CreateEvent(ctx, steward.CreateEventInput{
+		Type: "manual_note", Title: "current rule approval source", Summary: "approval must revalidate current policy",
+		Source: "verification", DataLevel: steward.DataD0, PermissionLevel: steward.PermissionA3,
+	})
+	if err != nil {
+		t.Fatalf("create approval revalidation event: %v", err)
+	}
+	confirmProposal, err := node.service.CreateAutonomyProposal(ctx, steward.CreateAutonomyProposalInput{
+		RuleID: &followUpRule.ID, SourceEntityType: steward.EntityEvent, SourceEntityID: &approvalEvent.ID,
+		Action: steward.AutonomyActionCreateFollowUpTask, Title: "stale approval authority probe", TriggerReason: "requires explicit approval",
+		RiskLevel: "low", PermissionLevel: steward.PermissionA3, DataLevel: steward.DataD0, Policy: steward.AutonomyPolicyConfirm,
+	})
+	if err != nil {
+		t.Fatalf("create rule-bound confirm proposal: %v", err)
+	}
+	if run, err := node.service.ExecuteAutonomyProposal(ctx, confirmProposal.ID); err != nil || run.Status != steward.RunBlocked {
+		t.Fatalf("create approval request before rule revocation: run=%+v err=%v", run, err)
+	}
+	approvals, err := node.service.ListApprovalRequests(ctx, steward.ApprovalPending, 20)
+	if err != nil {
+		t.Fatalf("list pending approval before rule revocation: %v", err)
+	}
+	approvalID := ""
+	for _, approval := range approvals {
+		if approval.ProposalID != nil && *approval.ProposalID == confirmProposal.ID && approval.RequestedAction == "approve autonomous execution" {
+			approvalID = approval.ID
+			break
+		}
+	}
+	if approvalID == "" {
+		t.Fatalf("rule-bound approval request is missing")
+	}
+	never := steward.AutonomyPolicyNever
+	if _, err := node.service.UpdateAutonomyRule(ctx, followUpRule.ID, steward.UpdateAutonomyRuleInput{Policy: &never}); err != nil {
+		t.Fatalf("revoke rule auto authority: %v", err)
+	}
+	if _, err := node.service.ApproveAutonomyProposal(ctx, proposal.ID); err == nil || !strings.Contains(err.Error(), "current autonomy rule") {
+		t.Fatalf("direct approval ignored revoked current rule: %v", err)
+	}
+	if _, err := node.service.ApproveRequest(ctx, approvalID, steward.DecideApprovalInput{DecisionReason: "must be rejected"}); err == nil || !strings.Contains(err.Error(), "current autonomy rule") {
+		t.Fatalf("approval request ignored revoked current rule: %v", err)
+	}
+	var deniedApprovalAudits int
+	if err := node.pool.QueryRow(ctx, `
+		select count(*) from steward_audit_logs
+		where action = 'autonomy.approval.current_rule_denied' and result_status = $1
+	`, steward.ResultBlocked).Scan(&deniedApprovalAudits); err != nil || deniedApprovalAudits != 2 {
+		t.Fatalf("current-rule approval denial audits=%d, want 2: %v", deniedApprovalAudits, err)
+	}
+	run, err := node.service.ExecuteAutonomyProposal(ctx, proposal.ID)
+	if err != nil || run.Status != steward.RunBlocked || !strings.Contains(run.RecoveryHint, "never") {
+		t.Fatalf("stale auto proposal ignored current never rule: run=%+v err=%v", run, err)
+	}
+	var targetID string
+	if err := node.pool.QueryRow(ctx, `select execution_target_id from steward_autonomy_proposals where id = $1`, proposal.ID).Scan(&targetID); err != nil || targetID != "" {
+		t.Fatalf("revoked rule proposal created target=%q err=%v", targetID, err)
+	}
+	if _, err := node.service.UpdateAutonomyRule(ctx, followUpRule.ID, steward.UpdateAutonomyRuleInput{Policy: &auto}); err != nil {
+		t.Fatalf("restore automatic follow-up rule: %v", err)
+	}
+	run, err = node.service.ExecuteAutonomyProposal(ctx, proposal.ID)
+	if err != nil || run.Status != steward.RunSuccess {
+		t.Fatalf("restored rule did not allow original proposal: run=%+v err=%v", run, err)
+	}
+}
+
+type blockingAutonomyDiscoverer struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingAutonomyDiscoverer() *blockingAutonomyDiscoverer {
+	return &blockingAutonomyDiscoverer{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (d *blockingAutonomyDiscoverer) Name() string { return "policy-gate-blocking-discoverer" }
+
+func (d *blockingAutonomyDiscoverer) Discover(ctx context.Context, _ int) error {
+	d.once.Do(func() { close(d.started) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-d.release:
+		return nil
+	}
+}
+
+type blockingAutonomyExecutor struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	calls   int
+}
+
+func newBlockingAutonomyExecutor() *blockingAutonomyExecutor {
+	return &blockingAutonomyExecutor{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (e *blockingAutonomyExecutor) Capability() domain.StewardAutonomyActionCapability {
+	return domain.StewardAutonomyActionCapability{
+		Action: "policy_gate_test_action", Description: "policy gate test executor", TargetType: "policy_gate_artifact",
+		RiskLevel: "low", MaxPermissionLevel: steward.PermissionA3,
+	}
+}
+
+func (e *blockingAutonomyExecutor) Simulate(context.Context, domain.StewardAutonomyProposal) (steward.AutonomyExecutionResult, error) {
+	return steward.AutonomyExecutionResult{TargetType: "policy_gate_artifact", ImpactSummary: "simulation only"}, nil
+}
+
+func (e *blockingAutonomyExecutor) Execute(ctx context.Context, _ domain.StewardAutonomyProposal) (steward.AutonomyExecutionResult, error) {
+	e.once.Do(func() { close(e.started) })
+	select {
+	case <-ctx.Done():
+		return steward.AutonomyExecutionResult{}, ctx.Err()
+	case <-e.release:
+	}
+	e.mu.Lock()
+	e.calls++
+	e.mu.Unlock()
+	return steward.AutonomyExecutionResult{TargetType: "policy_gate_artifact", TargetID: uuid.NewString(), ImpactSummary: "policy gate execution completed"}, nil
+}
+
+func (e *blockingAutonomyExecutor) callCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
+func waitForSignal(t *testing.T, ctx context.Context, signal <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for %s: %v", label, ctx.Err())
+	case <-signal:
+	}
+}
+
+func assertNoSignal(t *testing.T, signal <-chan error, duration time.Duration, message string) {
+	t.Helper()
+	select {
+	case err := <-signal:
+		t.Fatalf("%s: %v", message, err)
+	case <-time.After(duration):
+	}
+}
+
 func TestStewardControlledAutonomyExecutesOnlyPreapprovedLowRiskRules(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {
@@ -1535,6 +2381,10 @@ func TestStewardControlledAutonomyExecutesOnlyPreapprovedLowRiskRules(t *testing
 		t.Fatalf("disabled rule still authorized background execution: %+v", suggestOnlyProposal)
 	}
 
+	enabled := true
+	if _, err := node.service.UpdateAutonomyRule(ctx, summaryRuleID, steward.UpdateAutonomyRuleInput{Enabled: &enabled}); err != nil {
+		t.Fatalf("re-enable summary rule for idempotent recovery: %v", err)
+	}
 	if _, err := node.pool.Exec(ctx, `
 		update steward_autonomy_proposals
 		set status = $1, execution_target_type = '', execution_target_id = ''
@@ -1607,7 +2457,9 @@ func postAutonomyRun(t *testing.T, node stewardHTTPNode, path string) domain.Ste
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("autonomy run %s status = %s", path, response.Status)
+		var failure map[string]any
+		_ = json.NewDecoder(response.Body).Decode(&failure)
+		t.Fatalf("autonomy run %s status = %s payload=%v", path, response.Status, failure)
 	}
 	var payload struct {
 		Run domain.StewardAutonomousRun `json:"run"`
@@ -1643,6 +2495,42 @@ func hasTaskWithTitle(tasks []domain.StewardTask, id string, title string) bool 
 		}
 	}
 	return false
+}
+
+func daemonLoopsByName(loops []domain.StewardBackgroundLoopStatus) map[string]domain.StewardBackgroundLoopStatus {
+	result := make(map[string]domain.StewardBackgroundLoopStatus, len(loops))
+	for _, loop := range loops {
+		result[loop.Name] = loop
+	}
+	return result
+}
+
+func findStewardDevice(devices []domain.StewardDevice, id string) *domain.StewardDevice {
+	for index := range devices {
+		if devices[index].ID == id {
+			return &devices[index]
+		}
+	}
+	return nil
+}
+
+func waitForStewardCondition(t *testing.T, ctx context.Context, label string, condition func() (bool, string)) {
+	t.Helper()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	lastDetail := ""
+	for {
+		ok, detail := condition()
+		if ok {
+			return
+		}
+		lastDetail = detail
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %s: %s", label, lastDetail)
+		case <-ticker.C:
+		}
+	}
 }
 
 type stewardHTTPNode struct {
@@ -1689,7 +2577,7 @@ func temporaryPostgresDatabaseConfig(t *testing.T, ctx context.Context, baseDSN 
 	return nodeConfig
 }
 
-func newStewardHTTPNode(t *testing.T, ctx context.Context, dbConfig *pgxpool.Config, agentID string) stewardHTTPNode {
+func newStewardHTTPNode(t *testing.T, ctx context.Context, dbConfig *pgxpool.Config, agentID string, options ...steward.ServiceOption) stewardHTTPNode {
 	t.Helper()
 
 	pool, err := pgxpool.NewWithConfig(ctx, dbConfig)
@@ -1706,10 +2594,14 @@ func newStewardHTTPNode(t *testing.T, ctx context.Context, dbConfig *pgxpool.Con
 		t.Fatalf("migrate node database %s: %v", agentID, err)
 	}
 
-	service := steward.NewService(
-		db,
+	serviceOptions := []steward.ServiceOption{
 		steward.WithAgentID(agentID),
 		steward.WithAutonomyAdvisor(steward.DisabledAutonomyAdvisor("test")),
+	}
+	serviceOptions = append(serviceOptions, options...)
+	service := steward.NewService(
+		db,
+		serviceOptions...,
 	)
 	if err := service.EnsureDefaults(ctx); err != nil {
 		t.Fatalf("ensure defaults for %s: %v", agentID, err)
@@ -1741,6 +2633,53 @@ func newStewardHTTPNode(t *testing.T, ctx context.Context, dbConfig *pgxpool.Con
 		peerAPIBase: peerServer.URL + "/api",
 		pool:        pool,
 	}
+}
+
+type flakyAutonomyExecutor struct {
+	mu        sync.Mutex
+	calls     int
+	failUntil int
+}
+
+func (e *flakyAutonomyExecutor) Capability() domain.StewardAutonomyActionCapability {
+	return domain.StewardAutonomyActionCapability{
+		Action:             steward.AutonomyActionCreateFollowUpTask,
+		Description:        "deterministic retry test executor",
+		TargetType:         "test_result",
+		RiskLevel:          "low",
+		MaxPermissionLevel: steward.PermissionA3,
+	}
+}
+
+func (e *flakyAutonomyExecutor) Simulate(context.Context, domain.StewardAutonomyProposal) (steward.AutonomyExecutionResult, error) {
+	return steward.AutonomyExecutionResult{TargetType: "test_result", ImpactSummary: "test simulation"}, nil
+}
+
+func (e *flakyAutonomyExecutor) Execute(context.Context, domain.StewardAutonomyProposal) (steward.AutonomyExecutionResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls++
+	if e.calls <= e.failUntil {
+		return steward.AutonomyExecutionResult{}, fmt.Errorf("deterministic executor failure %d", e.calls)
+	}
+	return steward.AutonomyExecutionResult{
+		TargetType:    "test_result",
+		TargetID:      "recovered",
+		ImpactSummary: "manual retry recovered the executor",
+		RecoveryHint:  "dismiss the created test target if needed",
+	}, nil
+}
+
+func (e *flakyAutonomyExecutor) Calls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
+func (e *flakyAutonomyExecutor) SetFailUntil(value int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.failUntil = value
 }
 
 func createMeshTask(t *testing.T, ctx context.Context, node stewardHTTPNode, title string) domain.StewardTask {

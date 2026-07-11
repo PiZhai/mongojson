@@ -147,6 +147,10 @@ if (-not $SkipUI) {
 
 Push-Location $backendDir
 try {
+  $goVersion = (go env GOVERSION).Trim()
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($goVersion)) {
+    throw "go env GOVERSION failed"
+  }
   if (-not $SkipTests) {
     Write-Host "[steward] Running CLI tests"
     go test ./cmd/steward
@@ -228,6 +232,7 @@ try {
     version = $safeVersion
     commit = $buildCommit
     built_at = $buildDate
+    go_version = $goVersion
     ui_included = -not $SkipUI
     artifacts = $artifacts
   }

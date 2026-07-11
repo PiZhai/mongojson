@@ -277,6 +277,9 @@ try {
     "STEWARD_HEARTBEAT_INTERVAL" = "1m"
     "STEWARD_SYNC_INTERVAL" = "5m"
     "STEWARD_AUTONOMY_INTERVAL" = "15m"
+    "STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS" = "3"
+    "STEWARD_AUTONOMY_RETRY_BACKOFF" = "5m"
+    "STEWARD_AUTONOMY_RETRY_MAX_BACKOFF" = "1h"
   }
   if (-not $SkipAdvisorConfig) {
     $currentEnv["STEWARD_LLM_PROVIDER"] = "openai-compatible"
@@ -345,6 +348,18 @@ try {
     }
   } else {
     Add-Check $checks "service_env_preflight.rotation" "error" "rotation plan did not produce expected redacted target environment" $environment
+  }
+
+  if ($environment.STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS -eq "3" -and
+      $environment.STEWARD_AUTONOMY_RETRY_BACKOFF -eq "5m" -and
+      $environment.STEWARD_AUTONOMY_RETRY_MAX_BACKOFF -eq "1h") {
+    Add-Check $checks "service_env_preflight.retry_policy" "ok" "service environment plan preserved the bounded autonomy retry policy" @{
+      max_attempts = $environment.STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS
+      backoff = $environment.STEWARD_AUTONOMY_RETRY_BACKOFF
+      max_backoff = $environment.STEWARD_AUTONOMY_RETRY_MAX_BACKOFF
+    }
+  } else {
+    Add-Check $checks "service_env_preflight.retry_policy" "error" "service environment plan did not preserve the bounded autonomy retry policy" $environment
   }
 
   if ($planOutput.service_env.message -match "explicit current environment") {

@@ -12,10 +12,23 @@ import (
 )
 
 func (s *Service) CreateAutonomyProposal(ctx context.Context, input CreateAutonomyProposalInput) (domain.StewardAutonomyProposal, error) {
+	policy, err := autonomyPolicyValue(input.Policy, AutonomyPolicySuggest)
+	if err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
+	risk, err := autonomyRiskValue(input.RiskLevel, "low")
+	if err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
+	permission, err := autonomyPermissionValue(input.PermissionLevel, PermissionA3)
+	if err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
+	dataLevel, err := autonomyDataLevelValue(input.DataLevel, DataD0)
+	if err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
 	now := time.Now().UTC()
-	policy := normalizeAutonomyPolicy(input.Policy)
-	risk := defaultString(input.RiskLevel, "low")
-	permission := defaultString(input.PermissionLevel, PermissionA3)
 	action := defaultString(input.Action, AutonomyActionCreateLocalTask)
 	score := s.autonomyProposalScorer().Score(input)
 	status := ProposalCandidate
@@ -41,7 +54,7 @@ func (s *Service) CreateAutonomyProposal(ctx context.Context, input CreateAutono
 		TargetType:      "autonomy_proposal",
 		Source:          defaultString(input.SourceEntityType, "system"),
 		PermissionLevel: permission,
-		DataLevel:       defaultString(input.DataLevel, DataD0),
+		DataLevel:       dataLevel,
 		InputSummary:    input.TriggerReason,
 		OutputSummary:   input.Title,
 		Reason:          blockedReason,
@@ -72,7 +85,7 @@ func (s *Service) CreateAutonomyProposal(ctx context.Context, input CreateAutono
 	`, uuid.NewString(), input.RuleID, defaultString(input.SourceEntityType, "manual"),
 		input.SourceEntityID, action, defaultString(input.Title, "自主建议"), strings.TrimSpace(input.Summary),
 		strings.TrimSpace(input.TriggerReason), strings.TrimSpace(input.SuggestedAction), risk,
-		permission, defaultString(input.DataLevel, DataD0), status, policy,
+		permission, dataLevel, status, policy,
 		strings.TrimSpace(input.ImpactSummary), score.Value, score.Reason, auditID, now)
 	proposal, err := scanAutonomyProposal(row)
 	if err != nil {
@@ -101,8 +114,6 @@ func (s *Service) ListAutonomyProposals(ctx context.Context, status string, limi
 	if err != nil {
 		return nil, fmt.Errorf("list autonomy proposals: %w", err)
 	}
-	defer rows.Close()
-
 	proposals := []domain.StewardAutonomyProposal{}
 	for rows.Next() {
 		proposal, err := scanAutonomyProposal(rows)
@@ -111,11 +122,39 @@ func (s *Service) ListAutonomyProposals(ctx context.Context, status string, limi
 		}
 		proposals = append(proposals, proposal)
 	}
-	return proposals, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if err := s.populateAutonomyRetryStates(ctx, proposals); err != nil {
+		return nil, err
+	}
+	return proposals, nil
 }
 
 func (s *Service) ApproveAutonomyProposal(ctx context.Context, id string) (domain.StewardAutonomyProposal, error) {
-	return s.updateProposalStatus(ctx, id, ProposalApproved, "autonomy.proposal.approve")
+	lease, err := acquireAutonomyExecutionLease(ctx, s.db.Pool, id)
+	if err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
+	defer lease.Release()
+	gatedCtx, policyGate, err := acquireAutonomyPolicyReadGate(ctx, s.db.Pool)
+	if err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
+	defer policyGate.Release()
+	proposal, err := s.getAutonomyProposal(gatedCtx, id)
+	if err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
+	if _, issue, err := s.currentRuleExecutionPolicy(gatedCtx, proposal); err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	} else if issue != "" {
+		s.recordAutonomyApprovalPolicyDenied(gatedCtx, "autonomy_proposal", proposal.ID, issue)
+		return domain.StewardAutonomyProposal{}, fmt.Errorf("current autonomy rule blocks approval: %s", issue)
+	}
+	return s.updateProposalStatusLocked(gatedCtx, id, ProposalApproved, "autonomy.proposal.approve")
 }
 
 func (s *Service) DismissAutonomyProposal(ctx context.Context, id string) (domain.StewardAutonomyProposal, error) {

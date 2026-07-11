@@ -169,6 +169,14 @@ func (s *Service) filterOutboundSyncChanges(ctx context.Context, deviceID string
 }
 
 func (s *Service) recordSyncPermissionDenied(ctx context.Context, deviceID string, change CreateSyncChangeInput, permissionErr error) {
+	s.recordSyncChangeRejection(ctx, deviceID, change, "sync.change.denied", "incoming sync change skipped by device permission", permissionErr)
+}
+
+func (s *Service) recordSyncChangeInvalid(ctx context.Context, deviceID string, change CreateSyncChangeInput, validationErr error) {
+	s.recordSyncChangeRejection(ctx, deviceID, change, "sync.change.invalid", "malformed incoming sync change skipped", validationErr)
+}
+
+func (s *Service) recordSyncChangeRejection(ctx context.Context, deviceID string, change CreateSyncChangeInput, action string, output string, rejectionErr error) {
 	userConfirmed := false
 	syncable := false
 	var targetID *string
@@ -177,18 +185,18 @@ func (s *Service) recordSyncPermissionDenied(ctx context.Context, deviceID strin
 	}
 	_, _ = s.recordAudit(ctx, AuditInput{
 		Actor:           "sync",
-		Action:          "sync.change.denied",
+		Action:          action,
 		TargetType:      defaultString(change.EntityType, "sync_change"),
 		TargetID:        targetID,
 		Source:          "peer",
 		PermissionLevel: PermissionA3,
 		DataLevel:       DataD2,
 		InputSummary:    "device=" + strings.TrimSpace(deviceID) + "; entity_type=" + strings.TrimSpace(change.EntityType),
-		OutputSummary:   "incoming sync change skipped by device permission",
-		Reason:          permissionErr.Error(),
+		OutputSummary:   output,
+		Reason:          rejectionErr.Error(),
 		UserConfirmed:   &userConfirmed,
 		Syncable:        &syncable,
 		ResultStatus:    ResultBlocked,
-		ErrorSummary:    stringPtr(permissionErr.Error()),
+		ErrorSummary:    stringPtr(rejectionErr.Error()),
 	})
 }

@@ -140,6 +140,23 @@ export function StewardWorkspace() {
               {overview?.agent.platform ?? "windows"} ·{" "}
               {overview?.agent.version ?? "s2-data-foundation"}
             </p>
+            {(overview?.agent.background_loops ?? []).length > 0 ? (
+              <small>
+                {(overview?.agent.background_loops ?? [])
+                  .map((loop) =>
+                    `${loop.name}:${
+                      !loop.enabled
+                        ? "关闭"
+                        : loop.running
+                          ? loop.consecutive_failures > 0
+                            ? `降级(${loop.consecutive_failures})`
+                            : "运行"
+                          : "停止"
+                    }`,
+                  )
+                  .join(" · ")}
+              </small>
+            ) : null}
           </div>
           <div className="steward-agent-actions">
             <button
@@ -235,6 +252,21 @@ export function StewardWorkspace() {
                   {sync.security.config_errors.length > 0 ? (
                     <small className="steward-error-text">
                       {sync.security.config_errors.join("；")}
+                    </small>
+                  ) : null}
+                </article>
+              ) : null}
+              {sync.change_contract ? (
+                <article className="steward-compact-item">
+                  <strong>同步变更契约</strong>
+                  <small>
+                    {sync.change_contract.healthy ? "健康" : "发现异常"} · 已检查{" "}
+                    {sync.change_contract.checked_changes} · 异常{" "}
+                    {sync.change_contract.invalid_changes}
+                  </small>
+                  {sync.change_contract.issues.length > 0 ? (
+                    <small className="steward-error-text">
+                      {sync.change_contract.issues.join("；")}
                     </small>
                   ) : null}
                 </article>
@@ -463,10 +495,20 @@ export function StewardWorkspace() {
                     {autonomy.settings.max_auto_permission}
                   </p>
                   <p>{advisorStatusText(autonomy.advisor)}</p>
+                  <p>
+                    策略变更屏障
+                    {autonomy.policy_gate?.enabled &&
+                    autonomy.policy_gate.current_rule_revalidation
+                      ? "已启用"
+                      : "未就绪"}
+                  </p>
                   <small>
                     执行动作 {autonomy.actions.length} · 规则{" "}
                     {autonomy.rules.length} · 候选 {autonomy.proposals.length} ·
-                    审批 {autonomy.approvals.length}
+                    审批 {autonomy.approvals.length} · 自动失败最多尝试{" "}
+                    {autonomy.retry_policy.max_attempts} 次 · 退避{" "}
+                    {autonomy.retry_policy.backoff} 至{" "}
+                    {autonomy.retry_policy.max_backoff}
                   </small>
                 </div>
               </article>

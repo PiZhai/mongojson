@@ -60,6 +60,18 @@ func (d *Daemon) Start(parent context.Context) {
 	d.cancel = cancel
 	d.generation++
 	generation := d.generation
+	for _, loop := range []struct {
+		name     string
+		interval time.Duration
+	}{
+		{name: "heartbeat", interval: d.options.HeartbeatInterval},
+		{name: "sync", interval: d.options.SyncInterval},
+		{name: "autonomy", interval: d.options.AutonomyInterval},
+	} {
+		if err := d.service.configureDaemonLoop(ctx, loop.name, loop.interval, loop.interval > 0); err != nil {
+			log.Printf("steward daemon %s loop status initialization failed: %v", loop.name, err)
+		}
+	}
 
 	started := false
 	started = d.startLoop(ctx, "heartbeat", d.options.HeartbeatInterval, func(ctx context.Context) error {
@@ -99,11 +111,16 @@ func (d *Daemon) Start(parent context.Context) {
 	go func() {
 		d.wg.Wait()
 		d.mu.Lock()
+		markStopped := false
 		if d.generation == generation {
 			d.cancel = nil
 			d.running.Store(false)
+			markStopped = true
 		}
 		d.mu.Unlock()
+		if markStopped {
+			d.markLoopStatusesStopped()
+		}
 	}()
 }
 
@@ -129,6 +146,18 @@ func (d *Daemon) Stop() {
 		d.running.Store(false)
 	}
 	d.mu.Unlock()
+	d.markLoopStatusesStopped()
+}
+
+func (d *Daemon) markLoopStatusesStopped() {
+	if d == nil || d.service == nil {
+		return
+	}
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	if err := d.service.stopDaemonLoops(stopCtx); err != nil {
+		log.Printf("steward daemon loop status stop failed: %v", err)
+	}
 }
 
 func (d *Daemon) startLoop(ctx context.Context, name string, interval time.Duration, run func(context.Context) error) bool {
@@ -155,14 +184,18 @@ func (d *Daemon) startLoop(ctx context.Context, name string, interval time.Durat
 }
 
 func (d *Daemon) runOnce(ctx context.Context, name string, run func(context.Context) error) {
-	if err := run(ctx); err != nil {
+	startedAt := time.Now().UTC()
+	err := run(ctx)
+	if ctx.Err() == nil {
+		if statusErr := d.service.recordDaemonLoopResult(ctx, name, startedAt, err); statusErr != nil {
+			log.Printf("steward daemon %s loop status update failed: %v", name, statusErr)
+		}
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
 		log.Printf("steward daemon %s loop failed: %v", name, err)
-		if name != "heartbeat" {
-			_ = d.service.Heartbeat(ctx, err.Error())
-		}
 	}
 }
 

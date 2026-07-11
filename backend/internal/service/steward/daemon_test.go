@@ -1,6 +1,8 @@
 package steward
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +25,13 @@ func TestDaemonOptionsFromEnvParsesIntervals(t *testing.T) {
 	}
 	if options.AutonomyLimit != 7 {
 		t.Fatalf("autonomy limit = %d, want 7", options.AutonomyLimit)
+	}
+}
+
+func TestSanitizeDaemonLoopErrorBoundsAndFlattensSummary(t *testing.T) {
+	value := sanitizeDaemonLoopError(errors.New("peer failed\n" + strings.Repeat("x", 600)))
+	if strings.ContainsAny(value, "\r\n") || len([]rune(value)) != 500 {
+		t.Fatalf("sanitized daemon loop error is not flat and bounded: length=%d value=%q", len([]rune(value)), value)
 	}
 }
 

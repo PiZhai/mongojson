@@ -27,6 +27,12 @@ var strictAdvisorEnvKeys = []string{
 	"STEWARD_LLM_FAILURE_COOLDOWN",
 }
 
+var autonomyRetryEnvKeys = []string{
+	"STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS",
+	"STEWARD_AUTONOMY_RETRY_BACKOFF",
+	"STEWARD_AUTONOMY_RETRY_MAX_BACKOFF",
+}
+
 var discoveryEnvKeys = []string{
 	"STEWARD_DISCOVERY_ENABLED",
 	"STEWARD_DEVICE_NAME",
@@ -77,6 +83,9 @@ func validateStrictServiceSecurity(options servicecontrol.InstallOptions) error 
 		}
 	}
 	if err := validateStrictAdvisorEnvironment(options.ExtraEnv); err != nil {
+		problems = append(problems, err.Error())
+	}
+	if err := validateStrictAutonomyRetryEnvironment(options.ExtraEnv); err != nil {
 		problems = append(problems, err.Error())
 	}
 	if err := validateServiceDiscoveryEnvironment(options); err != nil {
@@ -130,13 +139,44 @@ func serviceEnvDuration(env map[string]string, key string) time.Duration {
 
 func serviceExtraEnvFromServiceEnv(env map[string]string) map[string]string {
 	extra := map[string]string{}
-	keys := append(append([]string{}, strictAdvisorEnvKeys...), discoveryEnvKeys...)
+	keys := append(append(append([]string{}, strictAdvisorEnvKeys...), autonomyRetryEnvKeys...), discoveryEnvKeys...)
 	for _, key := range keys {
 		if value, ok := env[key]; ok {
 			extra[key] = strings.TrimSpace(value)
 		}
 	}
 	return extra
+}
+
+func validateStrictAutonomyRetryEnvironment(env map[string]string) error {
+	var problems []string
+	if value := strings.TrimSpace(env["STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS"]); value != "" {
+		if parsed, err := strconv.Atoi(value); err != nil || parsed <= 0 || parsed > 20 {
+			problems = append(problems, "STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS must be an integer from 1 to 20")
+		}
+	}
+	backoff, backoffSet, backoffValid := strictRetryDuration(env, "STEWARD_AUTONOMY_RETRY_BACKOFF", &problems)
+	maxBackoff, maxBackoffSet, maxBackoffValid := strictRetryDuration(env, "STEWARD_AUTONOMY_RETRY_MAX_BACKOFF", &problems)
+	if backoffSet && maxBackoffSet && backoffValid && maxBackoffValid && maxBackoff < backoff {
+		problems = append(problems, "STEWARD_AUTONOMY_RETRY_MAX_BACKOFF must be greater than or equal to STEWARD_AUTONOMY_RETRY_BACKOFF")
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("S4 autonomy retry strict validation failed: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func strictRetryDuration(env map[string]string, key string, problems *[]string) (time.Duration, bool, bool) {
+	value := strings.TrimSpace(env[key])
+	if value == "" {
+		return 0, false, true
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 || parsed > 24*time.Hour {
+		*problems = append(*problems, key+" must be a duration greater than 0 and no more than 24h")
+		return 0, true, false
+	}
+	return parsed, true, true
 }
 
 func validateServiceDiscoveryEnvironment(options servicecontrol.InstallOptions) error {

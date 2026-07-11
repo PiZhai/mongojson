@@ -475,6 +475,20 @@ func (db *DB) Migrate(ctx context.Context) error {
 			audit_id uuid references steward_audit_logs(id) on delete set null,
 			created_at timestamptz not null default now()
 		);`,
+		`create table if not exists steward_daemon_loop_status (
+			agent_id text not null,
+			name text not null,
+			enabled boolean not null default false,
+			running boolean not null default false,
+			interval_text text not null default '',
+			last_started_at timestamptz,
+			last_completed_at timestamptz,
+			last_success_at timestamptz,
+			last_error text,
+			consecutive_failures integer not null default 0,
+			updated_at timestamptz not null default now(),
+			primary key (agent_id, name)
+		);`,
 		`create index if not exists idx_steward_events_created_at on steward_events(created_at desc);`,
 		`create index if not exists idx_steward_events_status on steward_events(status);`,
 		`create index if not exists idx_steward_tasks_updated_at on steward_tasks(updated_at desc);`,
@@ -509,6 +523,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 		on steward_approval_requests(proposal_id, requested_action)
 		where status = 'pending' and proposal_id is not null;`,
 		`create index if not exists idx_steward_autonomous_runs_created_at on steward_autonomous_runs(created_at desc);`,
+		`create index if not exists idx_steward_daemon_loop_status_agent on steward_daemon_loop_status(agent_id, name);`,
 	}
 
 	for _, statement := range statements {

@@ -286,7 +286,8 @@ function Write-MockAdvisorServer {
 param(
   [string]$Prefix,
   [string]$RequestLogPath,
-  [string]$ReadyPath
+  [string]$ReadyPath,
+  [string]$ControlPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -300,29 +301,61 @@ try {
     $context = $listener.GetContext()
     $request = $context.Request
     $response = $context.Response
-    $reader = [System.IO.StreamReader]::new($request.InputStream, $request.ContentEncoding)
     try {
-      $body = $reader.ReadToEnd()
-    } finally {
-      $reader.Close()
-    }
+      $reader = [System.IO.StreamReader]::new($request.InputStream, $request.ContentEncoding)
+      try {
+        $body = $reader.ReadToEnd()
+      } finally {
+        $reader.Close()
+      }
 
-    if ($request.HttpMethod -ne "POST" -or $request.Url.AbsolutePath -ne "/v1/chat/completions") {
-      $response.StatusCode = 404
-      $bytes = [System.Text.Encoding]::UTF8.GetBytes('{"error":"not found"}')
-      $response.ContentType = "application/json"
-      $response.OutputStream.Write($bytes, 0, $bytes.Length)
-      $response.Close()
-      continue
-    }
+      if ($request.HttpMethod -ne "POST" -or $request.Url.AbsolutePath -ne "/v1/chat/completions") {
+        $response.StatusCode = 404
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes('{"error":"not found"}')
+        $response.ContentType = "application/json"
+        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+        $response.Close()
+        continue
+      }
 
-    $entry = [ordered]@{
-      at = (Get-Date).ToUniversalTime().ToString("o")
-      method = $request.HttpMethod
-      path = $request.Url.AbsolutePath
-      body = $body
-    }
-    Add-Content -LiteralPath $RequestLogPath -Value ($entry | ConvertTo-Json -Compress -Depth 20) -Encoding UTF8
+      $control = [pscustomobject]@{ mode = "success"; delay_ms = 0; status_code = 503 }
+      if (Test-Path -LiteralPath $ControlPath) {
+        $configured = Get-Content -LiteralPath $ControlPath -Raw | ConvertFrom-Json
+        if ($null -ne $configured) {
+          $control = $configured
+        }
+      }
+      $mode = [string]$control.mode
+
+      $entry = [ordered]@{
+        at = (Get-Date).ToUniversalTime().ToString("o")
+        method = $request.HttpMethod
+        path = $request.Url.AbsolutePath
+        mode = $mode
+        body = $body
+      }
+      Add-Content -LiteralPath $RequestLogPath -Value ($entry | ConvertTo-Json -Compress -Depth 20) -Encoding UTF8
+
+      $delayMillis = 0
+      if ($null -ne $control.delay_ms) {
+        $delayMillis = [int]$control.delay_ms
+      }
+      if ($delayMillis -gt 0) {
+        Start-Sleep -Milliseconds $delayMillis
+      }
+
+      if ($mode -eq "error") {
+        $statusCode = 503
+        if ($null -ne $control.status_code) {
+          $statusCode = [int]$control.status_code
+        }
+        $response.StatusCode = $statusCode
+        $response.ContentType = "application/json"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes('{"error":{"message":"mock advisor unavailable"}}')
+        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+        $response.Close()
+        continue
+      }
 
     $content = [ordered]@{
       title = "advisor e2e local suggestion"
@@ -349,11 +382,17 @@ try {
       )
     } | ConvertTo-Json -Compress -Depth 12
 
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-    $response.StatusCode = 200
-    $response.ContentType = "application/json"
-    $response.OutputStream.Write($bytes, 0, $bytes.Length)
-    $response.Close()
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+      $response.StatusCode = 200
+      $response.ContentType = "application/json"
+      $response.OutputStream.Write($bytes, 0, $bytes.Length)
+      $response.Close()
+    } catch {
+      try {
+        $response.Abort()
+      } catch {
+      }
+    }
   }
 } finally {
   if ($listener.IsListening) {
@@ -377,6 +416,7 @@ function Start-MockAdvisor {
   $scriptPath = Join-Path $serverDir "mock-openai-compatible.ps1"
   $readyPath = Join-Path $serverDir "ready.txt"
   $requestLogPath = Join-Path $serverDir "requests.jsonl"
+  $controlPath = Join-Path $serverDir "control.json"
   Write-MockAdvisorServer -ScriptPath $scriptPath
   if (Test-Path -LiteralPath $readyPath) {
     Remove-Item -LiteralPath $readyPath -Force
@@ -384,10 +424,13 @@ function Start-MockAdvisor {
   if (Test-Path -LiteralPath $requestLogPath) {
     Remove-Item -LiteralPath $requestLogPath -Force
   }
+  [ordered]@{ mode = "success"; delay_ms = 0; status_code = 503 } |
+    ConvertTo-Json -Compress |
+    Set-Content -LiteralPath $controlPath -Encoding UTF8
 
   $prefix = "http://127.0.0.1:$Port/"
   $powershellPath = (Get-Process -Id $PID).Path
-  $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath, "-Prefix", $prefix, "-RequestLogPath", $requestLogPath, "-ReadyPath", $readyPath)
+  $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath, "-Prefix", $prefix, "-RequestLogPath", $requestLogPath, "-ReadyPath", $readyPath, "-ControlPath", $controlPath)
   $process = Start-Process -FilePath $powershellPath -ArgumentList $arguments -PassThru -WindowStyle Hidden
   $deadline = (Get-Date).ToUniversalTime().AddSeconds($TimeoutSeconds)
   while ((Get-Date).ToUniversalTime() -lt $deadline) {
@@ -401,12 +444,47 @@ function Start-MockAdvisor {
         process = $process
         base_url = "http://127.0.0.1:$Port/v1"
         request_log_path = $requestLogPath
+        control_path = $controlPath
       }
     }
     Start-Sleep -Milliseconds 200
   }
   Add-Check $Checks "advisor_e2e.mock_server" "error" "mock advisor server did not become ready before timeout" $null
   throw "mock advisor server did not become ready before timeout"
+}
+
+function Set-MockAdvisorMode {
+  param(
+    [string]$ControlPath,
+    [ValidateSet("success", "error")]
+    [string]$Mode,
+    [int]$DelayMillis = 0,
+    [int]$StatusCode = 503
+  )
+  [ordered]@{
+    mode = $Mode
+    delay_ms = $DelayMillis
+    status_code = $StatusCode
+  } | ConvertTo-Json -Compress | Set-Content -LiteralPath $ControlPath -Encoding UTF8
+}
+
+function Invoke-StewardAPI {
+  param(
+    [ValidateSet("Get", "Post")]
+    [string]$Method,
+    [string]$Uri,
+    [object]$Body = $null
+  )
+  $parameters = @{
+    Method = $Method
+    Uri = $Uri
+    TimeoutSec = 10
+  }
+  if ($null -ne $Body) {
+    $parameters.ContentType = "application/json"
+    $parameters.Body = ($Body | ConvertTo-Json -Compress -Depth 20)
+  }
+  return Invoke-RestMethod @parameters
 }
 
 function Stop-ProcessQuietly {
@@ -538,6 +616,7 @@ $binary = ""
 $advisorProcess = $null
 $stewardProcess = $null
 $advisorRequestLogPath = ""
+$advisorControlPath = ""
 $runtimeResult = $null
 $errorMessage = ""
 $usingMockAdvisor = -not $UseExternalAdvisor
@@ -559,6 +638,7 @@ try {
     $advisorProcess = $mock.process
     $AdvisorBaseURL = $mock.base_url
     $advisorRequestLogPath = $mock.request_log_path
+    $advisorControlPath = $mock.control_path
     $AdvisorAllowNoAPIKey = $true
   } else {
     if ([string]::IsNullOrWhiteSpace($AdvisorBaseURL)) {
@@ -596,9 +676,9 @@ try {
     "STEWARD_LLM_MODEL" = $AdvisorModel
     "STEWARD_LLM_ALLOW_NO_API_KEY" = [string]::Format("{0}", [bool]$AdvisorAllowNoAPIKey).ToLowerInvariant()
     "STEWARD_LLM_MAX_DATA_LEVEL" = $AdvisorMaxDataLevel
-    "STEWARD_LLM_TIMEOUT" = "10s"
+    "STEWARD_LLM_TIMEOUT" = if ($usingMockAdvisor) { "500ms" } else { "10s" }
     "STEWARD_LLM_FAILURE_THRESHOLD" = "2"
-    "STEWARD_LLM_FAILURE_COOLDOWN" = "10s"
+    "STEWARD_LLM_FAILURE_COOLDOWN" = if ($usingMockAdvisor) { "5s" } else { "10s" }
   }
   if (-not [string]::IsNullOrWhiteSpace($AdvisorAPIKey)) {
     $env["STEWARD_LLM_API_KEY"] = $AdvisorAPIKey
@@ -630,6 +710,79 @@ try {
       Add-Check $checks "advisor_e2e.advisor_request_count" "ok" "D0 advisor probe reached the model endpoint and D2 privacy probe was blocked locally" @{ request_count = $requestCount; request_log = $advisorRequestLogPath }
     } else {
       Add-Check $checks "advisor_e2e.advisor_request_count" "error" "unexpected mock advisor request count" @{ request_count = $requestCount; expected = 1; request_log = $advisorRequestLogPath }
+    }
+
+    Set-MockAdvisorMode -ControlPath $advisorControlPath -Mode "success" -DelayMillis 900
+    $timeoutProbe = Invoke-StewardAPI -Method Post -Uri "$apiBase/steward/autonomy/advisor/probe" -Body @{ data_level = "D0"; title = "advisor timeout probe" }
+    $requestCount = Get-MockAdvisorRequestCount -RequestLogPath $advisorRequestLogPath
+    if ($timeoutProbe.probe.ok -eq $false -and -not [string]::IsNullOrWhiteSpace([string]$timeoutProbe.probe.error) -and $requestCount -eq 2) {
+      Add-Check $checks "advisor_e2e.timeout" "ok" "advisor timeout was contained and recorded as a provider failure" @{ request_count = $requestCount; duration_ms = $timeoutProbe.probe.duration_ms }
+    } else {
+      Add-Check $checks "advisor_e2e.timeout" "error" "advisor timeout did not produce the expected contained failure" @{ request_count = $requestCount; probe = $timeoutProbe.probe }
+      throw "advisor timeout containment assertion failed"
+    }
+
+    Set-MockAdvisorMode -ControlPath $advisorControlPath -Mode "error" -StatusCode 503
+    $failureProbe = Invoke-StewardAPI -Method Post -Uri "$apiBase/steward/autonomy/advisor/probe" -Body @{ data_level = "D0"; title = "advisor provider failure probe" }
+    $requestCount = Get-MockAdvisorRequestCount -RequestLogPath $advisorRequestLogPath
+    $openOverview = Invoke-StewardAPI -Method Get -Uri "$apiBase/steward/autonomy"
+    $advisorStatus = $openOverview.autonomy.advisor
+    if ($failureProbe.probe.ok -eq $false -and $requestCount -eq 3 -and $advisorStatus.circuit_open -eq $true -and [int]$advisorStatus.consecutive_failures -ge 2 -and $null -ne $advisorStatus.retry_at) {
+      Add-Check $checks "advisor_e2e.circuit_open" "ok" "consecutive timeout and provider failures opened the advisor circuit" @{ request_count = $requestCount; consecutive_failures = $advisorStatus.consecutive_failures; retry_at = $advisorStatus.retry_at }
+    } else {
+      Add-Check $checks "advisor_e2e.circuit_open" "error" "advisor circuit did not open after the configured failure threshold" @{ request_count = $requestCount; advisor = $advisorStatus }
+      throw "advisor circuit-open assertion failed"
+    }
+
+    $shortCircuitProbe = Invoke-StewardAPI -Method Post -Uri "$apiBase/steward/autonomy/advisor/probe" -Body @{ data_level = "D0"; title = "advisor short circuit probe" }
+    $shortCircuitRequestCount = Get-MockAdvisorRequestCount -RequestLogPath $advisorRequestLogPath
+    if ($shortCircuitProbe.probe.ok -eq $false -and ([string]$shortCircuitProbe.probe.error) -match "circuit open" -and $shortCircuitRequestCount -eq 3) {
+      Add-Check $checks "advisor_e2e.circuit_short_circuit" "ok" "open circuit rejected a probe without calling the model endpoint" @{ request_count = $shortCircuitRequestCount }
+    } else {
+      Add-Check $checks "advisor_e2e.circuit_short_circuit" "error" "open circuit did not prevent an upstream advisor request" @{ request_count = $shortCircuitRequestCount; probe = $shortCircuitProbe.probe }
+      throw "advisor short-circuit assertion failed"
+    }
+
+    $eventTitle = "advisor fallback event $runID"
+    [void](Invoke-StewardAPI -Method Post -Uri "$apiBase/steward/events" -Body @{
+      type = "manual_note"
+      title = $eventTitle
+      summary = "verify local autonomy proposal generation while the advisor circuit is open"
+      source = "advisor_e2e"
+      data_level = "D0"
+      permission_level = "A3"
+      user_confirmed = $true
+    })
+    $autonomyRun = Invoke-StewardAPI -Method Post -Uri "$apiBase/steward/autonomy/run?limit=10"
+    $fallbackProposals = @($autonomyRun.autonomy.proposals | Where-Object { $_.source_entity_type -eq "event" -and ($_.title -eq "跟进：$eventTitle" -or $_.title -eq "摘要：$eventTitle") })
+    $fallbackRequestCount = Get-MockAdvisorRequestCount -RequestLogPath $advisorRequestLogPath
+    if ($fallbackProposals.Count -ge 2 -and $fallbackRequestCount -eq 3) {
+      Add-Check $checks "advisor_e2e.local_fallback" "ok" "autonomy created local rule proposals while the advisor circuit remained open" @{ proposal_count = $fallbackProposals.Count; request_count = $fallbackRequestCount }
+    } else {
+      Add-Check $checks "advisor_e2e.local_fallback" "error" "local autonomy fallback did not preserve proposal generation" @{ proposal_count = $fallbackProposals.Count; request_count = $fallbackRequestCount }
+      throw "advisor local fallback assertion failed"
+    }
+
+    $auditResponse = Invoke-StewardAPI -Method Get -Uri "$apiBase/steward/audit-logs?limit=100"
+    $fallbackAudits = @($auditResponse.audit_logs | Where-Object { $_.action -eq "autonomy.advisor.fallback" -and $_.result_status -eq "failed" })
+    if ($fallbackAudits.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace([string]$fallbackAudits[0].error_summary)) {
+      Add-Check $checks "advisor_e2e.failure_audit" "ok" "advisor fallback produced a sanitized failure audit" @{ audit_count = $fallbackAudits.Count; action = $fallbackAudits[0].action }
+    } else {
+      Add-Check $checks "advisor_e2e.failure_audit" "error" "advisor fallback failure audit was not found" @{ audit_count = $fallbackAudits.Count }
+      throw "advisor fallback audit assertion failed"
+    }
+
+    Set-MockAdvisorMode -ControlPath $advisorControlPath -Mode "success"
+    Start-Sleep -Milliseconds 5300
+    $recoveryProbe = Invoke-StewardAPI -Method Post -Uri "$apiBase/steward/autonomy/advisor/probe" -Body @{ data_level = "D0"; title = "advisor recovery probe" }
+    $recoveredOverview = Invoke-StewardAPI -Method Get -Uri "$apiBase/steward/autonomy"
+    $recoveredStatus = $recoveredOverview.autonomy.advisor
+    $recoveryRequestCount = Get-MockAdvisorRequestCount -RequestLogPath $advisorRequestLogPath
+    if ($recoveryProbe.probe.ok -eq $true -and $recoveryRequestCount -eq 4 -and $recoveredStatus.circuit_open -ne $true -and [int]$recoveredStatus.consecutive_failures -eq 0 -and [string]::IsNullOrWhiteSpace([string]$recoveredStatus.last_error)) {
+      Add-Check $checks "advisor_e2e.recovery" "ok" "advisor recovered after cooldown and reset circuit failure state" @{ request_count = $recoveryRequestCount }
+    } else {
+      Add-Check $checks "advisor_e2e.recovery" "error" "advisor did not recover cleanly after cooldown" @{ request_count = $recoveryRequestCount; advisor = $recoveredStatus; probe = $recoveryProbe.probe }
+      throw "advisor recovery assertion failed"
     }
   }
 } catch {

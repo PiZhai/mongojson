@@ -884,7 +884,7 @@ func (h *Handler) registerStewardDevice(w http.ResponseWriter, r *http.Request) 
 	}
 	device, err := service.RegisterDevice(r.Context(), body)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	respondJSON(w, http.StatusCreated, map[string]domain.StewardDevice{"device": device})
@@ -1094,7 +1094,7 @@ func (h *Handler) importStewardSyncChanges(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	signedDeviceID := strings.TrimSpace(r.Header.Get(steward.SyncHeaderDeviceID))
-	if signedDeviceID != "" && strings.TrimSpace(body.Device.ID) != "" && signedDeviceID != strings.TrimSpace(body.Device.ID) {
+	if signedDeviceID != "" && signedDeviceID != strings.TrimSpace(body.Device.ID) {
 		httpError(w, http.StatusUnauthorized, "sync signature device does not match payload device")
 		return
 	}
@@ -1346,6 +1346,19 @@ func (h *Handler) executeStewardAutonomyProposal(w http.ResponseWriter, r *http.
 		return
 	}
 	run, err := service.ExecuteAutonomyProposal(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardAutonomousRun{"run": run})
+}
+
+func (h *Handler) retryStewardAutonomyProposal(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardService(w)
+	if !ok {
+		return
+	}
+	run, err := service.RetryAutonomyProposal(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return

@@ -435,7 +435,7 @@ function New-LocalManifestArgs {
     Add-Arg $commandArgs "--require-kind" "service"
     Add-Arg $commandArgs "--require-platform" $LocalPlatform
     Add-Arg $commandArgs "--require-kind-platform" ("service:" + $LocalPlatform)
-    foreach ($check in @("service.status", "service.runtime", "service.watch", "service.watch.heartbeat", "s3.sync.security.strict", "s4.autonomy.status", "s4.advisor.probe", "s4.advisor.privacy_probe")) {
+    foreach ($check in @("service.status", "service.runtime", "service.watch", "service.watch.heartbeat", "daemon.loops.status", "s3.device.policy_contract", "s3.sync.change_contract", "s3.sync.security.strict", "s4.autonomy.status", "s4.autonomy.policy_contract", "s4.autonomy.policy_gate", "s4.autonomy.retry_policy", "s4.advisor.probe", "s4.advisor.privacy_probe")) {
       Add-Arg $commandArgs "--require-kind-check-platform" ("service:" + $check + ":" + $LocalPlatform)
     }
     if (-not [string]::IsNullOrWhiteSpace($LocalAgentID)) {
@@ -472,7 +472,7 @@ function New-LocalManifestArgs {
       }
       Add-Arg $commandArgs "--require-platform" $platform
       Add-Arg $commandArgs "--require-kind-platform" ("mesh:" + $platform)
-      foreach ($check in @("mesh.watch", "mesh.watch.heartbeat", "s3.peers.present", "s3.peers.status", "s3.sync.security.strict", "s3.peer_probe.task", "s3.peer_probe.source_ref", "s3.peer_probe.data_tag", "s3.peer_probe.entity_tag", "s3.peer_probe.event", "s3.peer_probe.timeline_segment", "s3.peer_probe.relations", "s4.autonomy.status", "s4.advisor.probe", "s4.advisor.privacy_probe")) {
+      foreach ($check in @("mesh.watch", "mesh.watch.heartbeat", "daemon.loops.status", "s3.device.policy_contract", "s3.sync.change_contract", "s3.peers.present", "s3.peers.status", "s3.sync.security.strict", "s3.peer_probe.task", "s3.peer_probe.source_ref", "s3.peer_probe.data_tag", "s3.peer_probe.entity_tag", "s3.peer_probe.event", "s3.peer_probe.timeline_segment", "s3.peer_probe.relations", "s4.autonomy.status", "s4.autonomy.policy_contract", "s4.autonomy.policy_gate", "s4.autonomy.retry_policy", "s4.advisor.probe", "s4.advisor.privacy_probe")) {
         Add-Arg $commandArgs "--require-kind-check-platform" ("mesh:" + $check + ":" + $platform)
       }
       if ((Normalize-NonEmptyValues -Values $ExpectedSyncKeyIDs).Count -gt 0) {

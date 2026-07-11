@@ -80,6 +80,12 @@ func (s *Service) decideApproval(ctx context.Context, id string, status string, 
 			return domain.StewardApprovalRequest{}, err
 		}
 		defer lease.Release()
+		gatedCtx, policyGate, gateErr := acquireAutonomyPolicyReadGate(ctx, s.db.Pool)
+		if gateErr != nil {
+			return domain.StewardApprovalRequest{}, gateErr
+		}
+		defer policyGate.Release()
+		ctx = gatedCtx
 		proposal, err := s.getAutonomyProposal(ctx, *current.ProposalID)
 		if err != nil {
 			return domain.StewardApprovalRequest{}, err
@@ -91,6 +97,14 @@ func (s *Service) decideApproval(ctx context.Context, id string, status string, 
 		}
 		if !shouldTransition {
 			proposalTransition = ""
+		}
+		if proposalTransition == ProposalApproved {
+			if _, issue, policyErr := s.currentRuleExecutionPolicy(ctx, proposal); policyErr != nil {
+				return domain.StewardApprovalRequest{}, policyErr
+			} else if issue != "" {
+				s.recordAutonomyApprovalPolicyDenied(ctx, "approval_request", current.ID, issue)
+				return domain.StewardApprovalRequest{}, fmt.Errorf("current autonomy rule blocks approval: %s", issue)
+			}
 		}
 	}
 
@@ -113,4 +127,25 @@ func (s *Service) decideApproval(ctx context.Context, id string, status string, 
 		}
 	}
 	return s.getApprovalRequest(ctx, id)
+}
+
+func (s *Service) recordAutonomyApprovalPolicyDenied(ctx context.Context, targetType string, targetID string, issue string) {
+	confirmed := true
+	syncable := false
+	_, _ = s.recordAudit(ctx, AuditInput{
+		Actor:           "user",
+		Action:          "autonomy.approval.current_rule_denied",
+		TargetType:      targetType,
+		TargetID:        stringPtr(targetID),
+		Source:          "manual",
+		PermissionLevel: PermissionA3,
+		DataLevel:       DataD2,
+		InputSummary:    "approval rejected by current rule",
+		OutputSummary:   "approval was not applied",
+		Reason:          issue,
+		UserConfirmed:   &confirmed,
+		Syncable:        &syncable,
+		ResultStatus:    ResultBlocked,
+		ErrorSummary:    stringPtr(issue),
+	})
 }

@@ -218,12 +218,12 @@ function Invoke-ReadinessStep {
 
 function Add-ManifestRequirement {
   param(
-    [System.Collections.ArrayList]$Args,
+    [System.Collections.ArrayList]$List,
     [string]$Flag,
     [string]$Value
   )
-  [void]$Args.Add($Flag)
-  [void]$Args.Add($Value)
+  [void]$List.Add($Flag)
+  [void]$List.Add($Value)
 }
 
 Require-Command "go"
@@ -331,7 +331,7 @@ try {
   }
   if (-not $SkipServiceEnvPreflight) {
     Add-ManifestRequirement $manifestArgs "--require-kind" "service-env-preflight"
-    foreach ($check in @("service_env_preflight.plan", "service_env_preflight.redaction", "service_env_preflight.rotation", "service_env_preflight.verification_advice", "service_env_preflight.no_service_manager", "service_env_preflight.install_plan", "service_env_preflight.private_environment_artifacts")) {
+    foreach ($check in @("service_env_preflight.plan", "service_env_preflight.redaction", "service_env_preflight.rotation", "service_env_preflight.retry_policy", "service_env_preflight.verification_advice", "service_env_preflight.no_service_manager", "service_env_preflight.install_plan", "service_env_preflight.private_environment_artifacts")) {
       Add-ManifestRequirement $manifestArgs "--require-check" $check
     }
   }
@@ -344,7 +344,7 @@ try {
   if (-not $SkipLocalMesh) {
     Add-ManifestRequirement $manifestArgs "--require-kind" "local-mesh"
     Add-ManifestRequirement $manifestArgs "--require-kind" "mesh"
-    foreach ($check in @("local_mesh.verify_mesh", "local_mesh.autonomy_execute", "s3.sync.security.strict", "s4.autonomy.status")) {
+    foreach ($check in @("local_mesh.verify_mesh", "local_mesh.autonomy_execute", "daemon.loops.status", "s3.device.policy_contract", "s3.sync.change_contract", "s3.sync.security.strict", "s4.autonomy.status", "s4.autonomy.policy_contract", "s4.autonomy.policy_gate", "s4.autonomy.retry_policy")) {
       Add-ManifestRequirement $manifestArgs "--require-check" $check
     }
     foreach ($check in @("s3.peer_probe.task", "s3.peer_probe.source_ref", "s3.peer_probe.data_tag", "s3.peer_probe.entity_tag", "s3.peer_probe.event", "s3.peer_probe.timeline_segment", "s3.peer_probe.relations")) {
@@ -354,17 +354,32 @@ try {
   if (-not $SkipAdvisorE2E) {
     Add-ManifestRequirement $manifestArgs "--require-kind" "advisor-e2e"
     Add-ManifestRequirement $manifestArgs "--require-kind" "runtime"
-    Add-ManifestRequirement $manifestArgs "--require-check" "advisor_e2e.verify_runtime"
-    Add-ManifestRequirement $manifestArgs "--require-check" "advisor_e2e.advisor_request_count"
+    foreach ($check in @(
+      "advisor_e2e.verify_runtime",
+      "advisor_e2e.advisor_request_count",
+      "advisor_e2e.timeout",
+      "advisor_e2e.circuit_open",
+      "advisor_e2e.circuit_short_circuit",
+      "advisor_e2e.local_fallback",
+      "advisor_e2e.failure_audit",
+      "advisor_e2e.recovery"
+    )) {
+      Add-ManifestRequirement $manifestArgs "--require-check" $check
+    }
     Add-ManifestRequirement $manifestArgs "--require-kind-check-platform" ("runtime:s4.advisor.probe:" + $hostPlatform)
     Add-ManifestRequirement $manifestArgs "--require-kind-check-platform" ("runtime:s4.advisor.privacy_probe:" + $hostPlatform)
   }
   if (-not $SkipRuntimeWatch) {
     Add-ManifestRequirement $manifestArgs "--require-kind" "runtime-watch"
     Add-ManifestRequirement $manifestArgs "--require-kind" "runtime"
-    foreach ($check in @("runtime_watch.verify_runtime", "runtime_watch.heartbeat", "runtime.watch.heartbeat", "runtime.watch", "s3.sync.security.strict", "s4.write.autonomy_run")) {
+    foreach ($check in @("runtime_watch.verify_runtime", "runtime_watch.heartbeat", "runtime.watch.heartbeat", "runtime.watch", "daemon.loops.status", "s3.device.policy_contract", "s3.sync.change_contract", "s3.sync.security.strict", "s4.autonomy.policy_contract", "s4.autonomy.policy_gate", "s4.autonomy.retry_policy", "s4.write.autonomy_run")) {
       Add-ManifestRequirement $manifestArgs "--require-check" $check
     }
+  }
+
+  $hasEnabledEvidenceStep = -not ($SkipDistPreflight -and $SkipPostgresE2E -and $SkipServicePreflight -and $SkipServiceEnvPreflight -and $SkipPairingBootstrapPreflight -and $SkipLocalMesh -and $SkipAdvisorE2E -and $SkipRuntimeWatch)
+  if ($hasEnabledEvidenceStep -and -not $manifestArgs.Contains("--require-kind")) {
+    throw "local readiness manifest contract lost all dynamic evidence requirements"
   }
 
   $manifestPath = Join-Path $runRoot "manifest.json"
@@ -372,7 +387,29 @@ try {
   [void]$manifestArgs.Add($manifestPath)
   $manifestResult = Invoke-CommandCapture -FilePath $binary -Arguments ([string[]]$manifestArgs)
   $manifestOutput = Convert-CommandJson -Result $manifestResult
-  if ($manifestResult.exit_code -eq 0 -and $null -ne $manifestOutput -and $manifestOutput.manifest.ok -eq $true) {
+  $manifestContractOK = $null -ne $manifestOutput
+  if ($manifestContractOK -and $hasEnabledEvidenceStep) {
+    $manifestContractOK = @($manifestOutput.manifest.options.require_kinds).Count -gt 0
+  }
+  if ($manifestContractOK -and -not $SkipServiceEnvPreflight) {
+    $manifestContractOK = @($manifestOutput.manifest.options.require_checks) -contains "service_env_preflight.retry_policy"
+  }
+  if ($manifestContractOK -and -not $SkipLocalMesh) {
+    $manifestContractOK = @($manifestOutput.manifest.options.require_kind_check_platforms) -contains ("mesh:s3.peer_probe.relations:" + $hostPlatform)
+  }
+  if ($manifestContractOK -and -not $SkipAdvisorE2E) {
+    $manifestContractOK = @($manifestOutput.manifest.options.require_checks) -contains "advisor_e2e.recovery"
+  }
+  if ($manifestContractOK -and -not $SkipRuntimeWatch) {
+    $requiredChecks = @($manifestOutput.manifest.options.require_checks)
+    $manifestContractOK = ($requiredChecks -contains "daemon.loops.status") -and ($requiredChecks -contains "s3.device.policy_contract") -and ($requiredChecks -contains "s3.sync.change_contract") -and ($requiredChecks -contains "s4.autonomy.policy_contract") -and ($requiredChecks -contains "s4.autonomy.policy_gate") -and ($requiredChecks -contains "s4.autonomy.retry_policy")
+  }
+  if ($manifestContractOK) {
+    Add-Check $checks "local_readiness.manifest_contract" "ok" "combined manifest retained the configured S3/S4 evidence requirements" $null
+  } else {
+    Add-Check $checks "local_readiness.manifest_contract" "error" "combined manifest did not retain the configured S3/S4 evidence requirements" $null
+  }
+  if ($manifestResult.exit_code -eq 0 -and $null -ne $manifestOutput -and $manifestOutput.manifest.ok -eq $true -and $manifestContractOK) {
     Add-Check $checks "local_readiness.manifest" "ok" "combined local readiness evidence manifest passed" @{
       manifest_path = $manifestPath
     }

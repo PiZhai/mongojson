@@ -35,7 +35,14 @@ func (s *Service) getAutonomyProposal(ctx context.Context, id string) (domain.St
 		from steward_autonomy_proposals
 		where id = $1
 	`, id)
-	return scanAutonomyProposal(row)
+	proposal, err := scanAutonomyProposal(row)
+	if err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
+	if err := s.populateAutonomyRetryState(ctx, &proposal); err != nil {
+		return domain.StewardAutonomyProposal{}, err
+	}
+	return proposal, nil
 }
 
 func (s *Service) getApprovalRequest(ctx context.Context, id string) (domain.StewardApprovalRequest, error) {

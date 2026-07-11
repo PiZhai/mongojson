@@ -384,6 +384,50 @@ func TestServiceInstallOptionsFromEnvSupportsStrictValidation(t *testing.T) {
 	}
 }
 
+func TestValidateStrictAutonomyRetryEnvironment(t *testing.T) {
+	valid := map[string]string{
+		"STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS": "3",
+		"STEWARD_AUTONOMY_RETRY_BACKOFF":      "5m",
+		"STEWARD_AUTONOMY_RETRY_MAX_BACKOFF":  "1h",
+	}
+	if err := validateStrictAutonomyRetryEnvironment(valid); err != nil {
+		t.Fatalf("valid autonomy retry environment rejected: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "attempt limit",
+			env:  map[string]string{"STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS": "0"},
+			want: "integer from 1 to 20",
+		},
+		{
+			name: "invalid backoff",
+			env:  map[string]string{"STEWARD_AUTONOMY_RETRY_BACKOFF": "later"},
+			want: "duration greater than 0",
+		},
+		{
+			name: "max below initial",
+			env: map[string]string{
+				"STEWARD_AUTONOMY_RETRY_BACKOFF":     "1h",
+				"STEWARD_AUTONOMY_RETRY_MAX_BACKOFF": "5m",
+			},
+			want: "must be greater than or equal",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateStrictAutonomyRetryEnvironment(test.env)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestServiceRestartDryRun(t *testing.T) {
 	if err := serviceSimpleAction([]string{"--name", "MongojsonStewardTest", "--dry-run"}, "restart"); err != nil {
 		t.Fatalf("restart dry run failed: %v", err)

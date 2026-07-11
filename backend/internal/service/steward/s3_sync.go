@@ -13,34 +13,51 @@ import (
 )
 
 func (s *Service) ImportSyncChanges(ctx context.Context, input ImportSyncChangesInput) (ImportSyncChangesResult, error) {
+	senderDeviceID := strings.TrimSpace(input.Device.ID)
+	if senderDeviceID == "" || senderDeviceID == s.agentIDValue() {
+		return ImportSyncChangesResult{}, fmt.Errorf("%w: payload device must identify a remote peer", ErrSyncPermissionDenied)
+	}
 	preparedInput, err := s.PrepareImportSyncChanges(ctx, input)
 	if err != nil {
 		return ImportSyncChangesResult{}, err
 	}
 	input = preparedInput
-	if strings.TrimSpace(input.Device.ID) != "" && strings.TrimSpace(input.Device.ID) != s.agentIDValue() {
-		if err := s.observeSyncPeer(ctx, input.Device); err != nil {
-			return ImportSyncChangesResult{}, err
-		}
+	if err := s.observeSyncPeer(ctx, input.Device); err != nil {
+		return ImportSyncChangesResult{}, err
 	}
 	result := ImportSyncChangesResult{
 		Conflicts: []domain.StewardSyncConflict{},
 		Changes:   []domain.StewardSyncChange{},
 	}
 	for _, item := range input.Changes {
-		if strings.TrimSpace(input.Device.ID) != "" && strings.TrimSpace(input.Device.ID) != s.agentIDValue() {
-			if err := s.authorizeDeviceSyncChange(ctx, input.Device.ID, item.EntityType, item.Payload); err != nil {
-				if errors.Is(err, ErrSyncPermissionDenied) {
-					result.Denied++
-					result.Skipped++
-					s.recordSyncPermissionDenied(ctx, input.Device.ID, item, err)
-					continue
-				}
-				return ImportSyncChangesResult{}, err
+		normalized, err := s.normalizeImportedSyncChange(ctx, senderDeviceID, item)
+		if err != nil {
+			if errors.Is(err, ErrSyncChangeInvalid) {
+				result.Denied++
+				result.Skipped++
+				s.recordSyncChangeInvalid(ctx, senderDeviceID, item, err)
+				continue
 			}
+			return ImportSyncChangesResult{}, err
+		}
+		item = normalized
+		if err := s.authorizeDeviceSyncChange(ctx, senderDeviceID, item.EntityType, item.Payload); err != nil {
+			if errors.Is(err, ErrSyncPermissionDenied) {
+				result.Denied++
+				result.Skipped++
+				s.recordSyncPermissionDenied(ctx, senderDeviceID, item, err)
+				continue
+			}
+			return ImportSyncChangesResult{}, err
 		}
 		change, created, err := s.createSyncChange(ctx, item)
 		if err != nil {
+			if errors.Is(err, ErrSyncChangeInvalid) {
+				result.Denied++
+				result.Skipped++
+				s.recordSyncChangeInvalid(ctx, senderDeviceID, item, err)
+				continue
+			}
 			return result, err
 		}
 		if created {

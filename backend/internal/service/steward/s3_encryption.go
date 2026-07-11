@@ -393,7 +393,7 @@ func syncChangeEncryptionAAD(change domain.StewardSyncChange) string {
 }
 
 func syncChangeInputEncryptionAAD(change CreateSyncChangeInput) string {
-	return syncEncryptionAAD(change.ID, change.EntityType, change.EntityID, normalizeOperation(change.Operation), change.OriginDeviceID, change.Version, change.DataLevel)
+	return syncEncryptionAAD(change.ID, change.EntityType, change.EntityID, change.Operation, change.OriginDeviceID, change.Version, change.DataLevel)
 }
 
 func syncEncryptionAAD(id string, entityType string, entityID string, operation string, originDeviceID string, version int, dataLevel string) string {

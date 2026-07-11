@@ -330,6 +330,20 @@ export type StewardAgentStatus = {
   started_at?: string | null;
   last_heartbeat_at?: string | null;
   last_error?: string | null;
+  background_loops: StewardBackgroundLoopStatus[];
+  updated_at: string;
+};
+
+export type StewardBackgroundLoopStatus = {
+  name: string;
+  enabled: boolean;
+  running: boolean;
+  interval: string;
+  last_started_at?: string | null;
+  last_completed_at?: string | null;
+  last_success_at?: string | null;
+  last_error?: string | null;
+  consecutive_failures: number;
   updated_at: string;
 };
 
@@ -672,6 +686,12 @@ export type StewardSyncStatus = {
   last_change_at?: string | null;
   recent_changes: StewardSyncChange[];
   conflicts: StewardSyncConflict[];
+  change_contract: {
+    healthy: boolean;
+    checked_changes: number;
+    invalid_changes: number;
+    issues: string[];
+  };
 };
 
 export type StewardDeviceCapability = {
@@ -771,6 +791,10 @@ export type StewardAutonomyProposal = {
   execution_target_type?: string;
   execution_target_id?: string;
   audit_id?: string | null;
+  failed_attempts: number;
+  retry_eligible: boolean;
+  retry_exhausted: boolean;
+  auto_retry_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -820,9 +844,27 @@ export type StewardAutonomyAdvisorStatus = {
   last_error?: string;
 };
 
+export type StewardAutonomyRetryPolicy = {
+  max_attempts: number;
+  backoff: string;
+  max_backoff: string;
+};
+
+export type StewardAutonomyPolicyGateStatus = {
+  enabled: boolean;
+  backend: string;
+  cycle_read_barrier: boolean;
+  execution_read_barrier: boolean;
+  settings_write_barrier: boolean;
+  rule_write_barrier: boolean;
+  current_rule_revalidation: boolean;
+};
+
 export type StewardAutonomyOverview = {
   settings: StewardAutonomySettings;
   advisor: StewardAutonomyAdvisorStatus;
+  retry_policy: StewardAutonomyRetryPolicy;
+  policy_gate: StewardAutonomyPolicyGateStatus;
   actions: StewardAutonomyActionCapability[];
   rules: StewardAutonomyRule[];
   proposals: StewardAutonomyProposal[];

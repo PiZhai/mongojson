@@ -10,13 +10,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"mongojson/backend/internal/domain"
 )
 
 func (s *Service) CreateSyncChange(ctx context.Context, input CreateSyncChangeInput) (domain.StewardSyncChange, error) {
+	input, err := s.normalizeLocalSyncChange(input)
+	if err != nil {
+		return domain.StewardSyncChange{}, err
+	}
 	change, _, err := s.createSyncChange(ctx, input)
 	return change, err
 }
@@ -25,27 +28,19 @@ func (s *Service) createSyncChange(ctx context.Context, input CreateSyncChangeIn
 	if strings.TrimSpace(input.ID) != "" {
 		existing, err := s.getSyncChange(ctx, strings.TrimSpace(input.ID))
 		if err == nil {
+			if !syncChangeMatchesInput(existing, input) {
+				return domain.StewardSyncChange{}, false, syncChangeInvalid("id already exists with different immutable content")
+			}
 			return existing, false, nil
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return domain.StewardSyncChange{}, false, err
 		}
 	}
-	if input.Payload == nil {
-		input.Payload = map[string]any{}
-	}
-	if input.Version <= 0 {
-		input.Version = 1
-	}
-	origin := defaultString(input.OriginDeviceID, s.agentIDValue())
-	id := defaultString(input.ID, uuid.NewString())
-	operation := normalizeOperation(input.Operation)
-	dataLevel := defaultString(input.DataLevel, DataD0)
-	if _, err := s.getDevice(ctx, origin); err != nil {
-		if _, registerErr := s.RegisterDevice(ctx, RegisterDeviceInput{ID: origin, DeviceName: origin, Platform: "unknown"}); registerErr != nil {
-			return domain.StewardSyncChange{}, false, registerErr
-		}
-	}
+	origin := input.OriginDeviceID
+	id := input.ID
+	operation := input.Operation
+	dataLevel := input.DataLevel
 	plainPayload, err := json.Marshal(input.Payload)
 	if err != nil {
 		return domain.StewardSyncChange{}, false, fmt.Errorf("marshal sync payload: %w", err)
@@ -82,6 +77,9 @@ func (s *Service) createSyncChange(ctx context.Context, input CreateSyncChangeIn
 		existing, getErr := s.getSyncChange(ctx, id)
 		if getErr != nil {
 			return domain.StewardSyncChange{}, false, fmt.Errorf("read concurrent steward sync change %s: %w", id, getErr)
+		}
+		if !syncChangeMatchesInput(existing, input) {
+			return domain.StewardSyncChange{}, false, syncChangeInvalid("id concurrently appeared with different immutable content")
 		}
 		return existing, false, nil
 	} else if err != nil {
@@ -241,15 +239,6 @@ func (p *payloadScanner) Scan(src any) error {
 	default:
 		*p.value = map[string]any{}
 		return nil
-	}
-}
-
-func normalizeOperation(value string) string {
-	switch strings.TrimSpace(value) {
-	case SyncCreate, SyncUpdate, SyncDelete:
-		return strings.TrimSpace(value)
-	default:
-		return SyncUpdate
 	}
 }
 

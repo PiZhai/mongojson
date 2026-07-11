@@ -21,7 +21,7 @@ func TestRunRuntimeVerificationWithWriteProbes(t *testing.T) {
 		writeTestJSON(w, map[string]any{"status": "ok", "checks": map[string]string{"database": "ok", "steward_daemon": "ok"}})
 	})
 	mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "version": "version-smoke", "platform": "windows", "status": "running"}})
+		writeTestJSON(w, map[string]any{"agent": testAgentPayload("windows-main", "windows")})
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatus("task-1", true)})
@@ -77,7 +77,7 @@ func TestRunRuntimeVerificationStrictSecurityFailsWhenKeysMissing(t *testing.T) 
 		writeTestJSON(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "version": "version-smoke", "platform": "windows", "status": "running"}})
+		writeTestJSON(w, map[string]any{"agent": testAgentPayload("windows-main", "windows")})
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatus("", false)})
@@ -158,7 +158,7 @@ func TestRunRuntimeVerificationChecksDiscoveryHealth(t *testing.T) {
 				writeTestJSON(w, map[string]any{"status": "ok"})
 			})
 			mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
-				writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "status": "running"}})
+				writeTestJSON(w, map[string]any{"agent": testAgentPayload("windows-main", "windows")})
 			})
 			mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 				sync := testSyncStatus("", false)
@@ -197,7 +197,7 @@ func TestRunRuntimeVerificationStrictSecurityChecksAdvisorRuntime(t *testing.T) 
 		writeTestJSON(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "status": "running"}})
+		writeTestJSON(w, map[string]any{"agent": testAgentPayload("windows-main", "windows")})
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatus("", true)})
@@ -232,7 +232,7 @@ func TestRunRuntimeVerificationStrictSecurityAllowsDisabledAdvisor(t *testing.T)
 		writeTestJSON(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "status": "running"}})
+		writeTestJSON(w, map[string]any{"agent": testAgentPayload("windows-main", "windows")})
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatus("", true)})
@@ -266,7 +266,7 @@ func TestRunRuntimeVerificationAdvisorProbe(t *testing.T) {
 		writeTestJSON(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "version": "version-smoke", "status": "running"}})
+		writeTestJSON(w, map[string]any{"agent": testAgentPayload("windows-main", "windows")})
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatus("", true)})
@@ -329,7 +329,7 @@ func TestRunRuntimeVerificationAdvisorPrivacyProbe(t *testing.T) {
 		writeTestJSON(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "status": "running"}})
+		writeTestJSON(w, map[string]any{"agent": testAgentPayload("windows-main", "windows")})
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatus("", true)})
@@ -390,7 +390,7 @@ func TestRunRuntimeVerificationExpectedRuntimeSecurity(t *testing.T) {
 		writeTestJSON(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": "windows-main", "version": "version-smoke", "platform": "windows", "status": "running"}})
+		writeTestJSON(w, map[string]any{"agent": testAgentPayload("windows-main", "windows")})
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatus("", true)})
@@ -558,7 +558,7 @@ func TestRunPeersVerificationVerifiesAndSyncsPeer(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatusWithDevices([]any{
-			map[string]any{"id": "windows-main", "device_name": "Windows", "role": "local", "trust_status": "trusted", "sync_enabled": true},
+			map[string]any{"id": "windows-main", "device_name": "Windows", "platform": "windows", "role": "local", "trust_status": "trusted", "sync_enabled": true},
 			map[string]any{
 				"id":           "macbook-main",
 				"device_name":  "MacBook",
@@ -674,7 +674,7 @@ func TestRunPeersVerificationSyncWriteProbeChecksPeerVisibility(t *testing.T) {
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatusWithDevices([]any{
-			map[string]any{"id": "windows-main", "device_name": "Windows", "role": "local", "trust_status": "trusted", "sync_enabled": true},
+			map[string]any{"id": "windows-main", "device_name": "Windows", "platform": "windows", "role": "local", "trust_status": "trusted", "sync_enabled": true},
 			map[string]any{
 				"id":           "macbook-main",
 				"device_name":  "MacBook",
@@ -792,7 +792,7 @@ func TestRunPeersVerificationWriteProbeDoesNotCreateTaskWithoutSyncablePeer(t *t
 	})
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatusWithDevices([]any{
-			map[string]any{"id": "windows-main", "device_name": "Windows", "role": "local", "trust_status": "trusted", "sync_enabled": true},
+			map[string]any{"id": "windows-main", "device_name": "Windows", "platform": "windows", "role": "local", "trust_status": "trusted", "sync_enabled": true},
 			map[string]any{
 				"id":           "linux-lab",
 				"device_name":  "Linux Lab",
@@ -824,7 +824,7 @@ func TestRunPeersVerificationStrictFailsForIncompletePeer(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{"sync": testSyncStatusWithDevices([]any{
-			map[string]any{"id": "windows-main", "device_name": "Windows", "role": "local", "trust_status": "trusted", "sync_enabled": true},
+			map[string]any{"id": "windows-main", "device_name": "Windows", "platform": "windows", "role": "local", "trust_status": "trusted", "sync_enabled": true},
 			map[string]any{
 				"id":           "linux-lab",
 				"device_name":  "Linux Lab",
@@ -861,11 +861,12 @@ func TestRunMeshVerificationChecksMultipleNodes(t *testing.T) {
 		})
 		mux.HandleFunc(nodePrefix+"/api/steward/agent", func(w http.ResponseWriter, _ *http.Request) {
 			platform := map[string]string{"/win": "windows", "/mac": "darwin"}[nodePrefix]
-			writeTestJSON(w, map[string]any{"agent": map[string]any{"agent_id": strings.TrimPrefix(nodePrefix, "/"), "platform": platform, "status": "running"}})
+			writeTestJSON(w, map[string]any{"agent": testAgentPayload(strings.TrimPrefix(nodePrefix, "/"), platform)})
 		})
 		mux.HandleFunc(nodePrefix+"/api/steward/sync/status", func(w http.ResponseWriter, _ *http.Request) {
+			platform := map[string]string{"/win": "windows", "/mac": "darwin"}[nodePrefix]
 			sync := testSyncStatusWithDevices([]any{
-				map[string]any{"id": strings.TrimPrefix(nodePrefix, "/"), "device_name": nodePrefix, "role": "local", "trust_status": "trusted", "sync_enabled": true},
+				map[string]any{"id": strings.TrimPrefix(nodePrefix, "/"), "device_name": nodePrefix, "platform": platform, "role": "local", "trust_status": "trusted", "sync_enabled": true},
 			})
 			sync["security"] = map[string]any{
 				"sync_encryption_key_id":  "sync-v1",
@@ -1268,49 +1269,99 @@ func testSyncStatus(taskID string, secure bool) map[string]any {
 	if taskID != "" {
 		changes = append(changes, map[string]any{"entity_type": "task", "entity_id": taskID})
 	}
-	return map[string]any{
-		"local_device":    map[string]any{"id": "windows-main"},
-		"pending_changes": len(changes),
-		"conflict_count":  0,
-		"last_change_at":  time.Now().UTC().Format(time.RFC3339),
-		"recent_changes":  changes,
-		"security": map[string]any{
-			"auth_required":                  secure,
-			"peer_api_enabled":               secure,
-			"peer_api_advertised":            secure,
-			"management_remote_access":       false,
-			"hmac_secret_configured":         secure,
-			"device_signing_ready":           secure,
-			"device_identity_advertisable":   secure,
-			"sync_encryption_configured":     secure,
-			"local_encryption_configured":    secure,
-			"sync_previous_key_count":        0,
-			"local_previous_key_count":       0,
-			"device_private_key_configured":  secure,
-			"device_private_key_valid":       secure,
-			"device_public_key_configured":   secure,
-			"device_public_key_valid":        secure,
-			"sync_encryption_key_id":         "sync-v1",
-			"local_encryption_key_id":        "local-v1",
-			"config_errors":                  []any{},
-			"hmac_secret_configured_warning": false,
+	status := testSyncStatusWithDevices([]any{
+		map[string]any{
+			"id": "windows-main", "device_name": "Windows", "platform": "windows", "role": "local",
+			"trust_status": "trusted", "sync_enabled": true, "permission_level": "A3",
 		},
+	})
+	status["pending_changes"] = len(changes)
+	status["last_change_at"] = time.Now().UTC().Format(time.RFC3339)
+	status["recent_changes"] = changes
+	status["security"] = map[string]any{
+		"auth_required":                  secure,
+		"peer_api_enabled":               secure,
+		"peer_api_advertised":            secure,
+		"management_remote_access":       false,
+		"hmac_secret_configured":         secure,
+		"device_signing_ready":           secure,
+		"device_identity_advertisable":   secure,
+		"sync_encryption_configured":     secure,
+		"local_encryption_configured":    secure,
+		"sync_previous_key_count":        0,
+		"local_previous_key_count":       0,
+		"device_private_key_configured":  secure,
+		"device_private_key_valid":       secure,
+		"device_public_key_configured":   secure,
+		"device_public_key_valid":        secure,
+		"sync_encryption_key_id":         "sync-v1",
+		"local_encryption_key_id":        "local-v1",
+		"config_errors":                  []any{},
+		"hmac_secret_configured_warning": false,
 	}
+	return status
 }
 
 func testSyncStatusWithDevices(devices []any) map[string]any {
+	localID := ""
+	localName := ""
+	localPlatform := "unknown"
+	permissions := []any{}
+	for _, item := range devices {
+		device, _ := item.(map[string]any)
+		id := stringAt(device, "id")
+		if stringAt(device, "platform") == "" {
+			device["platform"] = "unknown"
+		}
+		if stringAt(device, "permission_level") == "" {
+			device["permission_level"] = "A3"
+		}
+		if stringAt(device, "api_base_url") == "" {
+			device["api_base_url"] = ""
+		}
+		if stringAt(device, "role") == "local" {
+			localID = id
+			localName = stringAt(device, "device_name")
+			localPlatform = stringAt(device, "platform")
+		}
+		permissions = append(permissions, map[string]any{
+			"device_id": id, "capability": "sync.metadata", "policy": "allow", "max_permission_level": "A1",
+		})
+	}
+	if localID == "" {
+		localID = "windows-main"
+	}
+	if localName == "" {
+		localName = localID
+	}
 	return map[string]any{
-		"local_device":    map[string]any{"id": "windows-main", "device_name": "Windows", "platform": "windows"},
+		"local_device":    map[string]any{"id": localID, "device_name": localName, "platform": localPlatform},
 		"devices":         devices,
+		"permissions":     permissions,
 		"pending_changes": 0,
 		"conflict_count":  0,
 		"security":        map[string]any{"config_errors": []any{}},
 		"recent_changes":  []any{},
+		"change_contract": map[string]any{"healthy": true, "checked_changes": 0, "invalid_changes": 0, "issues": []any{}},
 	}
 }
 
 func testAutonomyPayload(sourceEntityID string) map[string]any {
 	return testAutonomyPayloadWithAdvisor(sourceEntityID, nil)
+}
+
+func testAgentPayload(agentID string, platform string) map[string]any {
+	return map[string]any{
+		"agent_id": agentID,
+		"version":  "version-smoke",
+		"platform": platform,
+		"status":   "running",
+		"background_loops": []any{
+			map[string]any{"name": "heartbeat", "enabled": true, "running": true, "interval": "1m", "consecutive_failures": 0},
+			map[string]any{"name": "sync", "enabled": false, "running": false, "interval": "0s", "consecutive_failures": 0},
+			map[string]any{"name": "autonomy", "enabled": false, "running": false, "interval": "0s", "consecutive_failures": 0},
+		},
+	}
 }
 
 func testAutonomyPayloadWithAdvisor(sourceEntityID string, advisor map[string]any) map[string]any {
@@ -1323,8 +1374,17 @@ func testAutonomyPayloadWithAdvisor(sourceEntityID string, advisor map[string]an
 		})
 	}
 	payload := map[string]any{
-		"settings":  map[string]any{"paused": false, "mode": "suggest_only"},
-		"rules":     []any{map[string]any{"id": "rule-1", "enabled": true}},
+		"settings":     map[string]any{"paused": false, "mode": "suggest_only", "max_auto_permission": "A3"},
+		"retry_policy": map[string]any{"max_attempts": 3, "backoff": "5m0s", "max_backoff": "1h0m0s"},
+		"policy_gate": map[string]any{
+			"enabled": true, "backend": "postgres_advisory_rw", "cycle_read_barrier": true,
+			"execution_read_barrier": true, "settings_write_barrier": true, "rule_write_barrier": true,
+			"current_rule_revalidation": true,
+		},
+		"rules": []any{map[string]any{
+			"id": "rule-1", "name": "rule-1", "action": "create_local_task", "enabled": true,
+			"policy": "confirm", "risk_level": "low", "max_permission_level": "A3",
+		}},
 		"proposals": proposals,
 	}
 	if advisor != nil {
@@ -1340,6 +1400,124 @@ func hasCheckStatus(checks []runtimeVerificationCheck, id string, status string)
 		}
 	}
 	return false
+}
+
+func TestSyncChangeContractRuntimeIssues(t *testing.T) {
+	healthy := map[string]any{
+		"healthy":         true,
+		"checked_changes": float64(4),
+		"invalid_changes": float64(0),
+		"issues":          []any{},
+	}
+	if issues := syncChangeContractRuntimeIssues(healthy); len(issues) != 0 {
+		t.Fatalf("healthy contract issues: %#v", issues)
+	}
+	broken := map[string]any{
+		"healthy":         false,
+		"checked_changes": float64(2),
+		"invalid_changes": float64(1),
+		"issues":          []any{"change-id: operation is invalid"},
+	}
+	issues := syncChangeContractRuntimeIssues(broken)
+	if len(issues) < 3 {
+		t.Fatalf("broken contract was not rejected: %#v", issues)
+	}
+	if issues := syncChangeContractRuntimeIssues(nil); len(issues) != 1 {
+		t.Fatalf("missing contract issues: %#v", issues)
+	}
+}
+
+func TestAutonomyPolicyGateRuntimeIssues(t *testing.T) {
+	healthy := map[string]any{
+		"enabled": true, "backend": "postgres_advisory_rw", "cycle_read_barrier": true,
+		"execution_read_barrier": true, "settings_write_barrier": true, "rule_write_barrier": true,
+		"current_rule_revalidation": true,
+	}
+	if issues := autonomyPolicyGateRuntimeIssues(healthy); len(issues) != 0 {
+		t.Fatalf("healthy policy gate issues: %#v", issues)
+	}
+	broken := map[string]any{"enabled": true, "backend": "memory", "cycle_read_barrier": true}
+	if issues := autonomyPolicyGateRuntimeIssues(broken); len(issues) < 5 {
+		t.Fatalf("broken policy gate was not rejected: %#v", issues)
+	}
+	if issues := autonomyPolicyGateRuntimeIssues(nil); len(issues) != 1 {
+		t.Fatalf("missing policy gate issues: %#v", issues)
+	}
+}
+
+func TestAutonomyRetryRuntimeIssues(t *testing.T) {
+	valid := map[string]any{"max_attempts": 3, "backoff": "5m", "max_backoff": "1h"}
+	if issues := autonomyRetryRuntimeIssues(valid); len(issues) != 0 {
+		t.Fatalf("valid retry policy issues = %v", issues)
+	}
+	invalid := map[string]any{"max_attempts": 0, "backoff": "1h", "max_backoff": "5m"}
+	if issues := autonomyRetryRuntimeIssues(invalid); len(issues) != 2 {
+		t.Fatalf("invalid retry policy issues = %v, want 2", issues)
+	}
+}
+
+func TestAutonomyPolicyRuntimeIssues(t *testing.T) {
+	validSettings := map[string]any{"mode": "controlled", "max_auto_permission": "A3"}
+	validRules := []any{
+		map[string]any{"name": "auto-low", "action": "create_local_task", "policy": "auto", "risk_level": "low", "max_permission_level": "A3"},
+		map[string]any{"name": "high-plan", "action": "block_high_risk_execution", "policy": "never", "risk_level": "high", "max_permission_level": "A4"},
+	}
+	if issues := autonomyPolicyRuntimeIssues(validSettings, validRules); len(issues) != 0 {
+		t.Fatalf("valid autonomy policy issues = %v", issues)
+	}
+	invalidSettings := map[string]any{"mode": "automatic", "max_auto_permission": "A4"}
+	invalidRules := []any{
+		map[string]any{"name": "unsafe-auto", "action": "send", "policy": "auto", "risk_level": "medium", "max_permission_level": "A6"},
+		map[string]any{"name": "invalid", "policy": "allow", "risk_level": "unknown", "max_permission_level": "root"},
+	}
+	issues := autonomyPolicyRuntimeIssues(invalidSettings, invalidRules)
+	if len(issues) != 7 {
+		t.Fatalf("invalid autonomy policy issues = %v, want 7", issues)
+	}
+}
+
+func TestDevicePolicyRuntimeIssues(t *testing.T) {
+	valid := testSyncStatusWithDevices([]any{
+		map[string]any{
+			"id": "windows-main", "platform": "windows", "role": "local", "trust_status": "trusted",
+			"sync_enabled": true, "permission_level": "A3", "api_base_url": "",
+		},
+		map[string]any{
+			"id": "macbook-main", "platform": "darwin", "role": "peer", "trust_status": "trusted",
+			"sync_enabled": true, "permission_level": "A2", "api_base_url": "https://peer.example/api",
+		},
+	})
+	if issues := devicePolicyRuntimeIssues(valid); len(issues) != 0 {
+		t.Fatalf("valid device policy issues = %v", issues)
+	}
+
+	invalid := map[string]any{
+		"local_device": map[string]any{"id": "windows-main"},
+		"devices": []any{
+			map[string]any{"id": "windows-main", "platform": "windows", "role": "peer", "trust_status": "trusted", "sync_enabled": true, "permission_level": "A3"},
+			map[string]any{"id": "evil", "platform": "macos", "role": "local", "trust_status": "revoked", "sync_enabled": true, "permission_level": "root", "api_base_url": "https://user:pass@peer.example/api"},
+		},
+		"permissions": []any{
+			map[string]any{"device_id": "ghost", "capability": "admin", "policy": "auto", "max_permission_level": "root"},
+		},
+	}
+	if issues := devicePolicyRuntimeIssues(invalid); len(issues) < 10 {
+		t.Fatalf("invalid device policy issues = %v, want at least 10", issues)
+	}
+}
+
+func TestBackgroundLoopRuntimeIssuesAllowsObservableDegradation(t *testing.T) {
+	loops := []any{
+		map[string]any{"name": "heartbeat", "enabled": true, "running": true, "consecutive_failures": 0},
+		map[string]any{"name": "sync", "enabled": true, "running": true, "consecutive_failures": 3, "last_error": "peer offline"},
+	}
+	if issues := backgroundLoopRuntimeIssues(loops); len(issues) != 0 {
+		t.Fatalf("running degraded loop should remain runtime-ready: %v", issues)
+	}
+	loops[0] = map[string]any{"name": "heartbeat", "enabled": true, "running": false}
+	if issues := backgroundLoopRuntimeIssues(loops); len(issues) != 1 {
+		t.Fatalf("stopped enabled heartbeat issues = %v, want 1", issues)
+	}
 }
 
 func writeTestJSON(w http.ResponseWriter, payload any) {

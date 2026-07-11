@@ -313,6 +313,8 @@ function New-MeshNodes {
       log_dir = $logDir
       local_key_id = $definition.local_key_id
       process = $null
+      stdout_task = $null
+      stderr_task = $null
       public_key = ""
       private_key = ""
       local_key = ""
@@ -334,6 +336,8 @@ function Start-StewardNode {
   $psi.WorkingDirectory = $Node.root
   $psi.UseShellExecute = $false
   $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
 
   $env = $psi.EnvironmentVariables
   foreach ($key in $SharedEnv.Keys) {
@@ -354,6 +358,28 @@ function Start-StewardNode {
 
   $process = [System.Diagnostics.Process]::Start($psi)
   $Node.process = $process
+  $Node.stdout_task = $process.StandardOutput.ReadToEndAsync()
+  $Node.stderr_task = $process.StandardError.ReadToEndAsync()
+}
+
+function Save-StewardNodeOutput {
+  param([object]$Node)
+  foreach ($stream in @("stdout", "stderr")) {
+    $taskProperty = $stream + "_task"
+    $task = $Node.$taskProperty
+    if ($null -eq $task) {
+      continue
+    }
+    try {
+      $content = $task.GetAwaiter().GetResult()
+      if (-not [string]::IsNullOrWhiteSpace($content)) {
+        Add-Content -LiteralPath (Join-Path $Node.log_dir ($Node.id + "." + $stream + ".log")) -Value $content.TrimEnd() -Encoding UTF8
+      }
+    } catch {
+    } finally {
+      $Node.$taskProperty = $null
+    }
+  }
 }
 
 function Stop-StewardNode {
@@ -369,6 +395,8 @@ function Stop-StewardNode {
     $process.WaitForExit(5000) | Out-Null
   } catch {
   } finally {
+    Save-StewardNodeOutput -Node $Node
+    $process.Dispose()
     $Node.process = $null
   }
 }

@@ -60,6 +60,207 @@ func TestMapRunStatusToAuditPreservesFailures(t *testing.T) {
 	}
 }
 
+func TestAutonomyControlValuesAreStrictAndCanonical(t *testing.T) {
+	mode, err := autonomyModeValue(" CONTROLLED ", "")
+	if err != nil || mode != AutonomyModeControlled {
+		t.Fatalf("controlled mode = %q, %v", mode, err)
+	}
+	policy, err := autonomyPolicyValue(" AUTO ", "")
+	if err != nil || policy != AutonomyPolicyAuto {
+		t.Fatalf("auto policy = %q, %v", policy, err)
+	}
+	permission, err := autonomyPermissionValue(" a2 ", "")
+	if err != nil || permission != PermissionA2 {
+		t.Fatalf("permission = %q, %v", permission, err)
+	}
+	level, err := autonomyDataLevelValue(" d6 ", "")
+	if err != nil || level != DataD6 {
+		t.Fatalf("data level = %q, %v", level, err)
+	}
+	for name, validate := range map[string]func() error{
+		"mode": func() error {
+			_, err := autonomyModeValue("automatic", "")
+			return err
+		},
+		"policy": func() error {
+			_, err := autonomyPolicyValue("allow", "")
+			return err
+		},
+		"risk": func() error {
+			_, err := autonomyRiskValue("unknown", "")
+			return err
+		},
+		"permission": func() error {
+			_, err := autonomyPermissionValue("admin", "")
+			return err
+		},
+		"data level": func() error {
+			_, err := autonomyDataLevelValue("secret", "")
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validate(); err == nil {
+				t.Fatal("expected invalid autonomy control value to fail")
+			}
+		})
+	}
+}
+
+func TestAutonomyAutomaticPermissionRejectsA4AndAbove(t *testing.T) {
+	for _, permission := range []string{PermissionA4, PermissionA5, PermissionA9} {
+		if _, err := autonomyAutoPermissionValue(permission, ""); err == nil {
+			t.Fatalf("expected automatic permission %s to fail", permission)
+		}
+	}
+	if permission, err := autonomyAutoPermissionValue(PermissionA3, ""); err != nil || permission != PermissionA3 {
+		t.Fatalf("A3 automatic permission = %q, %v", permission, err)
+	}
+}
+
+func TestAutonomyRiskGateOnlyAllowsExplicitLowRisk(t *testing.T) {
+	for _, risk := range []string{"medium", "high", "critical", "", "future-risk"} {
+		if !isHighRisk(risk, PermissionA3) {
+			t.Fatalf("risk %q was eligible for autonomous execution", risk)
+		}
+	}
+	if isHighRisk("low", PermissionA3) {
+		t.Fatal("low-risk A3 proposal was blocked")
+	}
+	if !isHighRisk("low", PermissionA4) {
+		t.Fatal("A4 proposal was eligible for autonomous execution")
+	}
+}
+
+func TestPersistedAutonomyProposalPolicyFailsClosed(t *testing.T) {
+	base := domain.StewardAutonomyProposal{
+		Status: ProposalCandidate, Policy: AutonomyPolicyConfirm, RiskLevel: "low",
+		PermissionLevel: PermissionA3, DataLevel: DataD0,
+	}
+	if issue := autonomyProposalPolicyIssue(base); issue != "" {
+		t.Fatalf("valid proposal policy issue = %q", issue)
+	}
+	invalid := base
+	invalid.Policy = "allow"
+	if issue := autonomyProposalPolicyIssue(invalid); issue == "" {
+		t.Fatal("invalid persisted proposal policy was accepted")
+	}
+	if !proposalRequiresManualReview(invalid) {
+		t.Fatal("invalid persisted proposal did not require manual review")
+	}
+	if err := validateProposalTransition(invalid, ProposalApproved); err == nil || !strings.Contains(err.Error(), "policy contract") {
+		t.Fatalf("invalid persisted proposal approval error = %v", err)
+	}
+}
+
+func TestAutonomyMutationsValidateBeforeRepositoryAccess(t *testing.T) {
+	service := &Service{}
+	if _, err := service.UpdateAutonomySettings(context.Background(), UpdateAutonomySettingsInput{Mode: "automatic"}); err == nil {
+		t.Fatal("invalid mode reached autonomy settings repository")
+	}
+	if _, err := service.UpdateAutonomySettings(context.Background(), UpdateAutonomySettingsInput{MaxAutoPermission: PermissionA4}); err == nil {
+		t.Fatal("A4 automatic permission reached autonomy settings repository")
+	}
+	invalidPolicy := "allow"
+	if _, err := service.UpdateAutonomyRule(context.Background(), "rule-id", UpdateAutonomyRuleInput{Policy: &invalidPolicy}); err == nil {
+		t.Fatal("invalid rule policy reached autonomy rule repository")
+	}
+	invalidPermission := "root"
+	if _, err := service.UpdateAutonomyRule(context.Background(), "rule-id", UpdateAutonomyRuleInput{MaxPermissionLevel: &invalidPermission}); err == nil {
+		t.Fatal("invalid rule permission reached autonomy rule repository")
+	}
+	for name, input := range map[string]CreateAutonomyProposalInput{
+		"policy":     {Policy: "allow"},
+		"risk":       {RiskLevel: "unknown"},
+		"permission": {PermissionLevel: "root"},
+		"data level": {DataLevel: "secret"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := service.CreateAutonomyProposal(context.Background(), input); err == nil {
+				t.Fatal("invalid proposal reached autonomy proposal repository")
+			}
+		})
+	}
+}
+
+func TestCurrentRuleExecutionPolicyUsesTheStricterLiveRule(t *testing.T) {
+	ruleID := "11111111-1111-1111-1111-111111111111"
+	proposal := domain.StewardAutonomyProposal{
+		RuleID: &ruleID, Action: AutonomyActionCreateLocalTask, Policy: AutonomyPolicyAuto,
+		RiskLevel: "low", PermissionLevel: PermissionA3, DataLevel: DataD0,
+	}
+	base := domain.StewardAutonomyRule{
+		ID: ruleID, Action: proposal.Action, Policy: AutonomyPolicyAuto, RiskLevel: "low",
+		MaxPermissionLevel: PermissionA3, Enabled: true,
+	}
+	if automatic, issue := evaluateCurrentRuleExecutionPolicy(proposal, base); !automatic || issue != "" {
+		t.Fatalf("matching auto rule was rejected: automatic=%t issue=%q", automatic, issue)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*domain.StewardAutonomyRule)
+	}{
+		{name: "disabled", mutate: func(rule *domain.StewardAutonomyRule) { rule.Enabled = false }},
+		{name: "never", mutate: func(rule *domain.StewardAutonomyRule) { rule.Policy = AutonomyPolicyNever }},
+		{name: "permission reduced", mutate: func(rule *domain.StewardAutonomyRule) { rule.MaxPermissionLevel = PermissionA2 }},
+		{name: "action changed", mutate: func(rule *domain.StewardAutonomyRule) { rule.Action = AutonomyActionCreateReminderTask }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rule := base
+			tt.mutate(&rule)
+			if automatic, issue := evaluateCurrentRuleExecutionPolicy(proposal, rule); automatic || issue == "" {
+				t.Fatalf("unsafe current rule was accepted: automatic=%t issue=%q", automatic, issue)
+			}
+		})
+	}
+	confirm := base
+	confirm.Policy = AutonomyPolicyConfirm
+	if automatic, issue := evaluateCurrentRuleExecutionPolicy(proposal, confirm); automatic || issue != "" {
+		t.Fatalf("confirm rule should require approval without hard block: automatic=%t issue=%q", automatic, issue)
+	}
+}
+
+func TestAutonomyRetryPolicyAppliesExponentialBackoffAndExhaustion(t *testing.T) {
+	now := time.Date(2026, time.July, 11, 3, 0, 0, 0, time.UTC)
+	policy := autonomyRetryPolicy{
+		maxAttempts: 3,
+		backoff:     time.Minute,
+		maxBackoff:  5 * time.Minute,
+		now:         func() time.Time { return now },
+	}
+	lastFailure := now.Add(-30 * time.Second)
+	proposal := domain.StewardAutonomyProposal{
+		Status: ProposalCandidate,
+		Policy: AutonomyPolicyAuto,
+	}
+
+	policy.apply(&proposal, autonomyRetryRecord{failedAttempts: 1, lastFailedAt: &lastFailure})
+	if proposal.FailedAttempts != 1 || !proposal.RetryEligible || proposal.RetryExhausted || proposal.AutoRetryAt == nil {
+		t.Fatalf("unexpected retry state after first failure: %+v", proposal)
+	}
+	if policy.automaticRetryReady(proposal) {
+		t.Fatal("automatic retry became ready before backoff elapsed")
+	}
+
+	lastFailure = now.Add(-3 * time.Minute)
+	policy.apply(&proposal, autonomyRetryRecord{failedAttempts: 2, lastFailedAt: &lastFailure})
+	if proposal.AutoRetryAt == nil || !policy.automaticRetryReady(proposal) {
+		t.Fatalf("second retry did not become ready after exponential backoff: %+v", proposal)
+	}
+
+	policy.apply(&proposal, autonomyRetryRecord{failedAttempts: 3, lastFailedAt: &lastFailure})
+	if !proposal.RetryExhausted || !proposal.RetryEligible || proposal.AutoRetryAt != nil || policy.automaticRetryReady(proposal) {
+		t.Fatalf("exhausted retry remained automatic: %+v", proposal)
+	}
+
+	proposal.Status = ProposalExecuted
+	policy.apply(&proposal, autonomyRetryRecord{failedAttempts: 3, lastFailedAt: &lastFailure})
+	if proposal.RetryEligible {
+		t.Fatalf("executed proposal remained retry eligible: %+v", proposal)
+	}
+}
+
 func TestNormalizeBulkDismissLimit(t *testing.T) {
 	tests := []struct {
 		input int
@@ -85,6 +286,7 @@ func TestValidateProposalTransition(t *testing.T) {
 		Policy:          AutonomyPolicyConfirm,
 		RiskLevel:       "low",
 		PermissionLevel: PermissionA3,
+		DataLevel:       DataD0,
 	}
 	tests := []struct {
 		name      string
@@ -167,6 +369,7 @@ func TestApprovalProposalTransition(t *testing.T) {
 		Policy:          AutonomyPolicyConfirm,
 		RiskLevel:       "low",
 		PermissionLevel: PermissionA3,
+		DataLevel:       DataD0,
 	}
 	approval := domain.StewardApprovalRequest{RequestedAction: "approve autonomous execution"}
 

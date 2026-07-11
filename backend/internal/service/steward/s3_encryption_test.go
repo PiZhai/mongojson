@@ -146,7 +146,7 @@ func TestPrepareSyncPayloadForStorageEncryptsLocalPayload(t *testing.T) {
 		ID:             input.ID,
 		EntityType:     input.EntityType,
 		EntityID:       input.EntityID,
-		Operation:      normalizeOperation(input.Operation),
+		Operation:      input.Operation,
 		OriginDeviceID: input.OriginDeviceID,
 		Version:        input.Version,
 		DataLevel:      input.DataLevel,

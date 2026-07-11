@@ -23,6 +23,27 @@ func (s *Service) GetAutonomySettings(ctx context.Context) (domain.StewardAutono
 }
 
 func (s *Service) UpdateAutonomySettings(ctx context.Context, input UpdateAutonomySettingsInput) (domain.StewardAutonomySettings, error) {
+	requestedMode := ""
+	if strings.TrimSpace(input.Mode) != "" {
+		var err error
+		requestedMode, err = autonomyModeValue(input.Mode, "")
+		if err != nil {
+			return domain.StewardAutonomySettings{}, err
+		}
+	}
+	requestedMaxPermission := ""
+	if strings.TrimSpace(input.MaxAutoPermission) != "" {
+		var err error
+		requestedMaxPermission, err = autonomyAutoPermissionValue(input.MaxAutoPermission, "")
+		if err != nil {
+			return domain.StewardAutonomySettings{}, err
+		}
+	}
+	gate, err := acquireAutonomyPolicyWriteGate(ctx, s.db.Pool)
+	if err != nil {
+		return domain.StewardAutonomySettings{}, err
+	}
+	defer gate.Release()
 	current, err := s.GetAutonomySettings(ctx)
 	if err != nil {
 		return domain.StewardAutonomySettings{}, err
@@ -32,12 +53,12 @@ func (s *Service) UpdateAutonomySettings(ctx context.Context, input UpdateAutono
 		paused = *input.Paused
 	}
 	mode := current.Mode
-	if strings.TrimSpace(input.Mode) != "" {
-		mode = normalizeAutonomyMode(input.Mode)
+	if requestedMode != "" {
+		mode = requestedMode
 	}
 	maxPermission := current.MaxAutoPermission
-	if strings.TrimSpace(input.MaxAutoPermission) != "" {
-		maxPermission = strings.TrimSpace(input.MaxAutoPermission)
+	if requestedMaxPermission != "" {
+		maxPermission = requestedMaxPermission
 	}
 	now := time.Now().UTC()
 	if _, err := s.db.Pool.Exec(ctx, `
@@ -92,21 +113,42 @@ func (s *Service) ListAutonomyRules(ctx context.Context) ([]domain.StewardAutono
 }
 
 func (s *Service) UpdateAutonomyRule(ctx context.Context, id string, input UpdateAutonomyRuleInput) (domain.StewardAutonomyRule, error) {
+	var requestedPolicy *string
+	if input.Policy != nil {
+		policy, err := autonomyPolicyValue(*input.Policy, "")
+		if err != nil {
+			return domain.StewardAutonomyRule{}, err
+		}
+		requestedPolicy = &policy
+	}
+	var requestedMaxPermission *string
+	if input.MaxPermissionLevel != nil {
+		permission, err := autonomyPermissionValue(*input.MaxPermissionLevel, "")
+		if err != nil {
+			return domain.StewardAutonomyRule{}, err
+		}
+		requestedMaxPermission = &permission
+	}
+	gate, err := acquireAutonomyPolicyWriteGate(ctx, s.db.Pool)
+	if err != nil {
+		return domain.StewardAutonomyRule{}, err
+	}
+	defer gate.Release()
 	current, err := s.getAutonomyRule(ctx, id)
 	if err != nil {
 		return domain.StewardAutonomyRule{}, err
 	}
 	policy := current.Policy
-	if input.Policy != nil {
-		policy = normalizeAutonomyPolicy(*input.Policy)
+	if requestedPolicy != nil {
+		policy = *requestedPolicy
 	}
 	enabled := current.Enabled
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
 	maxPermission := current.MaxPermissionLevel
-	if input.MaxPermissionLevel != nil {
-		maxPermission = defaultString(*input.MaxPermissionLevel, current.MaxPermissionLevel)
+	if requestedMaxPermission != nil {
+		maxPermission = *requestedMaxPermission
 	}
 	scope := current.ScopeSummary
 	if input.ScopeSummary != nil {

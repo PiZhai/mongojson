@@ -13,6 +13,7 @@ import {
   dismissStewardAutonomyProposal,
   dismissStewardIntent,
   executeStewardAutonomyProposal,
+  retryStewardAutonomyProposal,
   hideStewardEvent,
   muteStewardIntent,
   simulateStewardAutonomyProposal,
@@ -348,7 +349,8 @@ export function AutonomyProposalRow({
   onAction: StewardActionRunner;
 }) {
   const executable =
-    proposal.status === "approved" || proposal.policy === "auto";
+    proposal.status === "approved" ||
+    (proposal.status === "candidate" && proposal.policy === "auto");
   return (
     <article className="steward-list-item">
       <div>
@@ -356,6 +358,16 @@ export function AutonomyProposalRow({
         <p>{proposal.trigger_reason || proposal.summary}</p>
         {proposal.score_reason ? (
           <p>评分依据：{proposal.score_reason}</p>
+        ) : null}
+        {proposal.failed_attempts > 0 ? (
+          <p>
+            执行失败 {proposal.failed_attempts} 次 · {" "}
+            {proposal.retry_exhausted
+              ? "自动重试已停止"
+              : proposal.auto_retry_at
+                ? `下次自动重试 ${formatDate(proposal.auto_retry_at)}`
+                : "可人工重试"}
+          </p>
         ) : null}
         <small>
           候选分 {Math.round(proposal.score * 100)}% ·{" "}
@@ -401,6 +413,20 @@ export function AutonomyProposalRow({
         >
           执行
         </button>
+        {proposal.retry_eligible ? (
+          <button
+            className="steward-icon-button"
+            disabled={busy}
+            onClick={() =>
+              onAction("重试自主候选", () =>
+                retryStewardAutonomyProposal(proposal.id),
+              )
+            }
+            type="button"
+          >
+            重试
+          </button>
+        ) : null}
         <button
           className="steward-icon-button steward-danger"
           disabled={busy || proposal.status === "dismissed"}
@@ -467,8 +493,9 @@ export function AutonomousRunRow({ run }: { run: StewardAutonomousRun }) {
         {statusText(run.mode)} · {statusText(run.status)}
       </strong>
       <span>
-        {run.impact_summary || run.recovery_hint || run.trigger_reason}
+        {run.impact_summary || run.trigger_reason}
       </span>
+      {run.recovery_hint ? <small>恢复建议：{run.recovery_hint}</small> : null}
     </article>
   );
 }

@@ -553,6 +553,7 @@ func TestBuildVerificationEvidenceManifestS3S4FinalPresetPassesCompletePhysicalG
 	startedAt := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(25 * time.Hour)
 	for _, platform := range []string{"windows", "darwin", "linux"} {
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, "system", true)
 		writeS3S4FinalPresetEvidence(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt)
 		writeS3S4FinalPresetEvidence(t, dir, "mesh", platform, platform+"-main", s3s4FinalMeshChecks(), startedAt, completedAt)
 		writeS3S4FinalHostPresetEvidence(t, dir, platform)
@@ -571,9 +572,11 @@ func TestBuildVerificationEvidenceManifestS3S4FinalPresetPassesCompletePhysicalG
 	}
 	for _, platform := range []string{"windows", "darwin", "linux"} {
 		for _, requirement := range []string{
+			"evidence.kind_platform.service-install-e2e." + platform,
 			"evidence.kind_platform.service." + platform,
 			"evidence.kind_platform.mesh." + platform,
 			"evidence.kind_platform.s3s4-final-host." + platform,
+			"evidence.kind_check_platform.service-install-e2e.service_install_e2e.install." + platform,
 			"evidence.kind_check_platform.s3s4-final-host.s3s4_final_host.local_manifest." + platform,
 			"evidence.kind_check_platform.service.service.status." + platform,
 			"evidence.kind_check_platform.service.s4.advisor.privacy_probe." + platform,
@@ -596,6 +599,7 @@ func TestBuildVerificationEvidenceManifestCanRequireFinalHostAgentIdentity(t *te
 	startedAt := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(25 * time.Hour)
 	for _, platform := range []string{"windows", "darwin", "linux"} {
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, "system", true)
 		writeS3S4FinalPresetEvidence(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt)
 		writeS3S4FinalPresetEvidence(t, dir, "mesh", platform, platform+"-main", s3s4FinalMeshChecks(), startedAt, completedAt)
 		writeS3S4FinalHostPresetEvidence(t, dir, platform)
@@ -631,6 +635,7 @@ func TestBuildVerificationEvidenceManifestS3S4FinalPresetRequiresFinalHostWrappe
 	startedAt := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(25 * time.Hour)
 	for _, platform := range []string{"windows", "darwin", "linux"} {
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, "system", true)
 		writeS3S4FinalPresetEvidence(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt)
 		writeS3S4FinalPresetEvidence(t, dir, "mesh", platform, platform+"-main", s3s4FinalMeshChecks(), startedAt, completedAt)
 		if platform != "linux" {
@@ -651,11 +656,36 @@ func TestBuildVerificationEvidenceManifestS3S4FinalPresetRequiresFinalHostWrappe
 	}
 }
 
+func TestBuildVerificationEvidenceManifestS3S4FinalPresetRejectsPlanOnlyInstallEvidence(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(25 * time.Hour)
+	for _, platform := range []string{"windows", "darwin", "linux"} {
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, "system", platform != "linux")
+		writeS3S4FinalPresetEvidence(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt)
+		writeS3S4FinalPresetEvidence(t, dir, "mesh", platform, platform+"-main", s3s4FinalMeshChecks(), startedAt, completedAt)
+		writeS3S4FinalHostPresetEvidence(t, dir, platform)
+	}
+
+	manifest := buildVerificationEvidenceManifest(evidenceManifestOptions{
+		Dir:    dir,
+		Preset: "s3s4-final",
+	})
+	if manifest.OK {
+		t.Fatalf("expected plan-only linux install evidence to fail the final preset")
+	}
+	if !hasCheckStatus(manifest.Checks, "evidence.kind_platform.service-install-e2e.linux", "ok") ||
+		!hasCheckStatus(manifest.Checks, "evidence.kind_check_platform.service-install-e2e.service_install_e2e.install.linux", "error") {
+		t.Fatalf("expected final preset to distinguish plan-only from confirmed install evidence: %#v", manifest.Checks)
+	}
+}
+
 func TestBuildVerificationEvidenceManifestS3S4FinalSystemPresetRequiresSystemServiceScopes(t *testing.T) {
 	dir := t.TempDir()
 	startedAt := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(25 * time.Hour)
 	for _, platform := range []string{"windows", "darwin", "linux"} {
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, "system", true)
 		writeS3S4FinalPresetEvidenceWithServiceScope(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt, "system")
 		writeS3S4FinalPresetEvidence(t, dir, "mesh", platform, platform+"-main", s3s4FinalMeshChecks(), startedAt, completedAt)
 		writeS3S4FinalHostPresetEvidence(t, dir, platform)
@@ -669,12 +699,17 @@ func TestBuildVerificationEvidenceManifestS3S4FinalSystemPresetRequiresSystemSer
 		t.Fatalf("expected complete S3/S4 final system preset evidence to pass: %#v", manifest.Checks)
 	}
 	for _, platform := range []string{"windows", "darwin", "linux"} {
-		requirement := "evidence.kind_platform_service_scope.service." + platform + ".system"
-		if !hasCheckStatus(manifest.Checks, requirement, "ok") {
-			t.Fatalf("expected system service scope check %s to pass, got %#v", requirement, manifest.Checks)
+		for _, kind := range []string{"service-install-e2e", "service"} {
+			requirement := "evidence.kind_platform_service_scope." + kind + "." + platform + ".system"
+			if !hasCheckStatus(manifest.Checks, requirement, "ok") {
+				t.Fatalf("expected system service scope check %s to pass, got %#v", requirement, manifest.Checks)
+			}
 		}
 	}
-	if !stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service:windows:system") ||
+	if !stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service-install-e2e:windows:system") ||
+		!stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service-install-e2e:darwin:system") ||
+		!stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service-install-e2e:linux:system") ||
+		!stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service:windows:system") ||
 		!stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service:darwin:system") ||
 		!stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service:linux:system") {
 		t.Fatalf("expected system service scope coverage, got %#v", manifest.Coverage)
@@ -690,6 +725,7 @@ func TestBuildVerificationEvidenceManifestS3S4FinalSystemPresetFailsUserServiceS
 		if platform == "darwin" {
 			scope = "user"
 		}
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, scope, true)
 		writeS3S4FinalPresetEvidenceWithServiceScope(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt, scope)
 		writeS3S4FinalPresetEvidence(t, dir, "mesh", platform, platform+"-main", s3s4FinalMeshChecks(), startedAt, completedAt)
 		writeS3S4FinalHostPresetEvidence(t, dir, platform)
@@ -702,10 +738,12 @@ func TestBuildVerificationEvidenceManifestS3S4FinalSystemPresetFailsUserServiceS
 	if manifest.OK {
 		t.Fatalf("expected darwin user service scope to fail final-system preset")
 	}
-	if !hasCheckStatus(manifest.Checks, "evidence.kind_platform_service_scope.service.darwin.system", "error") {
+	if !hasCheckStatus(manifest.Checks, "evidence.kind_platform_service_scope.service-install-e2e.darwin.system", "error") ||
+		!hasCheckStatus(manifest.Checks, "evidence.kind_platform_service_scope.service.darwin.system", "error") {
 		t.Fatalf("expected missing darwin system service scope check, got %#v", manifest.Checks)
 	}
-	if !stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service:darwin:user") {
+	if !stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service-install-e2e:darwin:user") ||
+		!stringSetContains(manifest.Coverage.KindPlatformServiceScopes, "service:darwin:user") {
 		t.Fatalf("expected darwin user scope to be visible in coverage, got %#v", manifest.Coverage)
 	}
 }
@@ -737,6 +775,7 @@ func TestBuildVerificationEvidenceManifestS3S4FinalPresetFailsMissingCriticalChe
 	startedAt := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(25 * time.Hour)
 	for _, platform := range []string{"windows", "darwin", "linux"} {
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, "system", true)
 		writeS3S4FinalPresetEvidence(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt)
 		meshChecks := s3s4FinalMeshChecks()
 		if platform == "linux" {
@@ -763,6 +802,7 @@ func TestVerifyEvidenceS3S4FinalPresetWritesManifestOutput(t *testing.T) {
 	startedAt := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(25 * time.Hour)
 	for _, platform := range []string{"windows", "darwin", "linux"} {
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, "system", true)
 		writeS3S4FinalPresetEvidence(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt)
 		writeS3S4FinalPresetEvidence(t, dir, "mesh", platform, platform+"-main", s3s4FinalMeshChecks(), startedAt, completedAt)
 		writeS3S4FinalHostPresetEvidence(t, dir, platform)
@@ -784,6 +824,7 @@ func TestVerifyEvidenceS3S4FinalPresetWritesManifestOutput(t *testing.T) {
 		t.Fatalf("read preset manifest output: %v", err)
 	}
 	if !strings.Contains(string(data), `"s3s4-final"`) ||
+		!strings.Contains(string(data), `"service-install-e2e:service_install_e2e.install:linux"`) ||
 		!strings.Contains(string(data), `"mesh:s3.peer_probe.relations:linux"`) ||
 		!strings.Contains(string(data), `"s3s4-final-host:s3s4_final_host.local_manifest:linux"`) {
 		t.Fatalf("preset manifest output missing final gate requirements: %s", string(data))
@@ -795,6 +836,7 @@ func TestVerifyEvidenceS3S4FinalSystemPresetWritesServiceScopeRequirements(t *te
 	startedAt := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(25 * time.Hour)
 	for _, platform := range []string{"windows", "darwin", "linux"} {
+		writeServiceInstallE2EPresetEvidence(t, dir, platform, "system", true)
 		writeS3S4FinalPresetEvidenceWithServiceScope(t, dir, "service", platform, platform+"-main", s3s4FinalServiceChecks(), startedAt, completedAt, "system")
 		writeS3S4FinalPresetEvidence(t, dir, "mesh", platform, platform+"-main", s3s4FinalMeshChecks(), startedAt, completedAt)
 		writeS3S4FinalHostPresetEvidence(t, dir, platform)
@@ -815,7 +857,9 @@ func TestVerifyEvidenceS3S4FinalSystemPresetWritesServiceScopeRequirements(t *te
 	if err != nil {
 		t.Fatalf("read system preset manifest output: %v", err)
 	}
-	if !strings.Contains(string(data), `"service:darwin:system"`) ||
+	if !strings.Contains(string(data), `"service-install-e2e:darwin:system"`) ||
+		!strings.Contains(string(data), `"evidence.kind_platform_service_scope.service-install-e2e.darwin.system"`) ||
+		!strings.Contains(string(data), `"service:darwin:system"`) ||
 		!strings.Contains(string(data), `"evidence.kind_platform_service_scope.service.darwin.system"`) {
 		t.Fatalf("system preset manifest output missing service scope requirements: %s", string(data))
 	}
@@ -1053,6 +1097,53 @@ func writeS3S4FinalPresetEvidenceWithServiceScope(t *testing.T, dir string, kind
 	}, true)
 	if err != nil {
 		t.Fatalf("write S3/S4 final preset evidence: %v", err)
+	}
+}
+
+func writeServiceInstallE2EPresetEvidence(t *testing.T, dir string, platform string, scope string, installed bool) {
+	t.Helper()
+	agentID := platform + "-main"
+	checks := s3s4FinalServiceInstallChecks()
+	if !installed {
+		checks = removeString(checks, "service_install_e2e.install")
+		checks = append(checks, "service_install_e2e.plan")
+	}
+	rawChecks := make([]any, 0, len(checks))
+	for _, checkID := range checks {
+		rawChecks = append(rawChecks, map[string]any{
+			"id":     checkID,
+			"status": "ok",
+		})
+	}
+	_, err := writeVerificationEvidence("service-install-e2e", dir, map[string]any{
+		"verification": map[string]any{
+			"ok":                true,
+			"plan_only":         !installed,
+			"confirmed_install": installed,
+			"platform":          platform,
+			"agent_id":          agentID,
+			"service": map[string]any{
+				"platform": platform,
+				"name":     defaultServiceNameForPlatform(platform),
+				"scope":    scope,
+				"agent_id": agentID,
+			},
+			"checks": rawChecks,
+		},
+	}, true)
+	if err != nil {
+		t.Fatalf("write service-install-e2e preset evidence: %v", err)
+	}
+}
+
+func defaultServiceNameForPlatform(platform string) string {
+	switch platform {
+	case "windows":
+		return "MongojsonSteward"
+	case "darwin":
+		return "com.mongojson.steward"
+	default:
+		return "mongojson-steward"
 	}
 }
 

@@ -95,6 +95,9 @@ function Invoke-CurrentBinarySmoke {
   if ($version.commit -ne $Manifest.commit) {
     throw "Current platform binary commit '$($version.commit)' does not match manifest '$($Manifest.commit)'"
   }
+  if ($version.go_version -ne $Manifest.go_version) {
+    throw "Current platform binary Go version '$($version.go_version)' does not match manifest '$($Manifest.go_version)'"
+  }
   $reportedTarget = "$($version.goos)/$($version.goarch)"
   if ($reportedTarget -ne $Target) {
     throw "Current platform binary target '$reportedTarget' does not match expected '$Target'"
@@ -124,6 +127,9 @@ if ($manifest.name -ne "steward") {
 }
 if (-not [string]::IsNullOrWhiteSpace($ExpectedVersion) -and $manifest.version -ne $ExpectedVersion) {
   throw "Manifest version '$($manifest.version)' does not match expected '$ExpectedVersion'"
+}
+if ([string]::IsNullOrWhiteSpace([string]$manifest.go_version) -or [string]$manifest.go_version -notmatch '^go1\.[0-9]+\.[0-9]+') {
+  throw "Manifest go_version is missing or invalid: '$($manifest.go_version)'"
 }
 if ($null -eq $manifest.artifacts -or $manifest.artifacts.Count -eq 0) {
   throw "Manifest does not contain steward artifacts"
@@ -243,6 +249,7 @@ $summary = [pscustomobject]@{
   dist_dir = $distRoot
   version = $manifest.version
   commit = $manifest.commit
+  go_version = $manifest.go_version
   required_targets = $RequiredTargets
   artifact_count = $verifiedArtifacts.Count
   ui_included = [bool]$manifest.ui_included

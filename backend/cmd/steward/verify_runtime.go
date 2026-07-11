@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -279,6 +280,20 @@ func (c cli) runRuntimeVerification(opts runtimeVerifyOptions) runtimeVerificati
 		} else {
 			add("steward.agent", "error", "agent is not running", agentPayload)
 		}
+		loops := sliceAt(agentPayload, "background_loops")
+		loopIssues := backgroundLoopRuntimeIssues(loops)
+		if len(loopIssues) > 0 {
+			add("daemon.loops.status", "error", "background loop status is missing or inconsistent", loopIssues)
+		} else {
+			degraded := 0
+			for _, item := range loops {
+				loop, _ := item.(map[string]any)
+				if intAt(loop, "consecutive_failures") > 0 {
+					degraded++
+				}
+			}
+			add("daemon.loops.status", "ok", "background loops are observable and enabled loops are running", map[string]any{"loops": loops, "degraded": degraded})
+		}
 		if strings.TrimSpace(opts.ExpectAgentID) != "" {
 			if got := stringAt(agentPayload, "agent_id"); got == strings.TrimSpace(opts.ExpectAgentID) {
 				add("steward.agent.expected", "ok", "runtime reports the expected agent id", map[string]string{"agent_id": got})
@@ -326,6 +341,17 @@ func (c cli) runRuntimeVerification(opts runtimeVerifyOptions) runtimeVerificati
 		} else {
 			add("s3.sync.status", "ok", "sync status is visible", compactSyncStatus(syncPayload))
 		}
+		if issues := devicePolicyRuntimeIssues(syncPayload); len(issues) > 0 {
+			add("s3.device.policy_contract", "error", "device identity or permission state is invalid", issues)
+		} else {
+			add("s3.device.policy_contract", "ok", "device identities and permissions satisfy the strict policy contract", nil)
+		}
+		changeContract := mapAt(syncPayload, "change_contract")
+		if issues := syncChangeContractRuntimeIssues(changeContract); len(issues) > 0 {
+			add("s3.sync.change_contract", "error", "stored sync changes violate the strict protocol contract", issues)
+		} else {
+			add("s3.sync.change_contract", "ok", "stored sync changes satisfy the strict protocol contract", changeContract)
+		}
 		discovery := mapAt(syncPayload, "discovery")
 		discoveredPeers := sliceAt(syncPayload, "discovered_peers")
 		if boolAt(discovery, "enabled") {
@@ -367,6 +393,8 @@ func (c cli) runRuntimeVerification(opts runtimeVerifyOptions) runtimeVerificati
 		payload := mapAt(autonomy, "autonomy")
 		settings := mapAt(payload, "settings")
 		advisor := mapAt(payload, "advisor")
+		retryPolicy := mapAt(payload, "retry_policy")
+		policyGate := mapAt(payload, "policy_gate")
 		rules := sliceAt(payload, "rules")
 		if len(rules) == 0 {
 			add("s4.autonomy.rules", "error", "no autonomy rules are configured", payload)
@@ -375,6 +403,21 @@ func (c cli) runRuntimeVerification(opts runtimeVerifyOptions) runtimeVerificati
 				"settings": settings,
 				"rules":    len(rules),
 			})
+		}
+		if issues := autonomyPolicyRuntimeIssues(settings, rules); len(issues) > 0 {
+			add("s4.autonomy.policy_contract", "error", "autonomy policy state is invalid or unsafe", issues)
+		} else {
+			add("s4.autonomy.policy_contract", "ok", "autonomy settings and rules satisfy the strict policy contract", nil)
+		}
+		if issues := autonomyRetryRuntimeIssues(retryPolicy); len(issues) > 0 {
+			add("s4.autonomy.retry_policy", "error", "autonomy retry policy is missing or unsafe", issues)
+		} else {
+			add("s4.autonomy.retry_policy", "ok", "bounded autonomy retry policy is active", retryPolicy)
+		}
+		if issues := autonomyPolicyGateRuntimeIssues(policyGate); len(issues) > 0 {
+			add("s4.autonomy.policy_gate", "error", "autonomy policy updates are not fully serialized with scanning and execution", issues)
+		} else {
+			add("s4.autonomy.policy_gate", "ok", "autonomy policy updates are linearized with scanning and execution", policyGate)
 		}
 		if len(advisor) > 0 {
 			add("s4.advisor.status", "ok", "autonomy advisor status is visible", advisor)
@@ -403,6 +446,255 @@ func (c cli) runRuntimeVerification(opts runtimeVerifyOptions) runtimeVerificati
 		result.Artifacts = nil
 	}
 	return result
+}
+
+func backgroundLoopRuntimeIssues(loops []any) []string {
+	issues := []string{}
+	if len(loops) == 0 {
+		return []string{"background_loops is empty"}
+	}
+	heartbeatFound := false
+	for _, item := range loops {
+		loop, _ := item.(map[string]any)
+		name := strings.TrimSpace(stringAt(loop, "name"))
+		if name == "heartbeat" {
+			heartbeatFound = true
+		}
+		if boolAt(loop, "enabled") && !boolAt(loop, "running") {
+			issues = append(issues, name+" loop is enabled but not running")
+		}
+	}
+	if !heartbeatFound {
+		issues = append(issues, "heartbeat loop is missing")
+	}
+	return issues
+}
+
+func devicePolicyRuntimeIssues(syncPayload map[string]any) []string {
+	issues := []string{}
+	localDevice := mapAt(syncPayload, "local_device")
+	localID := strings.TrimSpace(stringAt(localDevice, "id"))
+	if localID == "" {
+		issues = append(issues, "local_device.id is missing")
+	}
+	devices := sliceAt(syncPayload, "devices")
+	if len(devices) == 0 {
+		return append(issues, "devices is empty")
+	}
+	deviceIDs := map[string]struct{}{}
+	localRoleCount := 0
+	for index, item := range devices {
+		device, _ := item.(map[string]any)
+		id := strings.TrimSpace(stringAt(device, "id"))
+		label := id
+		if label == "" {
+			label = fmt.Sprintf("device[%d]", index)
+			issues = append(issues, label+" id is missing")
+		} else if _, exists := deviceIDs[id]; exists {
+			issues = append(issues, label+" is duplicated")
+		}
+		deviceIDs[id] = struct{}{}
+		role := strings.ToLower(strings.TrimSpace(stringAt(device, "role")))
+		if role == "local" {
+			localRoleCount++
+			if id != localID {
+				issues = append(issues, label+" claims local role but does not match local_device.id")
+			}
+			if strings.ToLower(strings.TrimSpace(stringAt(device, "trust_status"))) != "trusted" || !boolAt(device, "sync_enabled") {
+				issues = append(issues, label+" local identity must remain trusted and sync-enabled")
+			}
+		} else if role != "peer" {
+			issues = append(issues, label+" role must be local or peer")
+		}
+		platform := strings.ToLower(strings.TrimSpace(stringAt(device, "platform")))
+		if !containsRuntimeValue(platform, "windows", "darwin", "linux", "unknown") {
+			issues = append(issues, label+" platform is invalid")
+		}
+		trust := strings.ToLower(strings.TrimSpace(stringAt(device, "trust_status")))
+		if !containsRuntimeValue(trust, "trusted", "revoked") {
+			issues = append(issues, label+" trust_status is invalid")
+		}
+		if trust == "revoked" && boolAt(device, "sync_enabled") {
+			issues = append(issues, label+" is revoked but sync remains enabled")
+		}
+		if _, ok := autonomyPermissionRuntimeRank(strings.ToUpper(strings.TrimSpace(stringAt(device, "permission_level")))); !ok {
+			issues = append(issues, label+" permission_level is invalid")
+		}
+		if apiBase := strings.TrimRight(strings.TrimSpace(stringAt(device, "api_base_url")), "/"); apiBase != "" {
+			if err := validateRuntimePeerAPIBase(apiBase); err != nil {
+				issues = append(issues, label+" "+err.Error())
+			}
+		}
+	}
+	if localRoleCount != 1 {
+		issues = append(issues, fmt.Sprintf("devices must contain exactly one local role, got %d", localRoleCount))
+	}
+
+	permissionCountByDevice := map[string]int{}
+	permissionKeys := map[string]struct{}{}
+	for index, item := range sliceAt(syncPayload, "permissions") {
+		permission, _ := item.(map[string]any)
+		deviceID := strings.TrimSpace(stringAt(permission, "device_id"))
+		capability := strings.TrimSpace(stringAt(permission, "capability"))
+		label := fmt.Sprintf("permission[%d]", index)
+		if _, exists := deviceIDs[deviceID]; !exists {
+			issues = append(issues, label+" references an unknown device")
+		}
+		if !containsRuntimeValue(capability, "sync.metadata", "sync.tasks", "sync.timeline", "sync.memory", "sync.knowledge", "sync.tags", "sync.audit", "sync.devices", "remote.execute", "autonomy.execute") {
+			issues = append(issues, label+" capability is invalid")
+		}
+		policy := strings.ToLower(strings.TrimSpace(stringAt(permission, "policy")))
+		if !containsRuntimeValue(policy, "allow", "confirm", "deny") {
+			issues = append(issues, label+" policy is invalid")
+		}
+		if _, ok := autonomyPermissionRuntimeRank(strings.ToUpper(strings.TrimSpace(stringAt(permission, "max_permission_level")))); !ok {
+			issues = append(issues, label+" max_permission_level is invalid")
+		}
+		key := deviceID + ":" + capability
+		if _, exists := permissionKeys[key]; exists {
+			issues = append(issues, label+" duplicates "+key)
+		}
+		permissionKeys[key] = struct{}{}
+		permissionCountByDevice[deviceID]++
+	}
+	for id := range deviceIDs {
+		if id != "" && permissionCountByDevice[id] == 0 {
+			issues = append(issues, id+" has no device permissions")
+		}
+	}
+	return issues
+}
+
+func validateRuntimePeerAPIBase(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return fmt.Errorf("api_base_url must be an absolute http(s) URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/api") {
+		return fmt.Errorf("api_base_url must identify the credential-free peer /api surface")
+	}
+	return nil
+}
+
+func syncChangeContractRuntimeIssues(contract map[string]any) []string {
+	issues := []string{}
+	if len(contract) == 0 {
+		return []string{"change_contract is missing"}
+	}
+	if !boolAt(contract, "healthy") {
+		issues = append(issues, "change_contract is unhealthy")
+	}
+	checked := intAt(contract, "checked_changes")
+	invalid := intAt(contract, "invalid_changes")
+	if checked < 0 {
+		issues = append(issues, "checked_changes cannot be negative")
+	}
+	if invalid < 0 || invalid > checked {
+		issues = append(issues, "invalid_changes must be between zero and checked_changes")
+	}
+	if invalid > 0 {
+		issues = append(issues, fmt.Sprintf("invalid_changes=%d", invalid))
+	}
+	for _, issue := range stringSliceAt(contract, "issues") {
+		if strings.TrimSpace(issue) != "" {
+			issues = append(issues, issue)
+		}
+	}
+	return issues
+}
+
+func autonomyRetryRuntimeIssues(policy map[string]any) []string {
+	issues := []string{}
+	maxAttempts := intAt(policy, "max_attempts")
+	if maxAttempts < 1 || maxAttempts > 20 {
+		issues = append(issues, "max_attempts must be from 1 to 20")
+	}
+	backoff, backoffErr := time.ParseDuration(strings.TrimSpace(stringAt(policy, "backoff")))
+	if backoffErr != nil || backoff <= 0 || backoff > 24*time.Hour {
+		issues = append(issues, "backoff must be greater than 0 and no more than 24h")
+	}
+	maxBackoff, maxBackoffErr := time.ParseDuration(strings.TrimSpace(stringAt(policy, "max_backoff")))
+	if maxBackoffErr != nil || maxBackoff <= 0 || maxBackoff > 24*time.Hour {
+		issues = append(issues, "max_backoff must be greater than 0 and no more than 24h")
+	} else if backoffErr == nil && backoff > 0 && maxBackoff < backoff {
+		issues = append(issues, "max_backoff must be greater than or equal to backoff")
+	}
+	return issues
+}
+
+func autonomyPolicyGateRuntimeIssues(gate map[string]any) []string {
+	if len(gate) == 0 {
+		return []string{"policy_gate is missing"}
+	}
+	issues := []string{}
+	if !boolAt(gate, "enabled") {
+		issues = append(issues, "policy gate is disabled")
+	}
+	if strings.TrimSpace(stringAt(gate, "backend")) != "postgres_advisory_rw" {
+		issues = append(issues, "policy gate backend must be postgres_advisory_rw")
+	}
+	for _, field := range []string{"cycle_read_barrier", "execution_read_barrier", "settings_write_barrier", "rule_write_barrier", "current_rule_revalidation"} {
+		if !boolAt(gate, field) {
+			issues = append(issues, field+" is not enabled")
+		}
+	}
+	return issues
+}
+
+func autonomyPolicyRuntimeIssues(settings map[string]any, rules []any) []string {
+	issues := []string{}
+	mode := strings.ToLower(strings.TrimSpace(stringAt(settings, "mode")))
+	if mode != "suggest_only" && mode != "controlled" {
+		issues = append(issues, "settings.mode must be suggest_only or controlled")
+	}
+	maxAutoPermission := strings.ToUpper(strings.TrimSpace(stringAt(settings, "max_auto_permission")))
+	maxAutoRank, ok := autonomyPermissionRuntimeRank(maxAutoPermission)
+	if !ok || maxAutoRank > 3 {
+		issues = append(issues, "settings.max_auto_permission must be A0-A3")
+	}
+	for index, item := range rules {
+		rule, _ := item.(map[string]any)
+		label := strings.TrimSpace(stringAt(rule, "name"))
+		if label == "" {
+			label = fmt.Sprintf("rule[%d]", index)
+		}
+		if strings.TrimSpace(stringAt(rule, "action")) == "" {
+			issues = append(issues, label+" action is missing")
+		}
+		policy := strings.ToLower(strings.TrimSpace(stringAt(rule, "policy")))
+		if !containsRuntimeValue(policy, "suggest", "confirm", "auto", "never") {
+			issues = append(issues, label+" policy is invalid")
+		}
+		risk := strings.ToLower(strings.TrimSpace(stringAt(rule, "risk_level")))
+		if !containsRuntimeValue(risk, "low", "medium", "high", "critical") {
+			issues = append(issues, label+" risk_level is invalid")
+		}
+		permission := strings.ToUpper(strings.TrimSpace(stringAt(rule, "max_permission_level")))
+		permissionRank, permissionOK := autonomyPermissionRuntimeRank(permission)
+		if !permissionOK {
+			issues = append(issues, label+" max_permission_level is invalid")
+		}
+		if policy == "auto" && (risk != "low" || !permissionOK || permissionRank > 3) {
+			issues = append(issues, label+" auto policy exceeds the low-risk A0-A3 execution boundary")
+		}
+	}
+	return issues
+}
+
+func autonomyPermissionRuntimeRank(value string) (int, bool) {
+	if len(value) != 2 || value[0] != 'A' || value[1] < '0' || value[1] > '9' {
+		return 0, false
+	}
+	return int(value[1] - '0'), true
+}
+
+func containsRuntimeValue(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (c cli) runRuntimeWriteProbes(opts runtimeVerifyOptions, result *runtimeVerificationResult, add func(string, string, string, any)) {

@@ -56,16 +56,30 @@ type MemoFloatingCard struct {
 }
 
 type StewardAgentStatus struct {
-	AgentID           string     `json:"agent_id"`
-	DeviceName        string     `json:"device_name"`
-	Platform          string     `json:"platform"`
-	Status            string     `json:"status"`
-	Version           string     `json:"version"`
-	EnabledCollectors []string   `json:"enabled_collectors"`
-	StartedAt         *time.Time `json:"started_at,omitempty"`
-	LastHeartbeatAt   *time.Time `json:"last_heartbeat_at,omitempty"`
-	LastError         *string    `json:"last_error,omitempty"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	AgentID           string                        `json:"agent_id"`
+	DeviceName        string                        `json:"device_name"`
+	Platform          string                        `json:"platform"`
+	Status            string                        `json:"status"`
+	Version           string                        `json:"version"`
+	EnabledCollectors []string                      `json:"enabled_collectors"`
+	StartedAt         *time.Time                    `json:"started_at,omitempty"`
+	LastHeartbeatAt   *time.Time                    `json:"last_heartbeat_at,omitempty"`
+	LastError         *string                       `json:"last_error,omitempty"`
+	BackgroundLoops   []StewardBackgroundLoopStatus `json:"background_loops"`
+	UpdatedAt         time.Time                     `json:"updated_at"`
+}
+
+type StewardBackgroundLoopStatus struct {
+	Name                string     `json:"name"`
+	Enabled             bool       `json:"enabled"`
+	Running             bool       `json:"running"`
+	Interval            string     `json:"interval"`
+	LastStartedAt       *time.Time `json:"last_started_at,omitempty"`
+	LastCompletedAt     *time.Time `json:"last_completed_at,omitempty"`
+	LastSuccessAt       *time.Time `json:"last_success_at,omitempty"`
+	LastError           *string    `json:"last_error,omitempty"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 type StewardCollectorConfig struct {
@@ -406,6 +420,14 @@ type StewardSyncStatus struct {
 	LastChangeAt     *time.Time                 `json:"last_change_at,omitempty"`
 	RecentChanges    []StewardSyncChange        `json:"recent_changes"`
 	Conflicts        []StewardSyncConflict      `json:"conflicts"`
+	ChangeContract   StewardSyncChangeContract  `json:"change_contract"`
+}
+
+type StewardSyncChangeContract struct {
+	Healthy        bool     `json:"healthy"`
+	CheckedChanges int      `json:"checked_changes"`
+	InvalidChanges int      `json:"invalid_changes"`
+	Issues         []string `json:"issues"`
 }
 
 type StewardAutonomySettings struct {
@@ -440,29 +462,33 @@ type StewardAutonomyActionCapability struct {
 }
 
 type StewardAutonomyProposal struct {
-	ID                  string    `json:"id"`
-	RuleID              *string   `json:"rule_id,omitempty"`
-	SourceEntityType    string    `json:"source_entity_type"`
-	SourceEntityID      *string   `json:"source_entity_id,omitempty"`
-	Action              string    `json:"action"`
-	Title               string    `json:"title"`
-	Summary             string    `json:"summary"`
-	TriggerReason       string    `json:"trigger_reason"`
-	SuggestedAction     string    `json:"suggested_action"`
-	RiskLevel           string    `json:"risk_level"`
-	PermissionLevel     string    `json:"permission_level"`
-	DataLevel           string    `json:"data_level"`
-	Status              string    `json:"status"`
-	Policy              string    `json:"policy"`
-	ImpactSummary       string    `json:"impact_summary"`
-	Score               float64   `json:"score"`
-	ScoreReason         string    `json:"score_reason"`
-	CreatedTaskID       *string   `json:"created_task_id,omitempty"`
-	ExecutionTargetType string    `json:"execution_target_type,omitempty"`
-	ExecutionTargetID   string    `json:"execution_target_id,omitempty"`
-	AuditID             *string   `json:"audit_id,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                  string     `json:"id"`
+	RuleID              *string    `json:"rule_id,omitempty"`
+	SourceEntityType    string     `json:"source_entity_type"`
+	SourceEntityID      *string    `json:"source_entity_id,omitempty"`
+	Action              string     `json:"action"`
+	Title               string     `json:"title"`
+	Summary             string     `json:"summary"`
+	TriggerReason       string     `json:"trigger_reason"`
+	SuggestedAction     string     `json:"suggested_action"`
+	RiskLevel           string     `json:"risk_level"`
+	PermissionLevel     string     `json:"permission_level"`
+	DataLevel           string     `json:"data_level"`
+	Status              string     `json:"status"`
+	Policy              string     `json:"policy"`
+	ImpactSummary       string     `json:"impact_summary"`
+	Score               float64    `json:"score"`
+	ScoreReason         string     `json:"score_reason"`
+	CreatedTaskID       *string    `json:"created_task_id,omitempty"`
+	ExecutionTargetType string     `json:"execution_target_type,omitempty"`
+	ExecutionTargetID   string     `json:"execution_target_id,omitempty"`
+	AuditID             *string    `json:"audit_id,omitempty"`
+	FailedAttempts      int        `json:"failed_attempts"`
+	RetryEligible       bool       `json:"retry_eligible"`
+	RetryExhausted      bool       `json:"retry_exhausted"`
+	AutoRetryAt         *time.Time `json:"auto_retry_at,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 type StewardApprovalRequest struct {
@@ -504,14 +530,32 @@ type StewardAutonomyAdvisorStatus struct {
 	LastError           string     `json:"last_error,omitempty"`
 }
 
+type StewardAutonomyRetryPolicy struct {
+	MaxAttempts int    `json:"max_attempts"`
+	Backoff     string `json:"backoff"`
+	MaxBackoff  string `json:"max_backoff"`
+}
+
+type StewardAutonomyPolicyGateStatus struct {
+	Enabled                 bool   `json:"enabled"`
+	Backend                 string `json:"backend"`
+	CycleReadBarrier        bool   `json:"cycle_read_barrier"`
+	ExecutionReadBarrier    bool   `json:"execution_read_barrier"`
+	SettingsWriteBarrier    bool   `json:"settings_write_barrier"`
+	RuleWriteBarrier        bool   `json:"rule_write_barrier"`
+	CurrentRuleRevalidation bool   `json:"current_rule_revalidation"`
+}
+
 type StewardAutonomyOverview struct {
-	Settings  StewardAutonomySettings           `json:"settings"`
-	Advisor   StewardAutonomyAdvisorStatus      `json:"advisor"`
-	Actions   []StewardAutonomyActionCapability `json:"actions"`
-	Rules     []StewardAutonomyRule             `json:"rules"`
-	Proposals []StewardAutonomyProposal         `json:"proposals"`
-	Approvals []StewardApprovalRequest          `json:"approvals"`
-	Runs      []StewardAutonomousRun            `json:"runs"`
+	Settings    StewardAutonomySettings           `json:"settings"`
+	Advisor     StewardAutonomyAdvisorStatus      `json:"advisor"`
+	RetryPolicy StewardAutonomyRetryPolicy        `json:"retry_policy"`
+	PolicyGate  StewardAutonomyPolicyGateStatus   `json:"policy_gate"`
+	Actions     []StewardAutonomyActionCapability `json:"actions"`
+	Rules       []StewardAutonomyRule             `json:"rules"`
+	Proposals   []StewardAutonomyProposal         `json:"proposals"`
+	Approvals   []StewardApprovalRequest          `json:"approvals"`
+	Runs        []StewardAutonomousRun            `json:"runs"`
 }
 
 type StewardEntityTag struct {

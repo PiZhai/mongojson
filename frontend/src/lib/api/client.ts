@@ -704,6 +704,12 @@ export async function executeStewardAutonomyProposal(id: string) {
   })
 }
 
+export async function retryStewardAutonomyProposal(id: string) {
+  return request<{ run: StewardAutonomousRun }>(`${API_BASE}/steward/autonomy/proposals/${id}/retry`, {
+    method: 'POST',
+  })
+}
+
 export async function approveStewardApprovalRequest(id: string, decisionReason = '') {
   return request<{ approval: StewardApprovalRequest }>(`${API_BASE}/steward/autonomy/approvals/${id}/approve`, {
     method: 'POST',

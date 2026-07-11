@@ -1,27 +1,89 @@
 package steward
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"mongojson/backend/internal/domain"
 )
 
-func normalizeAutonomyMode(value string) string {
-	switch strings.TrimSpace(value) {
-	case AutonomyModeControlled:
-		return AutonomyModeControlled
+func autonomyModeValue(value string, fallback string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	if mode == "" {
+		mode = fallback
+	}
+	switch mode {
+	case AutonomyModeSuggestOnly, AutonomyModeControlled:
+		return mode, nil
 	default:
-		return AutonomyModeSuggestOnly
+		return "", fmt.Errorf("unsupported autonomy mode %q", value)
 	}
 }
 
-func normalizeAutonomyPolicy(value string) string {
-	switch strings.TrimSpace(value) {
+func autonomyPolicyValue(value string, fallback string) (string, error) {
+	policy := strings.ToLower(strings.TrimSpace(value))
+	if policy == "" {
+		policy = fallback
+	}
+	switch policy {
 	case AutonomyPolicyAuto, AutonomyPolicyConfirm, AutonomyPolicyNever:
-		return strings.TrimSpace(value)
+		return policy, nil
+	case AutonomyPolicySuggest:
+		return policy, nil
 	default:
-		return AutonomyPolicySuggest
+		return "", fmt.Errorf("unsupported autonomy policy %q", value)
+	}
+}
+
+func autonomyRiskValue(value string, fallback string) (string, error) {
+	risk := strings.ToLower(strings.TrimSpace(value))
+	if risk == "" {
+		risk = fallback
+	}
+	switch risk {
+	case "low", "medium", "high", "critical":
+		return risk, nil
+	default:
+		return "", fmt.Errorf("unsupported autonomy risk level %q", value)
+	}
+}
+
+func autonomyPermissionValue(value string, fallback string) (string, error) {
+	permission := strings.ToUpper(strings.TrimSpace(value))
+	if permission == "" {
+		permission = fallback
+	}
+	switch permission {
+	case PermissionA0, PermissionA1, PermissionA2, PermissionA3, PermissionA4,
+		PermissionA5, PermissionA6, PermissionA7, PermissionA8, PermissionA9:
+		return permission, nil
+	default:
+		return "", fmt.Errorf("unsupported autonomy permission level %q", value)
+	}
+}
+
+func autonomyAutoPermissionValue(value string, fallback string) (string, error) {
+	permission, err := autonomyPermissionValue(value, fallback)
+	if err != nil {
+		return "", err
+	}
+	if permissionRank(permission) > permissionRank(PermissionA3) {
+		return "", fmt.Errorf("autonomy automatic permission must be A0-A3, got %s", permission)
+	}
+	return permission, nil
+}
+
+func autonomyDataLevelValue(value string, fallback string) (string, error) {
+	level := strings.ToUpper(strings.TrimSpace(value))
+	if level == "" {
+		level = fallback
+	}
+	switch level {
+	case DataD0, DataD1, DataD2, DataD3, DataD4, DataD5, DataD6:
+		return level, nil
+	default:
+		return "", fmt.Errorf("unsupported autonomy data level %q", value)
 	}
 }
 
@@ -67,6 +129,9 @@ func validateProposalTransition(proposal domain.StewardAutonomyProposal, targetS
 	case ProposalApproved:
 		if current != ProposalCandidate {
 			return fmt.Errorf("only candidate autonomy proposals can be approved, got %q", current)
+		}
+		if issue := autonomyProposalPolicyIssue(proposal); issue != "" {
+			return fmt.Errorf("autonomy proposal policy contract is invalid: %s", issue)
 		}
 		if proposalRequiresManualReview(proposal) {
 			return fmt.Errorf("high-risk or denied-policy proposals cannot be approved for autonomous execution")
@@ -115,12 +180,75 @@ func approvalProposalTransition(approval domain.StewardApprovalRequest, proposal
 }
 
 func proposalRequiresManualReview(proposal domain.StewardAutonomyProposal) bool {
-	return proposal.Policy == AutonomyPolicyNever || isHighRisk(proposal.RiskLevel, proposal.PermissionLevel)
+	return autonomyProposalPolicyIssue(proposal) != "" || proposal.Policy == AutonomyPolicyNever || isHighRisk(proposal.RiskLevel, proposal.PermissionLevel)
+}
+
+func autonomyProposalPolicyIssue(proposal domain.StewardAutonomyProposal) string {
+	if _, err := autonomyPolicyValue(proposal.Policy, ""); err != nil {
+		return err.Error()
+	}
+	if _, err := autonomyRiskValue(proposal.RiskLevel, ""); err != nil {
+		return err.Error()
+	}
+	if _, err := autonomyPermissionValue(proposal.PermissionLevel, ""); err != nil {
+		return err.Error()
+	}
+	if _, err := autonomyDataLevelValue(proposal.DataLevel, ""); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+func evaluateCurrentRuleExecutionPolicy(proposal domain.StewardAutonomyProposal, rule domain.StewardAutonomyRule) (bool, string) {
+	if proposal.RuleID == nil {
+		return proposal.Policy == AutonomyPolicyAuto, ""
+	}
+	if strings.TrimSpace(rule.ID) == "" || rule.ID != strings.TrimSpace(*proposal.RuleID) {
+		return false, "proposal rule is missing or does not match"
+	}
+	if !rule.Enabled {
+		return false, "proposal rule is disabled"
+	}
+	if _, err := autonomyPolicyValue(rule.Policy, ""); err != nil {
+		return false, "current rule policy is invalid: " + err.Error()
+	}
+	if _, err := autonomyRiskValue(rule.RiskLevel, ""); err != nil {
+		return false, "current rule risk is invalid: " + err.Error()
+	}
+	if _, err := autonomyPermissionValue(rule.MaxPermissionLevel, ""); err != nil {
+		return false, "current rule permission is invalid: " + err.Error()
+	}
+	if strings.TrimSpace(rule.Action) != strings.TrimSpace(proposal.Action) {
+		return false, "proposal action no longer matches its rule"
+	}
+	if rule.Policy == AutonomyPolicyNever {
+		return false, "current rule policy is never"
+	}
+	if isHighRisk(rule.RiskLevel, rule.MaxPermissionLevel) {
+		return false, "current rule is outside the low-risk autonomy boundary"
+	}
+	if permissionRank(proposal.PermissionLevel) > permissionRank(rule.MaxPermissionLevel) {
+		return false, "proposal permission exceeds the current rule ceiling"
+	}
+	return proposal.Policy == AutonomyPolicyAuto && rule.Policy == AutonomyPolicyAuto, ""
+}
+
+func (s *Service) currentRuleExecutionPolicy(ctx context.Context, proposal domain.StewardAutonomyProposal) (bool, string, error) {
+	if proposal.RuleID == nil {
+		return proposal.Policy == AutonomyPolicyAuto, "", nil
+	}
+	rule, err := s.getAutonomyRule(ctx, *proposal.RuleID)
+	if err != nil {
+		return false, "", err
+	}
+	automatic, issue := evaluateCurrentRuleExecutionPolicy(proposal, rule)
+	return automatic, issue, nil
 }
 
 func isHighRisk(risk string, permission string) bool {
-	switch strings.TrimSpace(risk) {
-	case "high", "critical":
+	// Only explicitly classified low-risk work can enter the autonomous executor.
+	// Unknown or future risk labels fail closed.
+	if !strings.EqualFold(strings.TrimSpace(risk), "low") {
 		return true
 	}
 	return permissionRank(permission) >= permissionRank(PermissionA4)

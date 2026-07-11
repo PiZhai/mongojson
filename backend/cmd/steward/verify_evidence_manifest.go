@@ -160,10 +160,13 @@ func applyEvidenceManifestPreset(options evidenceManifestOptions) (evidenceManif
 func applyS3S4FinalEvidencePreset(options evidenceManifestOptions) evidenceManifestOptions {
 	platforms := []string{"windows", "darwin", "linux"}
 	options.RequirePassing = true
-	options.RequireKinds = append(options.RequireKinds, "service", "mesh", "s3s4-final-host")
+	options.RequireKinds = append(options.RequireKinds, "service-install-e2e", "service", "mesh", "s3s4-final-host")
 	options.RequirePlatforms = append(options.RequirePlatforms, platforms...)
 	for _, platform := range platforms {
-		options.RequireKindPlatforms = append(options.RequireKindPlatforms, "service:"+platform, "mesh:"+platform, "s3s4-final-host:"+platform)
+		options.RequireKindPlatforms = append(options.RequireKindPlatforms, "service-install-e2e:"+platform, "service:"+platform, "mesh:"+platform, "s3s4-final-host:"+platform)
+		for _, check := range s3s4FinalServiceInstallChecks() {
+			options.RequireKindCheckPlatforms = append(options.RequireKindCheckPlatforms, "service-install-e2e:"+check+":"+platform)
+		}
 		for _, check := range s3s4FinalServiceChecks() {
 			options.RequireKindCheckPlatforms = append(options.RequireKindCheckPlatforms, "service:"+check+":"+platform)
 		}
@@ -183,9 +186,21 @@ func applyS3S4FinalEvidencePreset(options evidenceManifestOptions) evidenceManif
 
 func applyS3S4FinalSystemServiceScopePreset(options evidenceManifestOptions) evidenceManifestOptions {
 	for _, platform := range []string{"windows", "darwin", "linux"} {
-		options.RequireKindPlatformServiceScopes = append(options.RequireKindPlatformServiceScopes, "service:"+platform+":system")
+		options.RequireKindPlatformServiceScopes = append(options.RequireKindPlatformServiceScopes,
+			"service-install-e2e:"+platform+":system",
+			"service:"+platform+":system",
+		)
 	}
 	return options
+}
+
+func s3s4FinalServiceInstallChecks() []string {
+	return []string{
+		"service_install_e2e.binary",
+		"service_install_e2e.redaction",
+		"service_install_e2e.command",
+		"service_install_e2e.install",
+	}
 }
 
 func s3s4FinalHostChecks() []string {
@@ -203,10 +218,16 @@ func s3s4FinalServiceChecks() []string {
 		"service.runtime",
 		"service.watch",
 		"service.watch.heartbeat",
+		"daemon.loops.status",
+		"s3.device.policy_contract",
+		"s3.sync.change_contract",
 		"s3.sync.security.strict",
 		"s3.sync.security.expected_sync_key",
 		"s3.sync.security.expected_local_key",
 		"s4.autonomy.status",
+		"s4.autonomy.policy_contract",
+		"s4.autonomy.policy_gate",
+		"s4.autonomy.retry_policy",
 		"s4.advisor.probe",
 		"s4.advisor.privacy_probe",
 	}
@@ -216,6 +237,9 @@ func s3s4FinalMeshChecks() []string {
 	return []string{
 		"mesh.watch",
 		"mesh.watch.heartbeat",
+		"daemon.loops.status",
+		"s3.device.policy_contract",
+		"s3.sync.change_contract",
 		"s3.peers.present",
 		"s3.peers.status",
 		"s3.sync.security.strict",
@@ -229,6 +253,9 @@ func s3s4FinalMeshChecks() []string {
 		"s3.sync.security.expected_sync_key",
 		"s3.sync.security.expected_local_key",
 		"s4.autonomy.status",
+		"s4.autonomy.policy_contract",
+		"s4.autonomy.policy_gate",
+		"s4.autonomy.retry_policy",
 		"s4.advisor.probe",
 		"s4.advisor.privacy_probe",
 	}

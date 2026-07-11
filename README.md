@@ -77,7 +77,25 @@ go run ./cmd/server
 ./steward run
 ```
 
-默认本地管理地址是 `http://127.0.0.1:18080`，工作台入口是 `http://127.0.0.1:18080/tools/steward`。二进制会自动托管同级 `ui/`，仍需要可用的 PostgreSQL `DATABASE_URL`。系统服务安装、设备配对、同步密钥和 S3/S4 验收流程见 [S3/S4 运行与验证基线](docs/personal-ai-steward-s3-s4-runtime.md)。
+默认本地管理地址是 `http://127.0.0.1:18080`，工作台入口是 `http://127.0.0.1:18080/tools/steward`。二进制会自动托管同级 `ui/`，仍需要可用的 PostgreSQL `DATABASE_URL`。从构建发布包到三台真实设备安装、配对和 24 小时验收的完整步骤见 [三端打包、安装与验证教程](docs/personal-ai-steward-three-platform-deployment-guide.md)；协议和验收字段定义见 [S3/S4 运行与验证基线](docs/personal-ai-steward-s3-s4-runtime.md)。
+
+目标主机安装先用受保护的服务环境 JSON 做无写入计划；确认后必须从管理员/root 终端显式执行真实安装：
+
+```powershell
+.\deploy\run-steward-service-install-e2e.ps1 -PlanOnly -ConfigFile <protected-service-env.json>
+.\deploy\run-steward-service-install-e2e.ps1 -ConfirmInstall -BinaryPath <stable-steward-binary> -WorkDir <stable-workdir> -ConfigFile <protected-service-env.json> -EvidenceDir <evidence-dir>
+```
+
+真实安装会创建并启动当前平台的原生系统服务，再执行 strict S3/S4 校验和默认 24 小时 watch；不会把配置文件中的密钥写入命令或 evidence。
+
+三台主机各自完成 `service-install-e2e` 和 `run-steward-s3s4-final-host.ps1` 后，使用 inventory 驱动的协调脚本做最终归档和门禁：
+
+```powershell
+.\deploy\run-steward-s3s4-final-system.ps1 -InventoryFile .\deploy\steward-s3s4-final-system.json -PlanOnly
+.\deploy\run-steward-s3s4-final-system.ps1 -InventoryFile .\deploy\steward-s3s4-final-system.json -BinaryPath <steward-binary> -EvidenceDir <final-evidence-dir>
+```
+
+inventory 可从 `deploy/steward-s3s4-final-system.example.json` 开始填写，不应包含任何密钥。协调脚本对三个来源包分别验证平台、agent、system service、advisor 身份和 24 小时 watch，复制时记录 SHA-256，再调用 `s3s4-final-system` preset 生成统一 manifest。
 
 ## Docker Compose
 

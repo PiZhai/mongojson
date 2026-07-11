@@ -3,6 +3,7 @@ package steward
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -66,11 +67,15 @@ func (s *Service) ListDevices(ctx context.Context) ([]domain.StewardDevice, erro
 }
 
 func (s *Service) RegisterDevice(ctx context.Context, input RegisterDeviceInput) (domain.StewardDevice, error) {
+	input, err := normalizePeerDeviceRegistration(s.agentIDValue(), input)
+	if err != nil {
+		return domain.StewardDevice{}, err
+	}
 	now := time.Now().UTC()
-	id := defaultString(input.ID, uuid.NewString())
-	role := defaultString(input.Role, DeviceRolePeer)
+	id := input.ID
+	role := input.Role
 	syncEnabled := defaultBool(input.SyncEnabled, true)
-	permission := defaultString(input.PermissionLevel, PermissionA3)
+	permission := input.PermissionLevel
 	publicKey := strings.TrimSpace(input.PublicKey)
 	if publicKey != "" {
 		normalizedPublicKey, err := normalizeSyncPublicKey(publicKey)
@@ -96,9 +101,9 @@ func (s *Service) RegisterDevice(ctx context.Context, input RegisterDeviceInput)
 		    trust_status = case when steward_devices.trust_status = $11 then steward_devices.trust_status else excluded.trust_status end,
 		    last_seen_at = excluded.last_seen_at,
 		    updated_at = excluded.updated_at
-	`, id, defaultString(input.DeviceName, "remote-device"), defaultString(input.Platform, "unknown"),
+	`, id, input.DeviceName, input.Platform,
 		role, DeviceTrusted, syncEnabled, permission, publicKey,
-		strings.TrimRight(strings.TrimSpace(input.APIBaseURL), "/"), now, DeviceRevoked); err != nil {
+		input.APIBaseURL, now, DeviceRevoked); err != nil {
 		return domain.StewardDevice{}, fmt.Errorf("register steward device: %w", err)
 	}
 	if err := s.ensureDefaultDevicePermissions(ctx, id, now); err != nil {
@@ -128,6 +133,18 @@ func (s *Service) observeSyncPeer(ctx context.Context, input RegisterDeviceInput
 	if id == "" || id == s.agentIDValue() {
 		return nil
 	}
+	platform, err := normalizeDevicePlatform(input.Platform)
+	if err != nil {
+		return err
+	}
+	permission := strings.ToUpper(defaultString(input.PermissionLevel, PermissionA3))
+	if !validPermissionLevel(permission) {
+		return fmt.Errorf("invalid device permission level %q", input.PermissionLevel)
+	}
+	apiBaseURL, err := normalizeDeviceAPIBaseURL(input.APIBaseURL)
+	if err != nil {
+		return err
+	}
 	publicKey := strings.TrimSpace(input.PublicKey)
 	if publicKey != "" {
 		normalized, err := normalizeSyncPublicKey(publicKey)
@@ -151,12 +168,72 @@ func (s *Service) observeSyncPeer(ctx context.Context, input RegisterDeviceInput
 		    api_base_url = case when excluded.api_base_url <> '' then excluded.api_base_url else steward_devices.api_base_url end,
 		    last_seen_at = excluded.last_seen_at,
 		    updated_at = excluded.updated_at
-	`, id, defaultString(input.DeviceName, "remote-device"), defaultString(input.Platform, "unknown"),
-		DeviceRolePeer, DeviceTrusted, defaultString(input.PermissionLevel, PermissionA3), publicKey,
-		strings.TrimRight(strings.TrimSpace(input.APIBaseURL), "/"), now); err != nil {
+	`, id, defaultString(input.DeviceName, id), platform,
+		DeviceRolePeer, DeviceTrusted, permission, publicKey,
+		apiBaseURL, now); err != nil {
 		return fmt.Errorf("observe sync peer: %w", err)
 	}
 	return s.ensureDefaultDevicePermissions(ctx, id, now)
+}
+
+func normalizePeerDeviceRegistration(localAgentID string, input RegisterDeviceInput) (RegisterDeviceInput, error) {
+	input.ID = strings.TrimSpace(input.ID)
+	if input.ID == "" {
+		return RegisterDeviceInput{}, fmt.Errorf("device id is required")
+	}
+	if input.ID == strings.TrimSpace(localAgentID) {
+		return RegisterDeviceInput{}, fmt.Errorf("local device identity %q cannot be registered as a peer", input.ID)
+	}
+	input.Role = strings.ToLower(defaultString(input.Role, DeviceRolePeer))
+	if input.Role != DeviceRolePeer {
+		return RegisterDeviceInput{}, fmt.Errorf("device registration only accepts peer role, got %q", input.Role)
+	}
+	platform, err := normalizeDevicePlatform(input.Platform)
+	if err != nil {
+		return RegisterDeviceInput{}, err
+	}
+	input.Platform = platform
+	input.PermissionLevel = strings.ToUpper(defaultString(input.PermissionLevel, PermissionA3))
+	if !validPermissionLevel(input.PermissionLevel) {
+		return RegisterDeviceInput{}, fmt.Errorf("invalid device permission level %q", input.PermissionLevel)
+	}
+	input.APIBaseURL, err = normalizeDeviceAPIBaseURL(input.APIBaseURL)
+	if err != nil {
+		return RegisterDeviceInput{}, err
+	}
+	input.DeviceName = defaultString(input.DeviceName, input.ID)
+	return input, nil
+}
+
+func normalizeDevicePlatform(value string) (string, error) {
+	platform := strings.ToLower(defaultString(value, "unknown"))
+	switch platform {
+	case "windows", "darwin", "linux", "unknown":
+		return platform, nil
+	default:
+		return "", fmt.Errorf("unsupported device platform %q", value)
+	}
+}
+
+func normalizeDeviceAPIBaseURL(value string) (string, error) {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return "", fmt.Errorf("device api_base_url must be an absolute http(s) URL")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("device api_base_url must not contain URL credentials")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("device api_base_url must not contain a query or fragment")
+	}
+	if !strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/api") {
+		return "", fmt.Errorf("device api_base_url path must end with /api")
+	}
+	return value, nil
 }
 
 func (s *Service) RevokeDevice(ctx context.Context, id string) (domain.StewardDevice, error) {
@@ -262,7 +339,7 @@ func (s *Service) UpdateDevicePermission(ctx context.Context, deviceID string, c
 	if !validDevicePermissionPolicy(policy) {
 		return domain.StewardDevicePermission{}, fmt.Errorf("unsupported device permission policy %q", policy)
 	}
-	maxPermission := defaultString(input.MaxPermissionLevel, PermissionA3)
+	maxPermission := strings.ToUpper(defaultString(input.MaxPermissionLevel, PermissionA3))
 	if !validPermissionLevel(maxPermission) {
 		return domain.StewardDevicePermission{}, fmt.Errorf("invalid max permission level %q", maxPermission)
 	}

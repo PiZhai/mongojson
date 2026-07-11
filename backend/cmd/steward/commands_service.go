@@ -294,6 +294,9 @@ func serviceInstall(args []string) error {
 	llmMaxDataLevel := fs.String("llm-max-data-level", envOrDefault("STEWARD_LLM_MAX_DATA_LEVEL", ""), "STEWARD_LLM_MAX_DATA_LEVEL sent to the S4 autonomy advisor, normally D0 or D1")
 	llmFailureThreshold := fs.Int("llm-failure-threshold", envIntOrDefault("STEWARD_LLM_FAILURE_THRESHOLD", 0), "STEWARD_LLM_FAILURE_THRESHOLD for advisor circuit breaking; 0 omits the value")
 	llmFailureCooldown := fs.Duration("llm-failure-cooldown", envDurationOrDefault("STEWARD_LLM_FAILURE_COOLDOWN", 0), "STEWARD_LLM_FAILURE_COOLDOWN for advisor circuit breaking; 0 omits the value")
+	autonomyRetryMaxAttempts := fs.Int("autonomy-retry-max-attempts", envIntOrDefault("STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS", 0), "Maximum automatic execution attempts before manual recovery is required; 0 omits the value")
+	autonomyRetryBackoff := fs.Duration("autonomy-retry-backoff", envDurationOrDefault("STEWARD_AUTONOMY_RETRY_BACKOFF", 0), "Initial backoff between automatic execution retries; 0 omits the value")
+	autonomyRetryMaxBackoff := fs.Duration("autonomy-retry-max-backoff", envDurationOrDefault("STEWARD_AUTONOMY_RETRY_MAX_BACKOFF", 0), "Maximum exponential backoff between automatic execution retries; 0 omits the value")
 	discoveryEnabled := fs.Bool("discovery-enabled", discoveryDefaults.Enabled, "Enable signed LAN candidate discovery without automatically trusting devices")
 	deviceName := fs.String("device-name", discoveryDefaults.DeviceName, "STEWARD_DEVICE_NAME advertised in signed discovery announcements")
 	discoveryListenAddr := fs.String("discovery-listen-addr", discoveryDefaults.ListenAddr, "UDP listen address or multicast group for signed peer discovery")
@@ -325,6 +328,16 @@ func serviceInstall(args []string) error {
 	if err := validateServicePostVerifyOptions("service install", postVerify); err != nil {
 		return err
 	}
+	retryEnv := map[string]string{}
+	if *autonomyRetryMaxAttempts > 0 {
+		retryEnv["STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS"] = strconv.Itoa(*autonomyRetryMaxAttempts)
+	}
+	if *autonomyRetryBackoff > 0 {
+		retryEnv["STEWARD_AUTONOMY_RETRY_BACKOFF"] = autonomyRetryBackoff.String()
+	}
+	if *autonomyRetryMaxBackoff > 0 {
+		retryEnv["STEWARD_AUTONOMY_RETRY_MAX_BACKOFF"] = autonomyRetryMaxBackoff.String()
+	}
 	opts.ExtraEnv = mergeServiceEnv(serviceInstallAdvisorEnv(fs, serviceInstallAdvisorFlagValues{
 		Provider:         *llmProvider,
 		BaseURL:          *llmBaseURL,
@@ -335,7 +348,7 @@ func serviceInstall(args []string) error {
 		MaxDataLevel:     *llmMaxDataLevel,
 		FailureThreshold: *llmFailureThreshold,
 		FailureCooldown:  *llmFailureCooldown,
-	}), serviceInstallDiscoveryEnv(fs, serviceInstallDiscoveryFlagValues{
+	}), retryEnv, serviceInstallDiscoveryEnv(fs, serviceInstallDiscoveryFlagValues{
 		Enabled:    *discoveryEnabled,
 		DeviceName: *deviceName,
 		ListenAddr: *discoveryListenAddr,

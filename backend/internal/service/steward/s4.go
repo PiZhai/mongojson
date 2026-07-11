@@ -28,17 +28,25 @@ func (s *Service) GetAutonomyOverview(ctx context.Context) (domain.StewardAutono
 		return domain.StewardAutonomyOverview{}, err
 	}
 	return domain.StewardAutonomyOverview{
-		Settings:  settings,
-		Advisor:   s.autonomyAdvisor().Status(),
-		Actions:   s.autonomyActionCapabilities(),
-		Rules:     rules,
-		Proposals: proposals,
-		Approvals: approvals,
-		Runs:      runs,
+		Settings:    settings,
+		Advisor:     s.autonomyAdvisor().Status(),
+		RetryPolicy: s.retryPolicy.status(),
+		PolicyGate:  autonomyPolicyGateStatus(),
+		Actions:     s.autonomyActionCapabilities(),
+		Rules:       rules,
+		Proposals:   proposals,
+		Approvals:   approvals,
+		Runs:        runs,
 	}, nil
 }
 
 func (s *Service) RunAutonomyCycle(ctx context.Context, limit int) (domain.StewardAutonomyOverview, error) {
+	gatedCtx, gate, err := acquireAutonomyPolicyReadGate(ctx, s.db.Pool)
+	if err != nil {
+		return domain.StewardAutonomyOverview{}, err
+	}
+	defer gate.Release()
+	ctx = gatedCtx
 	settings, err := s.GetAutonomySettings(ctx)
 	if err != nil {
 		return domain.StewardAutonomyOverview{}, err

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"mongojson/backend/internal/domain"
 )
 
 func (s *Service) createEventFollowUpProposals(ctx context.Context, limit int) error {
@@ -281,28 +283,40 @@ func (s *Service) createSyncConflictDiagnosticProposals(ctx context.Context, lim
 
 func (s *Service) executeControlledAutoProposals(ctx context.Context, limit int) error {
 	rows, err := s.db.Pool.Query(ctx, `
-		select p.id::text
+		select p.id::text,
+		       count(run.id) filter (where run.mode = $4 and run.status = $5)::int,
+		       max(run.created_at) filter (where run.mode = $4 and run.status = $5)
 		from steward_autonomy_proposals p
 		join steward_autonomy_rules r on r.id = p.rule_id
+		left join steward_autonomous_runs run on run.proposal_id = p.id
 		where p.status = $1
 		  and p.policy = $2
 		  and r.enabled = true
 		  and r.policy = $2
 		  and r.action = p.action
+		group by p.id, p.score, p.updated_at
 		order by p.score desc, p.updated_at asc
 		limit $3
-	`, ProposalCandidate, AutonomyPolicyAuto, limit)
+	`, ProposalCandidate, AutonomyPolicyAuto, 200, RunModeExecute, RunFailed)
 	if err != nil {
 		return fmt.Errorf("list controlled auto proposals: %w", err)
 	}
 	ids := []string{}
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var record autonomyRetryRecord
+		if err := rows.Scan(&id, &record.failedAttempts, &record.lastFailedAt); err != nil {
 			rows.Close()
 			return err
 		}
-		ids = append(ids, id)
+		proposal := domain.StewardAutonomyProposal{ID: id, Status: ProposalCandidate, Policy: AutonomyPolicyAuto}
+		s.retryPolicy.apply(&proposal, record)
+		if s.retryPolicy.automaticRetryReady(proposal) {
+			ids = append(ids, id)
+			if len(ids) >= limit {
+				break
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()

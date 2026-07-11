@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "advisor": {
+    "provider": "openai-compatible",
+    "model": "replace-with-model-name",
+    "max_data_level": "D1"
+  },
+  "hosts": [
+    {
+      "platform": "windows",
+      "agent_id": "windows-main",
+      "service_name": "MongojsonSteward",
+      "service_scope": "system",
+      "evidence_dir": "C:\\steward-evidence\\windows"
+    },
+    {
+      "platform": "darwin",
+      "agent_id": "macbook-main",
+      "service_name": "com.mongojson.steward",
+      "service_scope": "system",
+      "evidence_dir": "C:\\steward-evidence\\darwin"
+    },
+    {
+      "platform": "linux",
+      "agent_id": "linux-main",
+      "service_name": "mongojson-steward",
+      "service_scope": "system",
+      "evidence_dir": "C:\\steward-evidence\\linux"
+    }
+  ]
+}

@@ -117,7 +117,8 @@ func TestPrintVersionIncludesBuildInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("print version: %v", err)
 	}
-	if !strings.Contains(output, `"name": "steward"`) || !strings.Contains(output, `"version":`) || !strings.Contains(output, `"goos":`) {
+	if !strings.Contains(output, `"name": "steward"`) || !strings.Contains(output, `"version":`) ||
+		!strings.Contains(output, `"go_version": "go1.`) || !strings.Contains(output, `"goos":`) {
 		t.Fatalf("version output missing expected fields: %s", output)
 	}
 }
@@ -166,6 +167,9 @@ func TestServiceInstallAdvisorFlagsWriteRedactedEnvironment(t *testing.T) {
 			"--llm-max-data-level", "D0",
 			"--llm-failure-threshold", "2",
 			"--llm-failure-cooldown", "10s",
+			"--autonomy-retry-max-attempts", "4",
+			"--autonomy-retry-backoff", "30s",
+			"--autonomy-retry-max-backoff", "15m",
 		})
 	})
 	if err != nil {
@@ -202,6 +206,11 @@ func TestServiceInstallAdvisorFlagsWriteRedactedEnvironment(t *testing.T) {
 		env["STEWARD_LLM_FAILURE_THRESHOLD"] != "2" ||
 		env["STEWARD_LLM_FAILURE_COOLDOWN"] != "10s" {
 		t.Fatalf("advisor tuning values missing from dry-run output: %#v", env)
+	}
+	if env["STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS"] != "4" ||
+		env["STEWARD_AUTONOMY_RETRY_BACKOFF"] != "30s" ||
+		env["STEWARD_AUTONOMY_RETRY_MAX_BACKOFF"] != "15m0s" {
+		t.Fatalf("autonomy retry values missing from dry-run output: %#v", env)
 	}
 	if payload.Verification == nil {
 		t.Fatalf("service install output should include verification advice")
