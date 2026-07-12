@@ -88,8 +88,19 @@ func (db *DB) Migrate(ctx context.Context) error {
 		);`,
 		`alter table tool_memos
 			add column if not exists floating_cards jsonb not null default '[]'::jsonb;`,
+		`create table if not exists music_tracks (
+			id uuid primary key,
+			file_id uuid not null unique references tool_files(id) on delete cascade,
+			title text not null,
+			artist text not null default '',
+			note text not null default '',
+			duration_seconds double precision,
+			audio_quality jsonb not null default '{}'::jsonb,
+			created_at timestamptz not null default now()
+		);`,
 		`create index if not exists idx_tool_jobs_status on tool_jobs(status);`,
 		`create index if not exists idx_tool_files_expires_at on tool_files(expires_at);`,
+		`create index if not exists idx_music_tracks_created_at_id on music_tracks(created_at desc, id desc);`,
 	}
 
 	for _, statement := range statements {

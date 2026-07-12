@@ -1,0 +1,264 @@
+import { MONGO_LANGUAGE_ID } from '../../../lib/editor/mongoLanguage'
+import type { PipelineInspectionResult, ShellStatement, ShellValidation } from '../../../shared/data/types'
+import type { ToolStatus } from '../../../shared/ui/toolStatus'
+import { InputHealthHint } from '../../../components/common/InputHealthHint'
+import { Panel } from '../../../components/common/Panel'
+import { StatusBanner } from '../../../components/common/StatusBanner'
+import { CodeEditor } from '../../../components/editor/CodeEditor'
+import { ResultPane } from '../../../components/editor/ResultPane'
+import type { InputHint, ShellFocus, SummaryTile } from './types'
+
+type ShellModeProps = {
+  copied: string | null
+  inputHint: InputHint | null
+  jumpToShellOffset: (offset: number, label: string, kind: ShellFocus['kind']) => void
+  liveStatus: ToolStatus
+  mongoInspection: PipelineInspectionResult | null
+  parsedShell: ShellStatement | null
+  runShell: () => void
+  setShellFocus: (focus: ShellFocus | null) => void
+  setShellInput: (value: string) => void
+  shellChecks: ShellValidation[]
+  shellFocus: ShellFocus | null
+  shellInput: string
+  shellOutput: string
+  shellOverview: SummaryTile[] | null
+  status: ToolStatus
+  copyText: (value: string, key: string, message: string) => Promise<void>
+}
+
+export function ShellMode({
+  copied,
+  inputHint,
+  jumpToShellOffset,
+  liveStatus,
+  mongoInspection,
+  parsedShell,
+  runShell,
+  setShellFocus,
+  setShellInput,
+  shellChecks,
+  shellFocus,
+  shellInput,
+  shellOutput,
+  shellOverview,
+  status,
+  copyText,
+}: ShellModeProps) {
+  return (
+    <Panel
+      actions={
+        <>
+          <button className="button button-primary" onClick={runShell} type="button">
+            格式化 Shell
+          </button>
+          <button className="button button-ghost" onClick={() => setShellFocus(null)} type="button">
+            清除定位
+          </button>
+        </>
+      }
+      eyebrow="Shell"
+      subtitle="识别 MongoDB Shell 语句，整理参数缩进，并把集合、方法链和操作符拆成可定位摘要。"
+      title="Shell 工作区"
+    >
+      <div className="editor-split">
+        <div className="editor-pane">
+          <div className="editor-pane-header">
+            <span className="editor-pane-title">Shell Input</span>
+            <div className="editor-pane-actions">
+              <button className="button button-ghost button-sm" onClick={() => copyText(shellInput, 'shell-input', '已复制 Shell 输入。')} type="button">
+                {copied === 'shell-input' ? '已复制' : '复制输入'}
+              </button>
+            </div>
+          </div>
+          <CodeEditor focusLine={shellFocus?.line ?? null} language={MONGO_LANGUAGE_ID} onChange={setShellInput} value={shellInput} />
+          {inputHint ? <InputHealthHint text={inputHint.text} tone={inputHint.tone} /> : null}
+        </div>
+        <ResultPane
+          actions={
+            <button className="button button-ghost button-sm" onClick={() => copyText(shellOutput, 'shell-output', '已复制 Shell 结果。')} type="button">
+              {copied === 'shell-output' ? '已复制' : '复制结果'}
+            </button>
+          }
+          language={MONGO_LANGUAGE_ID}
+          placeholder="执行 Shell 格式化后，结果会出现在这里。"
+          title="Formatted"
+          value={shellOutput}
+        />
+      </div>
+      {shellOverview ? (
+        <div className="summary-strip">
+          {shellOverview.map((item) => (
+            <article
+              className={`summary-tile summary-tile-${item.accent}${
+                (item.label === '集合' && shellFocus?.kind === 'collection') ||
+                (item.label === '方法链' && shellFocus?.kind === 'method') ||
+                (item.label === '操作符' && shellFocus?.kind === 'operator')
+                  ? ' summary-tile-active'
+                  : ''
+              }`}
+              key={item.label}
+            >
+              <span className="summary-tile-label">{item.label}</span>
+              <strong className="summary-tile-value">{item.value}</strong>
+              <span className="summary-tile-helper">{item.helper}</span>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {parsedShell ? (
+        <div className="workspace-grid">
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-header-copy">
+                <div className="panel-eyebrow">Summary</div>
+                <h3 className="panel-title">结构化摘要</h3>
+              </div>
+            </div>
+            <div className="stack panel-body-compact">
+              <article className="info-card">
+                <p className="info-card-title">集合名</p>
+                <div className="path-list">
+                  <button className="path-chip path-chip-right" onClick={() => jumpToShellOffset(parsedShell.collectionStart, parsedShell.collection, 'collection')} type="button">
+                    {parsedShell.collection}
+                  </button>
+                </div>
+              </article>
+              <article className="info-card">
+                <p className="info-card-title">方法链</p>
+                <div className="path-list">
+                  {parsedShell.methods.map((method, index) => (
+                    <button className="path-chip" key={`${method.name}-${method.nameStart}-${index}`} onClick={() => jumpToShellOffset(method.nameStart, method.name, 'method')} type="button">
+                      {index + 1}. {method.name}({method.argsRaw.length})
+                    </button>
+                  ))}
+                </div>
+              </article>
+              <article className="info-card">
+                <p className="info-card-title">操作符</p>
+                <div className="path-list">
+                  {parsedShell.operators.length > 0 ? (
+                    parsedShell.operators.map((operator, index) => (
+                      <button className="path-chip path-chip-changed" key={`${operator.name}-${operator.pos}-${index}`} onClick={() => jumpToShellOffset(operator.pos, operator.name, 'operator')} type="button">
+                        {operator.name}
+                      </button>
+                    ))
+                  ) : (
+                    <p className="info-card-text">当前语句未识别出操作符。</p>
+                  )}
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-header-copy">
+                <div className="panel-eyebrow">Detail</div>
+                <h3 className="panel-title">方法明细</h3>
+              </div>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>方法</th>
+                    <th>参数数</th>
+                    <th>参数预览</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parsedShell.methods.map((method, index) => (
+                    <tr key={`${method.name}-${method.nameStart}-${index}`}>
+                      <td>
+                        <button className="path-link" onClick={() => jumpToShellOffset(method.nameStart, method.name, 'method')} type="button">
+                          {method.name}
+                        </button>
+                      </td>
+                      <td>{method.argsRaw.length}</td>
+                      <td>
+                        <code>{method.argsRaw.length > 0 ? method.argsRaw.map((item) => item.text.replace(/\s+/g, ' ').slice(0, 48)).join(' | ') : '无参数'}</code>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="table-caption">
+              已识别 {parsedShell.methods.length} 个方法调用和 {parsedShell.operators.length} 个操作符，可从摘要直接跳到输入区。
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {mongoInspection ? (
+        <div className="workspace-grid">
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-header-copy">
+                <div className="panel-eyebrow">Risk</div>
+                <h3 className="panel-title">查询风险检查</h3>
+              </div>
+            </div>
+            <div className="stack panel-body-compact">
+              {mongoInspection.risks.length > 0 ? (
+                mongoInspection.risks.map((risk, index) => (
+                  <article className="info-card" key={`${risk.code}-${index}`}>
+                    <p className="info-card-title">{risk.level.toUpperCase()} · {risk.code}</p>
+                    <p className="info-card-text">{risk.message}</p>
+                  </article>
+                ))
+              ) : (
+                <article className="info-card">
+                  <p className="info-card-title">OK</p>
+                  <p className="info-card-text">未命中首批高风险规则，仍建议结合 explain 和索引确认实际执行计划。</p>
+                </article>
+              )}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-header-copy">
+                <div className="panel-eyebrow">Pipeline</div>
+                <h3 className="panel-title">Aggregation Inspector</h3>
+              </div>
+            </div>
+            <div className="stack panel-body-compact">
+              {mongoInspection.stages.length > 0 ? (
+                mongoInspection.stages.map((stage) => (
+                  <article className="info-card" key={`${stage.index}-${stage.operator}`}>
+                    <p className="info-card-title">{stage.title}</p>
+                    <p className="info-card-text">{stage.description}</p>
+                    <p className="info-card-text">字段线索：{stage.fieldHints.join(', ') || '未提取到字段名'}</p>
+                    {stage.risks.length > 0 ? <p className="info-card-text">风险：{stage.risks.join('；')}</p> : null}
+                  </article>
+                ))
+              ) : (
+                <article className="info-card">
+                  <p className="info-card-title">未检测到 Pipeline</p>
+                  <p className="info-card-text">输入 aggregate([...]) 后，这里会按 stage 拆解说明。</p>
+                </article>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className="card-grid">
+        {shellChecks.length > 0 ? (
+          shellChecks.map((item, index) => (
+            <article className="info-card" key={`${item.msg}-${index}`}>
+              <p className="info-card-title">{item.level.toUpperCase()}</p>
+              <p className="info-card-text">{item.msg}</p>
+            </article>
+          ))
+        ) : (
+          <article className="info-card">
+            <p className="info-card-title">校验结果</p>
+            <p className="info-card-text">执行后会展示集合、方法和潜在操作符告警。</p>
+          </article>
+        )}
+      </div>
+      <StatusBanner status={liveStatus.kind === 'error' || liveStatus.kind === 'warning' ? liveStatus : status.kind === 'success' ? status : liveStatus} />
+    </Panel>
+  )
+}

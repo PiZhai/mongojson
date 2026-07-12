@@ -4,7 +4,7 @@ import type {
   SemanticDiffChange,
   SemanticDiffOptions,
   SemanticDiffResult,
-} from '../../types/tooling'
+} from '../../shared/data/types'
 import { astNodeToDisplay, astValueToType, formatAstCompact } from './jsonFormatter'
 
 function toPointer(path: string) {

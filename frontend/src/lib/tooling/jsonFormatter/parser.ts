@@ -1,4 +1,4 @@
-import type { JsonNode } from '../../../types/tooling'
+import type { JsonNode } from '../../../shared/data/types'
 
 const MONGO_FUNCTIONS = new Set([
   'ObjectId',

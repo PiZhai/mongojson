@@ -123,3 +123,29 @@ Compose 运行包含：
 - 文件落盘存储，数据库只保存元信息和过期时间
 - 访问控制预期由 Nginx 层承担，应用层暂不实现账号体系
 - 文档转换、更多个人电脑组件接入，作为后续阶段能力继续追加
+
+## 前端模块化规范
+
+前端以“受治理的模块化单体 + 微内核插件架构”为目标，统一定义模块清单、扩展点、
+功能开关、依赖边界、可删除性、独立运行与微前端升级条件。详细规则见
+[Frontend Modular Platform Architecture Standard](docs/frontend-modular-platform-standard.md)。
+
+模块构建与启停：
+
+```powershell
+# 只构建指定模块，未包含模块不会进入 JS/CSS 产物
+$env:VITE_INCLUDED_MODULES = 'inspect,json,mongo-json'
+npm --prefix frontend run build
+
+# 发布全部模块，但启动时关闭指定模块
+$env:VITE_DISABLED_MODULES = 'music,watch-party'
+npm --prefix frontend run dev
+```
+
+架构验证：
+
+```powershell
+npm --prefix frontend run check:architecture
+npm --prefix frontend test
+npm --prefix frontend run test:module-profiles
+```

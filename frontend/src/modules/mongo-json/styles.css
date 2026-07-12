@@ -1,0 +1,138 @@
+/* Feature-owned styles. Keep selectors scoped to this module. */
+.mongo-json-page-shell {
+  align-content: start;
+}
+
+.mongo-json-page-shell > .mode-strip {
+  flex: 0 0 auto;
+}
+
+.mongo-json-page-shell > .panel {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.mongo-json-page-shell > .panel > .editor-split {
+  flex: 0 0 auto;
+  height: clamp(420px, calc(100vh - 390px), 620px);
+  min-height: 420px;
+}
+
+.mongo-json-page-shell > .panel > .workspace-grid {
+  flex: 0 0 auto;
+  min-height: auto;
+}
+
+.mongo-json-page-shell .editor-pane {
+  min-height: 0;
+}
+
+.mongo-json-page-shell .editor-host,
+.mongo-json-page-shell .editor-shell,
+.mongo-json-page-shell .empty-state {
+  min-height: 0;
+}
+
+.mongo-json-page-shell .workspace-grid {
+  min-width: var(--layout-mongo-workspace-min);
+}
+
+.mode-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-glass-strong);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(16px);
+}
+
+.mode-strip {
+  justify-content: flex-start;
+  overflow-x: auto;
+}
+
+.mode-switch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+
+.mode-switch-button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+.mode-switch-button:hover {
+  color: var(--text-strong);
+  background: var(--surface);
+}
+
+.mode-switch-button-active {
+  border-color: #cde4ff;
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: 0 3px 8px rgba(0, 122, 255, 0.1);
+}
+
+.input-health-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.input-health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--success);
+}
+
+.input-health-hint-warn .input-health-dot,
+.input-health-hint[data-tone='warning'] .input-health-dot,
+.input-health-dot.warning {
+  background: var(--warning);
+}
+
+.input-health-hint-error .input-health-dot,
+.input-health-hint[data-tone='error'] .input-health-dot,
+.input-health-dot.error {
+  background: var(--error);
+}
+@media (orientation: portrait) and (max-width: 768px) {
+
+  .mongo-json-page-shell > .panel > .editor-split {
+    height: auto;
+    min-height: 534px;
+  }
+
+  .mode-switch {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .mode-switch-button {
+    min-height: 28px;
+    padding-inline: 10px;
+    font-size: 12px;
+  }
+}

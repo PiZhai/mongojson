@@ -13,6 +13,7 @@ import (
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/music"
 	"mongojson/backend/internal/service/presets"
 	"mongojson/backend/internal/service/watchsync"
 )
@@ -22,11 +23,18 @@ type MemoStore interface {
 	SaveMemo(context.Context, memo.SaveInput) (domain.MemoRecord, error)
 }
 
+type MusicStore interface {
+	SaveUpload(context.Context, music.UploadInput) (domain.MusicTrackRecord, error)
+	List(context.Context, string, int) (music.Page, error)
+	GetByID(context.Context, string) (domain.MusicTrackRecord, error)
+}
+
 type Dependencies struct {
 	Config        config.Config
 	FileService   *filemeta.Service
 	JobService    *jobs.Service
 	MemoService   MemoStore
+	MusicService  MusicStore
 	PresetService *presets.Service
 	WatchSync     *watchsync.Hub
 	Readiness     func(context.Context) (map[string]string, error)
@@ -43,6 +51,9 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/files/{id}/download", handler.downloadFile)
 		r.Get("/memo", handler.getMemo)
 		r.Put("/memo", handler.saveMemo)
+		r.Post("/music/tracks", handler.uploadMusicTrack)
+		r.Get("/music/tracks", handler.listMusicTracks)
+		r.Get("/music/tracks/{id}/content", handler.streamMusicTrack)
 		r.Post("/jobs", handler.createJob)
 		r.Get("/jobs/{id}", handler.getJob)
 		r.Get("/presets", handler.listPresets)

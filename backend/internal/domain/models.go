@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type FileRecord struct {
 	ID           string     `json:"id"`
@@ -53,4 +56,18 @@ type MemoFloatingCard struct {
 	Color     string    `json:"color"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type MusicTrackRecord struct {
+	ID           string          `json:"id"`
+	Title        string          `json:"title"`
+	Artist       string          `json:"artist,omitempty"`
+	Note         string          `json:"note,omitempty"`
+	OriginalName string          `json:"original_name"`
+	MIMEType     string          `json:"mime_type"`
+	SizeBytes    int64           `json:"size_bytes"`
+	Duration     *float64        `json:"duration,omitempty"`
+	AudioQuality json.RawMessage `json:"audio_quality,omitempty"`
+	StoragePath  string          `json:"-"`
+	CreatedAt    time.Time       `json:"created_at"`
 }

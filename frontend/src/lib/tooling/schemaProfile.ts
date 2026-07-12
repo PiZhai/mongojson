@@ -5,7 +5,7 @@ import type {
   SchemaProfile,
   SchemaProfileField,
   TableData,
-} from '../../types/tooling'
+} from '../../shared/data/types'
 import { astNodeToDisplay, buildTableFromAst } from './jsonFormatter'
 
 function sanitizeName(path: string) {

@@ -1,89 +1,21 @@
 import { useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { MusicMiniPlayer, MusicQueueDrawer } from '../music/MusicPlayerProvider'
+import { moduleRegistry } from '../../app/modules/registry'
+import { ShellExtensionSlot } from '../../app/modules/runtime'
+import type { ToolModuleGroup, ToolModuleIcon } from '../../platform/contracts/modules'
 
-type NavItem = {
-  to: string
-  title: string
-  icon: 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'music' | 'watch'
+const groupLabels: Record<ToolModuleGroup, string> = {
+  data: '数据工具',
+  documents: '文档能力',
+  media: '媒体工具',
 }
 
-const navGroups: Array<{ label: string; items: NavItem[] }> = [
-  {
-    label: '数据工具',
-    items: [
-      {
-        to: '/tools/inspect',
-        title: '智能诊断',
-        icon: 'inspect',
-      },
-      {
-        to: '/tools/json',
-        title: 'JSON 工具',
-        icon: 'json',
-      },
-      {
-        to: '/tools/mongodb-json',
-        title: 'MongoDB JSON',
-        icon: 'mongo',
-      },
-      {
-        to: '/tools/visualize',
-        title: '数据可视化',
-        icon: 'visualize',
-      },
-    ],
-  },
-  {
-    label: '文档能力',
-    items: [
-      {
-        to: '/tools/memo-docs',
-        title: '在线备忘录',
-        icon: 'memo',
-      },
-    ],
-  },
-  {
-    label: '媒体工具',
-    items: [
-      {
-        to: '/tools/music',
-        title: '音乐播放器',
-        icon: 'music',
-      },
-      {
-        to: '/tools/watch-party',
-        title: '视频同步',
-        icon: 'watch',
-      },
-    ],
-  },
-]
+const navGroups = (Object.keys(groupLabels) as ToolModuleGroup[]).map((group) => ({
+  label: groupLabels[group],
+  items: moduleRegistry.modules.filter((module) => module.group === group),
+}))
 
-const pageMeta: Record<string, { title: string }> = {
-  '/tools/inspect': {
-    title: '智能诊断',
-  },
-  '/tools/json': {
-    title: 'JSON 工具',
-  },
-  '/tools/mongodb-json': {
-    title: 'MongoDB JSON 工具',
-  },
-  '/tools/visualize': {
-    title: '数据可视化',
-  },
-  '/tools/memo-docs': {
-    title: '在线备忘录',
-  },
-  '/tools/music': {
-    title: '音乐播放器',
-  },
-  '/tools/watch-party': {
-    title: '视频同步',
-  },
-}
+const pageMeta = new Map(moduleRegistry.modules.map((module) => [module.route.path, { title: module.title }]))
 
 const SIDEBAR_STORAGE_KEY = 'personal-tooling-sidebar-collapsed'
 
@@ -96,7 +28,7 @@ function BrandMark() {
   )
 }
 
-function NavIcon({ icon }: Pick<NavItem, 'icon'>) {
+function NavIcon({ icon }: { icon: ToolModuleIcon }) {
   if (icon === 'inspect') {
     return (
       <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">
@@ -189,7 +121,10 @@ export function AppShell() {
     return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'
   })
 
-  const meta = useMemo(() => pageMeta[location.pathname] ?? pageMeta['/tools/json'], [location.pathname])
+  const meta = useMemo(
+    () => pageMeta.get(location.pathname) ?? { title: 'Personal Tooling' },
+    [location.pathname],
+  )
 
   const toggleSidebar = () => {
     setSidebarCollapsed((value) => {
@@ -240,14 +175,14 @@ export function AppShell() {
                 return (
                   <NavLink
                     className={({ isActive }) => `nav-link${isActive ? ' nav-link-active' : ''}`}
-                    data-nav-title={item.title}
-                    key={item.to}
-                    to={item.to}
+                    data-nav-title={item.navigation.label}
+                    key={item.id}
+                    to={item.route.path}
                   >
                     <span className="nav-icon" aria-hidden="true">
-                      <NavIcon icon={item.icon} />
+                      <NavIcon icon={item.navigation.icon} />
                     </span>
-                    <span className="nav-link-title">{item.title}</span>
+                    <span className="nav-link-title">{item.navigation.label}</span>
                   </NavLink>
                 )
               })}
@@ -271,8 +206,8 @@ export function AppShell() {
         <div className="app-content" data-layout-region="app-content">
           <Outlet />
         </div>
-        <MusicMiniPlayer />
-        <MusicQueueDrawer />
+        <ShellExtensionSlot id="shell.bottom-player" />
+        <ShellExtensionSlot id="shell.right-drawer" />
       </main>
     </div>
   )

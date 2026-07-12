@@ -1,4 +1,4 @@
-import type { JsonNode } from '../../../types/tooling'
+import type { JsonNode } from '../../../shared/data/types'
 
 export function formatAst(node: JsonNode, indent = 0, indentSize = 2): string {
   const pad = ' '.repeat(indent)

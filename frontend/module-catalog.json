@@ -1,0 +1,9 @@
+[
+  { "id": "inspect", "importPath": "/src/modules/inspect/manifest.ts", "exportName": "inspectModule" },
+  { "id": "json", "importPath": "/src/modules/json/manifest.ts", "exportName": "jsonModule" },
+  { "id": "mongo-json", "importPath": "/src/modules/mongo-json/manifest.ts", "exportName": "mongoJsonModule" },
+  { "id": "visualize", "importPath": "/src/modules/visualize/manifest.ts", "exportName": "visualizeModule" },
+  { "id": "memo-docs", "importPath": "/src/modules/memo-docs/manifest.ts", "exportName": "memoDocsModule" },
+  { "id": "music", "importPath": "/src/modules/music/manifest.ts", "exportName": "musicModule" },
+  { "id": "watch-party", "importPath": "/src/modules/watch-party/manifest.ts", "exportName": "watchPartyModule" }
+]

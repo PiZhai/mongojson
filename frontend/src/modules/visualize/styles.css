@@ -1,0 +1,119 @@
+/* Feature-owned styles. Keep selectors scoped to this module. */
+.visualization-workspace-grid {
+  grid-template-columns: minmax(var(--layout-visualization-input-min), 1fr) minmax(var(--layout-visualization-rail-min), 0.86fr);
+  min-width: var(--layout-visualization-workspace-min);
+}
+
+.chart-host {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 252, 255, 0.9)),
+    var(--editor-bg);
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+}
+
+.chart-grid-line {
+  stroke: #e7edf6;
+  stroke-dasharray: 4 6;
+  stroke-width: 1;
+}
+
+.chart-axis {
+  stroke: #bfccdc;
+  stroke-width: 1;
+}
+
+.chart-axis-label,
+.chart-label {
+  fill: var(--text-muted);
+  font-size: 12px;
+}
+
+.chart-bar {
+  fill: var(--chart-color, var(--accent));
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+.chart-bar:hover {
+  filter: drop-shadow(0 6px 10px rgba(24, 39, 75, 0.16));
+  opacity: 0.88;
+}
+
+.chart-bar-0,
+.chart-point-0 {
+  --chart-color: #007aff;
+}
+
+.chart-bar-1,
+.chart-point-1 {
+  --chart-color: #0f9f8f;
+}
+
+.chart-bar-2,
+.chart-point-2 {
+  --chart-color: #f97316;
+}
+
+.chart-bar-3,
+.chart-point-3 {
+  --chart-color: #7c3aed;
+}
+
+.chart-bar-4,
+.chart-point-4 {
+  --chart-color: #e54874;
+}
+
+.chart-bar-5,
+.chart-point-5 {
+  --chart-color: #2f9e44;
+}
+
+.chart-bar-0,
+.chart-bar-1,
+.chart-bar-2,
+.chart-bar-3,
+.chart-bar-4,
+.chart-bar-5 {
+  fill: var(--chart-color);
+}
+
+.chart-line {
+  fill: none;
+  stroke: url(#chart-line-gradient);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.chart-point {
+  fill: var(--surface);
+  stroke: var(--chart-color, var(--accent));
+  stroke-width: 2;
+  transition: r 160ms ease, filter 160ms ease;
+}
+
+.chart-point:hover {
+  filter: drop-shadow(0 4px 8px rgba(24, 39, 75, 0.16));
+  r: 5;
+}
+
+.visualization-config-body {
+  padding: 16px;
+}
+@media (orientation: portrait) and (max-width: 768px) {
+
+  .visualization-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+  }
+}

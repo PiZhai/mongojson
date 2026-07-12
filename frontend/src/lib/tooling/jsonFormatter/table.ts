@@ -1,4 +1,4 @@
-import type { JsonNode, TableData, TableValidation } from '../../../types/tooling'
+import type { JsonNode, TableData, TableValidation } from '../../../shared/data/types'
 import { astValueToDisplay, astValueToType, compareFieldKeys } from './ast'
 
 function flattenAst(node: JsonNode | null | undefined, prefix: string, result: Record<string, JsonNode | null>) {

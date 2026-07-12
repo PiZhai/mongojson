@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,6 +19,7 @@ import (
 	"mongojson/backend/internal/domain"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/music"
 )
 
 type Handler struct {
@@ -23,6 +27,8 @@ type Handler struct {
 }
 
 const maxUploadBytes = 64 << 20
+const maxMusicUploadBytes = 512 << 20
+const multipartMemoryBytes = 32 << 20
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -119,6 +125,105 @@ func (h *Handler) saveMemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"memo": record})
+}
+
+func (h *Handler) uploadMusicTrack(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxMusicUploadBytes)
+	if err := r.ParseMultipartForm(multipartMemoryBytes); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "music upload body exceeds 512 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid music upload")
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "missing file")
+		return
+	}
+	var duration *float64
+	if value := strings.TrimSpace(r.FormValue("duration")); value != "" {
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || parsed < 0 {
+			httpError(w, http.StatusBadRequest, "duration must be a positive number")
+			return
+		}
+		duration = &parsed
+	}
+	record, err := h.deps.MusicService.SaveUpload(r.Context(), music.UploadInput{
+		File: file, Header: header, Title: r.FormValue("title"), Artist: r.FormValue("artist"),
+		Note: r.FormValue("note"), Duration: duration, AudioQuality: json.RawMessage(r.FormValue("audio_quality")),
+	})
+	if err != nil {
+		if errors.Is(err, music.ErrUnsupportedAudio) {
+			httpError(w, http.StatusUnsupportedMediaType, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.MusicTrackRecord{"track": record})
+}
+
+func (h *Handler) listMusicTracks(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	limit := 20
+	if value := r.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 100 {
+			httpError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	page, err := h.deps.MusicService.List(r.Context(), r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		if errors.Is(err, music.ErrInvalidCursor) {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) streamMusicTrack(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	record, err := h.deps.MusicService.GetByID(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	file, err := os.Open(record.StoragePath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "music file not found")
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot inspect music file")
+		return
+	}
+	w.Header().Set("Content-Type", record.MIMEType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": record.OriginalName}))
+	http.ServeContent(w, r, record.OriginalName, info.ModTime(), file)
 }
 
 func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {

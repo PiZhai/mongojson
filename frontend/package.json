@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run check:architecture && tsc -b && vite build",
+    "check:architecture": "node scripts/check-module-boundaries.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
     "test:layout": "playwright test",
     "test:watch": "vitest",
+    "test:module-profiles": "node scripts/verify-module-profiles.mjs",
     "validate:breakpoints": "node scripts/validate-breakpoints.cjs"
   },
   "dependencies": {

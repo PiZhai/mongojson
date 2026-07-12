@@ -1,4 +1,4 @@
-import type { ShellArg, ShellStatement, ShellValidation } from '../../../types/tooling'
+import type { ShellArg, ShellStatement, ShellValidation } from '../../../shared/data/types'
 import { formatJson } from './format'
 
 const KNOWN_MONGO_METHODS: Record<string, number> = {
@@ -339,4 +339,3 @@ export function validateShellStatement(input: string): ShellValidation[] {
 
   return checks
 }
-

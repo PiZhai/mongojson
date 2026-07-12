@@ -1,4 +1,4 @@
-import type { JsonFormatResponse } from '../../../types/tooling'
+import type { JsonFormatResponse } from '../../../shared/data/types'
 import { computeMaxDepth, formatAst, formatAstCompact } from './ast'
 import { parse, tokenize } from './parser'
 

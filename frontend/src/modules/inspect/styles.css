@@ -1,0 +1,55 @@
+/* Feature-owned styles. Keep selectors scoped to this module. */
+.inspect-page-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 0.9fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.inspect-page-shell > .panel,
+.inspect-page-shell > .workspace-grid {
+  min-height: 0;
+}
+
+.inspect-page-shell {
+  display: grid;
+  --layout-columns: minmax(var(--layout-inspect-primary-min), 1fr) var(--layout-inspect-rail-min);
+  --layout-min-inline-size: var(--layout-inspect-workspace-min);
+  grid-template-columns: var(--layout-columns);
+  min-width: var(--layout-min-inline-size);
+  align-items: stretch;
+}
+
+.inspect-page-shell > .workspace-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.inspect-page-shell > .workspace-grid > .panel {
+  min-height: 0;
+}
+
+.inspect-page-shell .editor-split {
+  grid-template-columns: repeat(2, minmax(340px, 1fr));
+  min-width: var(--layout-inspect-primary-min);
+}
+@media (orientation: portrait) and (max-width: 768px) {
+
+  .inspect-page-shell {
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+  }
+
+  .inspect-page-shell {
+    grid-template-rows: minmax(560px, auto) auto;
+    height: auto;
+  }
+
+  .inspect-page-shell .editor-split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(2, minmax(260px, 1fr));
+    min-width: 0;
+  }
+}

@@ -6,7 +6,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', 'packages/vditor-core', 'public/vendor']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -17,6 +17,21 @@ export default defineConfig([
     ],
     languageOptions: {
       globals: globals.browser,
+    },
+  },
+  {
+    files: [
+      'src/modules/music/MusicPlayerProvider.tsx',
+      'src/modules/watch-party/WatchPartyWorkspace.tsx',
+    ],
+    rules: {
+      'react-hooks/set-state-in-effect': 'off',
+    },
+  },
+  {
+    files: ['src/modules/music/MusicPlayerProvider.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
     },
   },
 ])

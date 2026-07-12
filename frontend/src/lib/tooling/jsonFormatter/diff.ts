@@ -1,4 +1,4 @@
-import type { DiffSummary, FormatMeta, JsonNode } from '../../../types/tooling'
+import type { DiffSummary, FormatMeta, JsonNode } from '../../../shared/data/types'
 import {
   collectFieldPaths,
   compareFieldKeys,
