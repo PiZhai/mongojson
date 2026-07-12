@@ -9,6 +9,7 @@ import {
   deleteMemoSideNote,
   getFileDownloadUrl,
   getMemoDocument,
+  getMemoDocumentWebSocketUrl,
   listMemoSideNotes,
   saveMemoDocument,
   saveMemoSideNote,
@@ -19,7 +20,7 @@ import type { MemoEditorHandle } from './editor/types'
 import { getBlockOrder, getMemoOutline, getMemoStats, normalizeBlockDocument } from './lib/document'
 import { clearMemoRecovery, loadMemoRecovery, saveMemoRecovery, type MemoRecoverySnapshot } from './lib/recovery'
 import { SideNoteRail } from './side-notes/SideNoteRail'
-import type { MemoDocumentRecord, MemoEditorSnapshot, MemoSideNoteRecord, MemoWorkspaceMode } from './types'
+import type { MemoDocumentRecord, MemoEditorSnapshot, MemoSideNoteRecord, MemoSyncEvent, MemoSyncStatus, MemoWorkspaceMode } from './types'
 
 const MEMO_SLUG = 'inbox'
 const DOCUMENT_SCHEMA_VERSION = 1
@@ -28,6 +29,12 @@ const OUTLINE_WIDTH_KEY = 'mongojson.memoDocs.outlineWidth'
 const NOTE_RAIL_WIDTH_KEY = 'mongojson.memoDocs.noteRailWidth'
 const SAVE_DELAY_MS = 1000
 const NOTE_SAVE_DELAY_MS = 650
+
+function createMemoClientId() {
+  return typeof window.crypto?.randomUUID === 'function'
+    ? window.crypto.randomUUID()
+    : `memo-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -66,6 +73,7 @@ export function MemoDocsWorkspace() {
   const memoSlug = new URLSearchParams(window.location.search).get('slug')?.trim() || MEMO_SLUG
   const editorRef = useRef<MemoEditorHandle | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
+  const clientIdRef = useRef(createMemoClientId())
   const documentRef = useRef<MemoDocumentRecord | null>(null)
   const snapshotRef = useRef<MemoEditorSnapshot>({ blocks: [], markdown: '', html: '', activeBlockId: null })
   const notesRef = useRef<MemoSideNoteRecord[]>([])
@@ -91,6 +99,7 @@ export function MemoDocsWorkspace() {
   const [conflict, setConflict] = useState(false)
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
+  const [syncStatus, setSyncStatus] = useState<MemoSyncStatus>('connecting')
 
   const commitNotes = useCallback((updater: (current: MemoSideNoteRecord[]) => MemoSideNoteRecord[]) => {
     const next = updater(notesRef.current)
@@ -100,6 +109,10 @@ export function MemoDocsWorkspace() {
   }, [])
 
   const reloadDocument = useCallback(async () => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
     setStatus({ kind: 'idle', message: '正在载入随手记。' })
     try {
       const response = await getMemoDocument(memoSlug)
@@ -125,10 +138,123 @@ export function MemoDocsWorkspace() {
     }
   }, [memoSlug])
 
+  const refreshRemoteDocument = useCallback(async (minimumRevision?: number) => {
+    const currentDocument = documentRef.current
+    if (!currentDocument || (minimumRevision !== undefined && currentDocument.revision >= minimumRevision)) return
+
+    const hasLocalChanges = saveTimerRef.current !== null || saveInFlightRef.current || saveQueuedRef.current
+    if (hasLocalChanges) {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+      }
+      conflictRef.current = true
+      setConflict(true)
+      setStatus({ kind: 'warning', message: '收到远端更新，但本地仍有未保存内容；已保留本地内容，请选择加载远端或保存为副本。' })
+      return
+    }
+
+    try {
+      const response = await getMemoDocument(memoSlug)
+      const remoteDocument = response.document
+      if (remoteDocument.id !== currentDocument.id || remoteDocument.revision <= currentDocument.revision) return
+      const noteResponse = await listMemoSideNotes(remoteDocument.id)
+      const structuredBlocks = remoteDocument.editor_type === 'blocknote'
+        ? normalizeBlockDocument(remoteDocument.content_json)
+        : []
+      const remoteSnapshot = {
+        blocks: structuredBlocks,
+        markdown: remoteDocument.content_text,
+        html: remoteDocument.content_html,
+        activeBlockId: null,
+      }
+      documentRef.current = remoteDocument
+      snapshotRef.current = remoteSnapshot
+      notesRef.current = noteResponse.notes
+      setDocument(remoteDocument)
+      setEditorSeed(structuredBlocks)
+      setSnapshot(remoteSnapshot)
+      setNotes(noteResponse.notes)
+      setEditorKey((value) => value + 1)
+      await clearMemoRecovery(remoteDocument.id).catch(() => undefined)
+      setRecovery(null)
+      setStatus({ kind: 'success', message: '已实时同步远端修改。' })
+    } catch (error) {
+      setStatus({ kind: 'error', message: error instanceof Error ? `同步远端修改失败：${error.message}` : '同步远端修改失败。' })
+    }
+  }, [memoSlug])
+
+  const refreshRemoteNotes = useCallback(async () => {
+    const currentDocument = documentRef.current
+    if (!currentDocument) return
+    if (noteTimersRef.current.size > 0 || noteSaveInFlightRef.current.size > 0) {
+      setStatus({ kind: 'warning', message: '收到远端便签更新，但本地便签仍在保存；已保留本地编辑。' })
+      return
+    }
+    try {
+      const response = await listMemoSideNotes(currentDocument.id)
+      commitNotes(() => response.notes)
+      setStatus({ kind: 'success', message: '已实时同步远端便签。' })
+    } catch (error) {
+      setStatus({ kind: 'error', message: error instanceof Error ? `同步远端便签失败：${error.message}` : '同步远端便签失败。' })
+    }
+  }, [commitNotes])
+
   useEffect(() => {
     const timer = window.setTimeout(() => void reloadDocument(), 0)
     return () => window.clearTimeout(timer)
   }, [reloadDocument])
+
+  useEffect(() => {
+    const documentId = document?.id
+    if (!documentId) return
+
+    let disposed = false
+    let socket: WebSocket | null = null
+    let reconnectTimer: number | null = null
+    let reconnectAttempt = 0
+
+    const connect = () => {
+      if (disposed) return
+      setSyncStatus('connecting')
+      socket = new WebSocket(getMemoDocumentWebSocketUrl(documentId))
+      socket.addEventListener('open', () => {
+        reconnectAttempt = 0
+        setSyncStatus('connected')
+        void refreshRemoteDocument()
+      })
+      socket.addEventListener('message', (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as MemoSyncEvent
+          if (message.document_id !== documentId || message.actor_client_id === clientIdRef.current) return
+          if (message.type === 'document_updated' && typeof message.revision === 'number') {
+            void refreshRemoteDocument(message.revision)
+          } else if (message.type === 'notes_updated') {
+            void refreshRemoteNotes()
+          } else if (message.type === 'document_deleted') {
+            setStatus({ kind: 'error', message: '当前文档已被其他用户删除。' })
+          }
+        } catch {
+          setSyncStatus('disconnected')
+        }
+      })
+      socket.addEventListener('close', () => {
+        if (disposed) return
+        setSyncStatus('disconnected')
+        const delay = Math.min(10_000, 1_000 * (2 ** reconnectAttempt))
+        reconnectAttempt += 1
+        reconnectTimer = window.setTimeout(connect, delay)
+      })
+      socket.addEventListener('error', () => setSyncStatus('disconnected'))
+    }
+
+    connect()
+    return () => {
+      disposed = true
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+      socket?.close()
+    }
+  }, [document?.id, refreshRemoteDocument, refreshRemoteNotes])
 
   useEffect(() => () => {
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
@@ -154,7 +280,7 @@ export function MemoDocsWorkspace() {
         schema_version: DOCUMENT_SCHEMA_VERSION,
         revision: currentDocument.revision,
         editor_type: 'blocknote',
-      })
+      }, clientIdRef.current)
       documentRef.current = response.document
       setDocument(response.document)
       const synchronizedNotes = await listMemoSideNotes(response.document.id)
@@ -182,7 +308,10 @@ export function MemoDocsWorkspace() {
 
   function scheduleDocumentSave(nextSnapshot = snapshotRef.current) {
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = window.setTimeout(() => void saveDocumentNow(nextSnapshot), SAVE_DELAY_MS)
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null
+      void saveDocumentNow(nextSnapshot)
+    }, SAVE_DELAY_MS)
   }
 
   function handleEditorSnapshot(nextSnapshot: MemoEditorSnapshot) {
@@ -241,7 +370,7 @@ export function MemoDocsWorkspace() {
         collapsed: requestNote.collapsed,
         status: requestNote.status,
         revision: requestNote.revision,
-      })
+      }, clientIdRef.current)
       const latest = notesRef.current.find((note) => note.id === noteId)
       const changedDuringSave = latest && latest.updated_at !== requestNote.updated_at
       commitNotes((items) => updateNoteList(items, noteId, (note) => changedDuringSave
@@ -279,7 +408,7 @@ export function MemoDocsWorkspace() {
         sort_order: notesRef.current.length,
         collapsed: false,
         status: 'active',
-      })
+      }, clientIdRef.current)
       commitNotes((items) => [...items, response.note])
       setActiveNoteId(response.note.id)
       setNotesOpen(true)
@@ -307,7 +436,7 @@ export function MemoDocsWorkspace() {
 
   const removeSideNote = async (noteId: string) => {
     try {
-      await deleteMemoSideNote(noteId)
+      await deleteMemoSideNote(noteId, clientIdRef.current)
       commitNotes((items) => items.filter((note) => note.id !== noteId))
       if (activeNoteId === noteId) setActiveNoteId(null)
     } catch (error) {
@@ -543,6 +672,7 @@ export function MemoDocsWorkspace() {
 
         <main className="memo-document-surface" data-layout-region="memo-primary">
           <div className="memo-document-meta" aria-label="文档状态">
+            <span>{syncStatus === 'connected' ? '实时同步' : syncStatus === 'connecting' ? '正在连接' : '同步断开'}</span>
             <span>{memoStats.chars} 字</span>
             <span>{memoStats.blocks} 块</span>
             <span>{memoStats.images} 图</span>

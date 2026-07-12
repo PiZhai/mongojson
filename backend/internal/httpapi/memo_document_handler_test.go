@@ -7,11 +7,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/gorilla/websocket"
 
 	"mongojson/backend/internal/domain"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/memosync"
 )
 
 func TestSaveMemoDocumentPassesStructuredContent(t *testing.T) {
@@ -53,6 +56,52 @@ func TestSaveMemoDocumentReturnsConflict(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSaveMemoDocumentBroadcastsRevision(t *testing.T) {
+	hub := memosync.NewHub()
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{
+		MemoSync: hub,
+		MemoService: fakeMemoStore{saveDocument: func(_ context.Context, id string, input memo.DocumentSaveInput) (domain.MemoRecord, error) {
+			return domain.MemoRecord{ID: id, Revision: input.Revision + 1}, nil
+		}},
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/memo/documents/memo-1/ws", nil)
+	if err != nil {
+		t.Fatalf("dial memo sync: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var ready memosync.Event
+	if err := conn.ReadJSON(&ready); err != nil || ready.Type != memosync.EventReady {
+		t.Fatalf("read ready event: %#v, %v", ready, err)
+	}
+
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/memo/documents/memo-1", strings.NewReader(`{"content_json":[],"revision":4}`))
+	if err != nil {
+		t.Fatalf("create save request: %v", err)
+	}
+	req.Header.Set("X-Memo-Client-ID", "client-1")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("save memo document: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+
+	var event memosync.Event
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatalf("read document update: %v", err)
+	}
+	if event.Type != memosync.EventDocumentUpdated || event.DocumentID != "memo-1" || event.Revision != 5 || event.ActorClientID != "client-1" {
+		t.Fatalf("unexpected sync event: %#v", event)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/memosync"
 	"mongojson/backend/internal/service/music"
 	"mongojson/backend/internal/service/presets"
 	"mongojson/backend/internal/service/watchsync"
@@ -69,6 +70,7 @@ func NewServer() (*Server, error) {
 	jobService := jobs.NewService(db, fileStore, cfg.FileRetention)
 	presetService := presets.NewService(db)
 	memoService := memo.NewService(db)
+	memoSyncHub := memosync.NewHub()
 	musicService := music.NewService(db, fileStore)
 	canvasService := canvas.NewService(db, fileStore)
 	watchSyncHub := watchsync.NewHub()
@@ -83,7 +85,7 @@ func NewServer() (*Server, error) {
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Memo-Client-ID"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
@@ -93,6 +95,7 @@ func NewServer() (*Server, error) {
 		FileService:   fileService,
 		JobService:    jobService,
 		MemoService:   memoService,
+		MemoSync:      memoSyncHub,
 		MusicService:  musicService,
 		CanvasService: canvasService,
 		PresetService: presetService,

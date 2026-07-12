@@ -439,4 +439,4 @@ func (s fakeMemoStore) SaveSideNote(ctx context.Context, id string, input memo.S
 	return domain.MemoSideNoteRecord{ID: id, Revision: input.Revision + 1}, nil
 }
 
-func (s fakeMemoStore) DeleteSideNote(context.Context, string) error { return nil }
+func (s fakeMemoStore) DeleteSideNote(context.Context, string) (string, error) { return "memo-1", nil }

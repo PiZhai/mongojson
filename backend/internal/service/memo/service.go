@@ -310,15 +310,16 @@ func (s *Service) SaveSideNote(ctx context.Context, id string, input SideNoteInp
 	return s.getSideNote(ctx, id)
 }
 
-func (s *Service) DeleteSideNote(ctx context.Context, id string) error {
-	tag, err := s.db.Pool.Exec(ctx, `delete from memo_side_notes where id = $1`, id)
+func (s *Service) DeleteSideNote(ctx context.Context, id string) (string, error) {
+	var documentID string
+	err := s.db.Pool.QueryRow(ctx, `delete from memo_side_notes where id = $1 returning document_id`, id).Scan(&documentID)
 	if err != nil {
-		return fmt.Errorf("delete memo side note: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrSideNoteNotFound
+		}
+		return "", fmt.Errorf("delete memo side note: %w", err)
 	}
-	if tag.RowsAffected() != 1 {
-		return ErrSideNoteNotFound
-	}
-	return nil
+	return documentID, nil
 }
 
 // SaveMemo keeps the legacy endpoint writable during the BlockNote migration.

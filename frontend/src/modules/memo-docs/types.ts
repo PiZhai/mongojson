@@ -60,4 +60,11 @@ export type MemoEditorSnapshot = {
 }
 
 export type MemoWorkspaceMode = 'standard' | 'focus' | 'wide'
+export type MemoSyncStatus = 'connecting' | 'connected' | 'disconnected'
+export type MemoSyncEvent = {
+  type: 'ready' | 'document_updated' | 'document_deleted' | 'notes_updated'
+  document_id: string
+  revision?: number
+  actor_client_id?: string
+}
 export type MemoRecord = MemoDocumentRecord

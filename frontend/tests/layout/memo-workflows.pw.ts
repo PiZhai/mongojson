@@ -24,6 +24,37 @@ async function installMemoApi(page: Page, options: MockMemoOptions = {}) {
   const documentSaves: Record<string, unknown>[] = []
   const noteSaves: Record<string, unknown>[] = []
 
+  const setRemoteDocument = (text: string) => {
+    document = {
+      ...document,
+      content_json: [
+        { id: 'heading-1', type: 'heading', props: { level: 1 }, content: [{ type: 'text', text: '工作流', styles: {} }], children: [] },
+        { id: 'paragraph-remote', type: 'paragraph', props: {}, content: [{ type: 'text', text, styles: {} }], children: [] },
+      ],
+      content_html: `<h1>工作流</h1><p>${text}</p>`,
+      content_text: `# 工作流\n\n${text}`,
+      revision: document.revision + 1,
+      updated_at: '2026-07-12T00:03:00Z',
+    }
+    return document.revision
+  }
+
+  const setRemoteNote = (text: string) => {
+    notes = [{
+      id: 'remote-note',
+      document_id: document.id,
+      anchor_block_id: null,
+      body_json: { text },
+      color: '#fff7d6',
+      sort_order: 0,
+      collapsed: false,
+      status: 'active',
+      revision: 1,
+      created_at: '2026-07-12T00:04:00Z',
+      updated_at: '2026-07-12T00:04:00Z',
+    }]
+  }
+
   await page.route('**/api/memo/documents/workflow-test', async (route) => {
     await route.fulfill({ json: { document } })
   })
@@ -80,7 +111,38 @@ async function installMemoApi(page: Page, options: MockMemoOptions = {}) {
     await route.fulfill({ json: { note } })
   })
 
-  return { documentSaves, noteSaves }
+  return { documentSaves, noteSaves, setRemoteDocument, setRemoteNote }
+}
+
+async function installMemoWebSocket(page: Page) {
+  await page.addInitScript(() => {
+    class MockMemoWebSocket extends EventTarget {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSING = 2
+      static readonly CLOSED = 3
+      readonly url: string
+      readyState = MockMemoWebSocket.CONNECTING
+
+      constructor(url: string | URL) {
+        super()
+        this.url = String(url)
+        ;(window as typeof window & { __memoWebSocket?: MockMemoWebSocket }).__memoWebSocket = this
+        window.setTimeout(() => {
+          this.readyState = MockMemoWebSocket.OPEN
+          this.dispatchEvent(new Event('open'))
+        }, 0)
+      }
+
+      close() {
+        this.readyState = MockMemoWebSocket.CLOSED
+        this.dispatchEvent(new CloseEvent('close'))
+      }
+
+      send() {}
+    }
+    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockMemoWebSocket })
+  })
 }
 
 async function openMemoWorkspace(page: Page) {
@@ -120,6 +182,40 @@ test('BlockNote saves structured edits and custom callout blocks', async ({ page
   expect(requests.documentSaves.length).toBeGreaterThan(0)
   const blocks = requests.documentSaves.at(-1)!.content_json as Array<{ type?: string }>
   expect(blocks.some((block) => block.type === 'callout')).toBe(true)
+})
+
+test('remote document revisions appear without reloading the page', async ({ page }) => {
+  await installMemoWebSocket(page)
+  const requests = await installMemoApi(page)
+  await page.setViewportSize({ width: 1920, height: 1000 })
+  await openMemoWorkspace(page)
+  await expect(page.getByText('实时同步')).toBeVisible()
+
+  const revision = requests.setRemoteDocument('其他用户刚刚修改的内容')
+  await page.evaluate(({ documentId, nextRevision }) => {
+    const socket = (window as typeof window & { __memoWebSocket?: WebSocket }).__memoWebSocket
+    socket?.dispatchEvent(new MessageEvent('message', {
+      data: JSON.stringify({
+        type: 'document_updated',
+        document_id: documentId,
+        revision: nextRevision,
+        actor_client_id: 'another-client',
+      }),
+    }))
+  }, { documentId: '22222222-2222-4222-8222-222222222222', nextRevision: revision })
+
+  await expect(page.getByText('其他用户刚刚修改的内容')).toBeVisible()
+  await expect(page.getByText('已实时同步远端修改。')).toBeVisible()
+
+  requests.setRemoteNote('其他用户添加的便签')
+  await page.evaluate((documentId) => {
+    const socket = (window as typeof window & { __memoWebSocket?: WebSocket }).__memoWebSocket
+    socket?.dispatchEvent(new MessageEvent('message', {
+      data: JSON.stringify({ type: 'notes_updated', document_id: documentId, actor_client_id: 'another-client' }),
+    }))
+  }, '22222222-2222-4222-8222-222222222222')
+  await expect(page.getByRole('textbox', { name: '文档便签 1 内容' })).toHaveValue('其他用户添加的便签')
+  await expect(page.getByText('已实时同步远端便签。')).toBeVisible()
 })
 
 test('the caret remains in the editor tail after ArrowDown or a blank-area click', async ({ page }) => {

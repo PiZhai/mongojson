@@ -21,6 +21,7 @@ import (
 	"mongojson/backend/internal/service/canvas"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/memosync"
 	"mongojson/backend/internal/service/music"
 )
 
@@ -203,11 +204,21 @@ func (h *Handler) saveMemoDocument(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.publishMemoEvent(r, memosync.EventDocumentUpdated, record.ID, record.Revision)
 	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"document": record})
 }
 
+func (h *Handler) memoDocumentWebSocket(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MemoSync == nil {
+		httpError(w, http.StatusServiceUnavailable, "memo sync is not configured")
+		return
+	}
+	h.deps.MemoSync.ServeDocument(w, r, chi.URLParam(r, "id"))
+}
+
 func (h *Handler) deleteMemoDocument(w http.ResponseWriter, r *http.Request) {
-	if err := h.deps.MemoService.DeleteDocument(r.Context(), chi.URLParam(r, "id")); err != nil {
+	documentID := chi.URLParam(r, "id")
+	if err := h.deps.MemoService.DeleteDocument(r.Context(), documentID); err != nil {
 		if errors.Is(err, memo.ErrDocumentNotFound) {
 			httpError(w, http.StatusNotFound, err.Error())
 			return
@@ -215,6 +226,7 @@ func (h *Handler) deleteMemoDocument(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.publishMemoEvent(r, memosync.EventDocumentDeleted, documentID, 0)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -237,6 +249,7 @@ func (h *Handler) createMemoSideNote(w http.ResponseWriter, r *http.Request) {
 		respondMemoSideNoteError(w, err)
 		return
 	}
+	h.publishMemoEvent(r, memosync.EventNotesUpdated, record.DocumentID, 0)
 	respondJSON(w, http.StatusCreated, map[string]domain.MemoSideNoteRecord{"note": record})
 }
 
@@ -250,15 +263,28 @@ func (h *Handler) saveMemoSideNote(w http.ResponseWriter, r *http.Request) {
 		respondMemoSideNoteError(w, err)
 		return
 	}
+	h.publishMemoEvent(r, memosync.EventNotesUpdated, record.DocumentID, 0)
 	respondJSON(w, http.StatusOK, map[string]domain.MemoSideNoteRecord{"note": record})
 }
 
 func (h *Handler) deleteMemoSideNote(w http.ResponseWriter, r *http.Request) {
-	if err := h.deps.MemoService.DeleteSideNote(r.Context(), chi.URLParam(r, "id")); err != nil {
+	documentID, err := h.deps.MemoService.DeleteSideNote(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
 		respondMemoSideNoteError(w, err)
 		return
 	}
+	h.publishMemoEvent(r, memosync.EventNotesUpdated, documentID, 0)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) publishMemoEvent(r *http.Request, eventType, documentID string, revision int64) {
+	if h.deps.MemoSync == nil {
+		return
+	}
+	h.deps.MemoSync.Publish(memosync.Event{
+		Type: eventType, DocumentID: documentID, Revision: revision,
+		ActorClientID: strings.TrimSpace(r.Header.Get("X-Memo-Client-ID")),
+	})
 }
 
 func decodeMemoSideNoteInput(w http.ResponseWriter, r *http.Request) (memo.SideNoteInput, bool) {

@@ -15,6 +15,7 @@ import (
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/memosync"
 	"mongojson/backend/internal/service/music"
 	"mongojson/backend/internal/service/presets"
 	"mongojson/backend/internal/service/watchsync"
@@ -30,7 +31,7 @@ type MemoStore interface {
 	ListSideNotes(context.Context, string) ([]domain.MemoSideNoteRecord, error)
 	CreateSideNote(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
 	SaveSideNote(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
-	DeleteSideNote(context.Context, string) error
+	DeleteSideNote(context.Context, string) (string, error)
 }
 
 type MusicStore interface {
@@ -55,6 +56,7 @@ type Dependencies struct {
 	FileService   *filemeta.Service
 	JobService    *jobs.Service
 	MemoService   MemoStore
+	MemoSync      *memosync.Hub
 	MusicService  MusicStore
 	CanvasService CanvasStore
 	PresetService *presets.Service
@@ -76,6 +78,7 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/memo/documents", handler.createMemoDocument)
 		r.Get("/memo/documents/{slug}", handler.getMemoDocument)
 		r.Put("/memo/documents/{id}", handler.saveMemoDocument)
+		r.Get("/memo/documents/{id}/ws", handler.memoDocumentWebSocket)
 		r.Delete("/memo/documents/{id}", handler.deleteMemoDocument)
 		r.Get("/memo/documents/{id}/notes", handler.listMemoSideNotes)
 		r.Post("/memo/documents/{id}/notes", handler.createMemoSideNote)
