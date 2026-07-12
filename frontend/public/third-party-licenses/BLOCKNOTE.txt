@@ -1,0 +1,13 @@
+BlockNote
+https://github.com/TypeCellOS/BlockNote
+
+Packages used:
+- @blocknote/core 0.51.4
+- @blocknote/react 0.51.4
+- @blocknote/mantine 0.51.4
+
+Mozilla Public License Version 2.0
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.

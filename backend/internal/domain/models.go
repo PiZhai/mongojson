@@ -43,9 +43,13 @@ type MemoRecord struct {
 	ID            string             `json:"id"`
 	Slug          string             `json:"slug"`
 	Title         string             `json:"title"`
+	ContentJSON   json.RawMessage    `json:"content_json"`
 	ContentHTML   string             `json:"content_html"`
 	ContentText   string             `json:"content_text"`
 	FloatingCards []MemoFloatingCard `json:"floating_cards"`
+	SchemaVersion int                `json:"schema_version"`
+	Revision      int64              `json:"revision"`
+	EditorType    string             `json:"editor_type"`
 	CreatedAt     time.Time          `json:"created_at"`
 	UpdatedAt     time.Time          `json:"updated_at"`
 }
@@ -56,6 +60,20 @@ type MemoFloatingCard struct {
 	Color     string    `json:"color"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type MemoSideNoteRecord struct {
+	ID            string          `json:"id"`
+	DocumentID    string          `json:"document_id"`
+	AnchorBlockID *string         `json:"anchor_block_id,omitempty"`
+	BodyJSON      json.RawMessage `json:"body_json"`
+	Color         string          `json:"color"`
+	SortOrder     int             `json:"sort_order"`
+	Collapsed     bool            `json:"collapsed"`
+	Status        string          `json:"status"`
+	Revision      int64           `json:"revision"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 type MusicTrackRecord struct {

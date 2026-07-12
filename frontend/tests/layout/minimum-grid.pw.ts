@@ -14,7 +14,6 @@ const workspaces: WorkspaceCase[] = [
   { path: '/tools/json', frame: 'json-workspace', first: '.editor-split > :first-child', second: '.editor-split > :nth-child(2)', firstMin: 420, secondMin: 420 },
   { path: '/tools/mongodb-json', frame: 'mongo-workspace', first: '.editor-split > :first-child', second: '.editor-split > :nth-child(2)', firstMin: 420, secondMin: 420 },
   { path: '/tools/visualize', frame: 'visualization-workspace', first: 'visualization-input', second: 'visualization-rail', firstMin: 420, secondMin: 360 },
-  { path: '/tools/memo-docs', frame: 'memo-workspace', first: 'memo-primary', second: 'memo-card-rail', firstMin: 660, secondMin: 380 },
   { path: '/tools/music', frame: 'music-workspace', first: 'music-sidebar', second: 'music-main', firstMin: 260, secondMin: 620 },
   { path: '/tools/watch-party', frame: 'watch-workspace', first: 'watch-stage', second: 'watch-rail', firstMin: 640, secondMin: 340 },
 ]
@@ -110,27 +109,4 @@ test.describe('collapsed desktop sidebar', () => {
       await assertNoRootOverflow(page)
     })
   }
-})
-
-test('memo card toolbar and add button remain contained and centered', async ({ page }) => {
-  await page.setViewportSize({ width: 1404, height: 1000 })
-  await page.goto('/tools/memo-docs')
-  const rail = region(page, 'memo-card-rail')
-  let card = rail.locator('.memo-floating-card').first()
-  let createdCard = false
-  if (await card.count() === 0) {
-    await rail.getByRole('button', { name: '添加卡片' }).click()
-    card = rail.locator('.memo-floating-card').first()
-    createdCard = true
-  }
-  const toolbar = card.locator('.memo-floating-card-toolbar')
-  const add = rail.locator('.memo-floating-bottom-add')
-  await expect(card).toBeVisible()
-  const [railBox, cardBox, toolbarBox, addBox] = await Promise.all([
-    rail.boundingBox(), card.boundingBox(), toolbar.boundingBox(), add.boundingBox(),
-  ])
-  expect(toolbarBox!.x).toBeGreaterThanOrEqual(cardBox!.x)
-  expect(toolbarBox!.x + toolbarBox!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width + 1)
-  expect(Math.abs((addBox!.x + addBox!.width / 2) - (railBox!.x + railBox!.width / 2))).toBeLessThanOrEqual(2)
-  if (createdCard) await card.getByRole('button', { name: '删除卡片 1' }).click()
 })

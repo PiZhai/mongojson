@@ -31,6 +31,7 @@ type Handler struct {
 const maxUploadBytes = 64 << 20
 const maxMusicUploadBytes = 512 << 20
 const maxCanvasSceneBytes = 16 << 20
+const maxMemoContentBytes = 16 << 20
 const multipartMemoryBytes = 32 << 20
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -128,6 +129,171 @@ func (h *Handler) saveMemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"memo": record})
+}
+
+func (h *Handler) createMemoDocument(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Slug  string `json:"slug"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.MemoService.CreateDocument(r.Context(), body.Slug, body.Title)
+	if err != nil {
+		if errors.Is(err, memo.ErrSlugConflict) {
+			httpError(w, http.StatusConflict, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.MemoRecord{"document": record})
+}
+
+func (h *Handler) getMemoDocument(w http.ResponseWriter, r *http.Request) {
+	record, err := h.deps.MemoService.GetDocument(r.Context(), chi.URLParam(r, "slug"))
+	if err != nil {
+		if errors.Is(err, memo.ErrDocumentNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"document": record})
+}
+
+func (h *Handler) saveMemoDocument(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title         string          `json:"title"`
+		ContentJSON   json.RawMessage `json:"content_json"`
+		ContentHTML   string          `json:"content_html"`
+		ContentText   string          `json:"content_markdown"`
+		SchemaVersion int             `json:"schema_version"`
+		Revision      int64           `json:"revision"`
+		EditorType    string          `json:"editor_type"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxMemoContentBytes))
+	if err := decoder.Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "memo document exceeds 16 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.MemoService.SaveDocument(r.Context(), chi.URLParam(r, "id"), memo.DocumentSaveInput{
+		Title: body.Title, ContentJSON: body.ContentJSON, ContentHTML: body.ContentHTML,
+		ContentText: body.ContentText, SchemaVersion: body.SchemaVersion,
+		Revision: body.Revision, EditorType: body.EditorType,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, memo.ErrDocumentNotFound):
+			httpError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, memo.ErrRevisionConflict):
+			httpError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, memo.ErrInvalidContentJSON):
+			httpError(w, http.StatusBadRequest, err.Error())
+		default:
+			httpError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"document": record})
+}
+
+func (h *Handler) deleteMemoDocument(w http.ResponseWriter, r *http.Request) {
+	if err := h.deps.MemoService.DeleteDocument(r.Context(), chi.URLParam(r, "id")); err != nil {
+		if errors.Is(err, memo.ErrDocumentNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) listMemoSideNotes(w http.ResponseWriter, r *http.Request) {
+	items, err := h.deps.MemoService.ListSideNotes(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.MemoSideNoteRecord{"notes": items})
+}
+
+func (h *Handler) createMemoSideNote(w http.ResponseWriter, r *http.Request) {
+	input, ok := decodeMemoSideNoteInput(w, r)
+	if !ok {
+		return
+	}
+	record, err := h.deps.MemoService.CreateSideNote(r.Context(), chi.URLParam(r, "id"), input)
+	if err != nil {
+		respondMemoSideNoteError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.MemoSideNoteRecord{"note": record})
+}
+
+func (h *Handler) saveMemoSideNote(w http.ResponseWriter, r *http.Request) {
+	input, ok := decodeMemoSideNoteInput(w, r)
+	if !ok {
+		return
+	}
+	record, err := h.deps.MemoService.SaveSideNote(r.Context(), chi.URLParam(r, "id"), input)
+	if err != nil {
+		respondMemoSideNoteError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.MemoSideNoteRecord{"note": record})
+}
+
+func (h *Handler) deleteMemoSideNote(w http.ResponseWriter, r *http.Request) {
+	if err := h.deps.MemoService.DeleteSideNote(r.Context(), chi.URLParam(r, "id")); err != nil {
+		respondMemoSideNoteError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func decodeMemoSideNoteInput(w http.ResponseWriter, r *http.Request) (memo.SideNoteInput, bool) {
+	var body struct {
+		ID            string          `json:"id"`
+		AnchorBlockID *string         `json:"anchor_block_id"`
+		BodyJSON      json.RawMessage `json:"body_json"`
+		Color         string          `json:"color"`
+		SortOrder     int             `json:"sort_order"`
+		Collapsed     bool            `json:"collapsed"`
+		Status        string          `json:"status"`
+		Revision      int64           `json:"revision"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return memo.SideNoteInput{}, false
+	}
+	return memo.SideNoteInput{
+		ID: body.ID, AnchorBlockID: body.AnchorBlockID, BodyJSON: body.BodyJSON,
+		Color: body.Color, SortOrder: body.SortOrder, Collapsed: body.Collapsed,
+		Status: body.Status, Revision: body.Revision,
+	}, true
+}
+
+func respondMemoSideNoteError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, memo.ErrDocumentNotFound), errors.Is(err, memo.ErrSideNoteNotFound):
+		httpError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, memo.ErrRevisionConflict):
+		httpError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, memo.ErrInvalidSideNote):
+		httpError(w, http.StatusBadRequest, err.Error())
+	default:
+		httpError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 func (h *Handler) uploadMusicTrack(w http.ResponseWriter, r *http.Request) {

@@ -352,8 +352,13 @@ func (r repeatingReader) Read(p []byte) (int, error) {
 }
 
 type fakeMemoStore struct {
-	getOrCreate func(context.Context, string) (domain.MemoRecord, error)
-	saveMemo    func(context.Context, memo.SaveInput) (domain.MemoRecord, error)
+	getOrCreate    func(context.Context, string) (domain.MemoRecord, error)
+	saveMemo       func(context.Context, memo.SaveInput) (domain.MemoRecord, error)
+	getDocument    func(context.Context, string) (domain.MemoRecord, error)
+	saveDocument   func(context.Context, string, memo.DocumentSaveInput) (domain.MemoRecord, error)
+	listSideNotes  func(context.Context, string) ([]domain.MemoSideNoteRecord, error)
+	createSideNote func(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
+	saveSideNote   func(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
 }
 
 type fakeMusicStore struct {
@@ -392,3 +397,46 @@ func (s fakeMemoStore) SaveMemo(ctx context.Context, input memo.SaveInput) (doma
 	}
 	return domain.MemoRecord{ID: "memo-1", Slug: input.Slug, FloatingCards: []domain.MemoFloatingCard{}}, nil
 }
+
+func (s fakeMemoStore) CreateDocument(_ context.Context, slug, title string) (domain.MemoRecord, error) {
+	return domain.MemoRecord{ID: "memo-1", Slug: slug, Title: title, Revision: 1}, nil
+}
+
+func (s fakeMemoStore) GetDocument(ctx context.Context, slug string) (domain.MemoRecord, error) {
+	if s.getDocument != nil {
+		return s.getDocument(ctx, slug)
+	}
+	return domain.MemoRecord{ID: "memo-1", Slug: slug, Revision: 1}, nil
+}
+
+func (s fakeMemoStore) SaveDocument(ctx context.Context, id string, input memo.DocumentSaveInput) (domain.MemoRecord, error) {
+	if s.saveDocument != nil {
+		return s.saveDocument(ctx, id, input)
+	}
+	return domain.MemoRecord{ID: id, Title: input.Title, ContentJSON: input.ContentJSON, Revision: input.Revision + 1}, nil
+}
+
+func (s fakeMemoStore) DeleteDocument(context.Context, string) error { return nil }
+
+func (s fakeMemoStore) ListSideNotes(ctx context.Context, documentID string) ([]domain.MemoSideNoteRecord, error) {
+	if s.listSideNotes != nil {
+		return s.listSideNotes(ctx, documentID)
+	}
+	return []domain.MemoSideNoteRecord{}, nil
+}
+
+func (s fakeMemoStore) CreateSideNote(ctx context.Context, documentID string, input memo.SideNoteInput) (domain.MemoSideNoteRecord, error) {
+	if s.createSideNote != nil {
+		return s.createSideNote(ctx, documentID, input)
+	}
+	return domain.MemoSideNoteRecord{ID: "note-1", DocumentID: documentID, Revision: 1}, nil
+}
+
+func (s fakeMemoStore) SaveSideNote(ctx context.Context, id string, input memo.SideNoteInput) (domain.MemoSideNoteRecord, error) {
+	if s.saveSideNote != nil {
+		return s.saveSideNote(ctx, id, input)
+	}
+	return domain.MemoSideNoteRecord{ID: id, Revision: input.Revision + 1}, nil
+}
+
+func (s fakeMemoStore) DeleteSideNote(context.Context, string) error { return nil }

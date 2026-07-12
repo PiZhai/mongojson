@@ -53,6 +53,20 @@
       "layer": "component",
       "queryType": "container",
       "containerName": null
+    },
+    "memo.notesDrawerBelow": {
+      "value": 1600,
+      "formula": "The memo workspace moves its side-note rail into an overlay when its own container cannot hold all three panes.",
+      "layer": "module",
+      "queryType": "container",
+      "containerName": "memo-workspace"
+    },
+    "memo.outlineDrawerBelow": {
+      "value": 1120,
+      "formula": "The memo workspace also moves its outline into an overlay when its own container cannot hold the outline and minimum editor surface.",
+      "layer": "module",
+      "queryType": "container",
+      "containerName": "memo-workspace"
     }
   }
 }

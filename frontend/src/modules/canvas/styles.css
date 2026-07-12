@@ -89,7 +89,7 @@
 .canvas-loading { display: grid; place-items: center; width: 100%; height: 100%; color: #69788c; font-size: 13px; }
 .canvas-hidden-input { display: none; }
 
-@media (max-width: 760px) {
+@media (orientation: portrait) and (max-width: 768px) {
   .canvas-workspace { position: relative; grid-template-columns: minmax(0, 1fr); height: calc(100dvh - 58px); min-height: 520px; }
   .canvas-board-drawer { position: absolute; z-index: 20; inset: 60px auto 0 0; width: min(82vw, 290px); border-top: 1px solid #d8e0ea; box-shadow: 8px 0 24px rgb(30 50 75 / 16%); }
   .canvas-workspace-drawer-closed .canvas-board-drawer { display: none; }

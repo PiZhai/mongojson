@@ -23,6 +23,14 @@ import (
 type MemoStore interface {
 	GetOrCreate(context.Context, string) (domain.MemoRecord, error)
 	SaveMemo(context.Context, memo.SaveInput) (domain.MemoRecord, error)
+	CreateDocument(context.Context, string, string) (domain.MemoRecord, error)
+	GetDocument(context.Context, string) (domain.MemoRecord, error)
+	SaveDocument(context.Context, string, memo.DocumentSaveInput) (domain.MemoRecord, error)
+	DeleteDocument(context.Context, string) error
+	ListSideNotes(context.Context, string) ([]domain.MemoSideNoteRecord, error)
+	CreateSideNote(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
+	SaveSideNote(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
+	DeleteSideNote(context.Context, string) error
 }
 
 type MusicStore interface {
@@ -65,6 +73,14 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/files/{id}/download", handler.downloadFile)
 		r.Get("/memo", handler.getMemo)
 		r.Put("/memo", handler.saveMemo)
+		r.Post("/memo/documents", handler.createMemoDocument)
+		r.Get("/memo/documents/{slug}", handler.getMemoDocument)
+		r.Put("/memo/documents/{id}", handler.saveMemoDocument)
+		r.Delete("/memo/documents/{id}", handler.deleteMemoDocument)
+		r.Get("/memo/documents/{id}/notes", handler.listMemoSideNotes)
+		r.Post("/memo/documents/{id}/notes", handler.createMemoSideNote)
+		r.Put("/memo/notes/{id}", handler.saveMemoSideNote)
+		r.Delete("/memo/notes/{id}", handler.deleteMemoSideNote)
 		r.Post("/music/tracks", handler.uploadMusicTrack)
 		r.Get("/music/tracks", handler.listMusicTracks)
 		r.Get("/music/tracks/{id}/content", handler.streamMusicTrack)
