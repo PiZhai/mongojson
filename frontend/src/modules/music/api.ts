@@ -11,6 +11,8 @@ type RemoteMusicTrack = {
   size_bytes: number
   duration?: number
   audio_quality?: MusicAudioQuality
+  lyric_file_name?: string
+  lyric_mime_type?: string
   created_at: string
 }
 
@@ -32,6 +34,8 @@ function toMusicTrack(track: RemoteMusicTrack): MusicTrack {
     mimeType: track.mime_type,
     duration: track.duration,
     audioQuality: track.audio_quality?.analyzedAt ? track.audio_quality : undefined,
+    lyricFileName: track.lyric_file_name,
+    lyricUrl: track.lyric_file_name ? resolveApiUrl(`/music/tracks/${track.id}/lyrics`).toString() : undefined,
     addedAt: track.created_at,
   }
 }
@@ -49,18 +53,27 @@ export async function fetchRemoteMusicPage(cursor?: string, limit = 20) {
   }
 }
 
-export async function uploadMusicTrack(file: File, track: MusicTrack) {
+export async function uploadMusicTrack(file: File, track: MusicTrack, lyric?: File) {
   const body = new FormData()
   body.set('file', file)
+  if (lyric) body.set('lyric', lyric)
   body.set('title', track.title)
   if (track.artist) body.set('artist', track.artist)
   if (track.note) body.set('note', track.note)
   if (track.duration) body.set('duration', String(track.duration))
   if (track.audioQuality) body.set('audio_quality', JSON.stringify(track.audioQuality))
 
-  const response = await apiRequest<{ track: RemoteMusicTrack }>(resolveApiUrl('/music/tracks').toString(), {
+  const response = await apiRequest<{ track: RemoteMusicTrack; duplicate: boolean }>(resolveApiUrl('/music/tracks').toString(), {
     method: 'POST',
     body,
   })
-  return toMusicTrack(response.track)
+  return { track: toMusicTrack(response.track), duplicate: response.duplicate }
+}
+
+export async function deleteRemoteMusicTrack(id: string) {
+  const response = await fetch(resolveApiUrl(`/music/tracks/${id}`).toString(), { method: 'DELETE' })
+  if (!response.ok) {
+    const message = await response.text()
+    throw new Error(message || `Request failed: ${response.status}`)
+  }
 }

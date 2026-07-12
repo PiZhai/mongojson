@@ -33,6 +33,10 @@ export const musicModule = {
     { kind: 'localStorage', namespace: 'personal-tooling-music', required: true },
     { kind: 'indexedDB', namespace: 'personal-tooling-music-files', required: false },
   ],
-  backend: [{ id: 'music-catalog-api', required: true, endpoints: ['/api/music/tracks', '/api/music/tracks/:id/content'] }],
+  backend: [{
+    id: 'music-catalog-api',
+    required: true,
+    endpoints: ['/api/music/tracks', '/api/music/tracks/:id/content', '/api/music/tracks/:id/lyrics'],
+  }],
   standalone: { supported: true },
 } satisfies ToolModuleManifest

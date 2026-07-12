@@ -5,8 +5,7 @@ import { type WindowWithFilePicker } from './lib/storage'
 import { compactAudioQualityLabel, summarizeAudioQuality } from './lib/audioQuality'
 import { StatusBanner } from '../../components/common/StatusBanner'
 import { useMusicPlayer } from './MusicPlayerProvider'
-
-type MusicFilter = 'all' | 'remote'
+import { countMusicTrackCategories, filterMusicTracks, type MusicLibraryFilter } from './lib/catalog'
 
 const emptyForm = {
   title: '',
@@ -18,12 +17,21 @@ const emptyForm = {
 function ActionIcon({
   name,
 }: {
-  name: 'play' | 'queue' | 'edit' | 'trash' | 'link' | 'folder' | 'close' | 'music' | 'clock' | 'plus' | 'refresh' | 'upload'
+  name: 'play' | 'pause' | 'queue' | 'edit' | 'trash' | 'link' | 'folder' | 'close' | 'music' | 'clock' | 'plus' | 'refresh' | 'upload'
 }) {
   if (name === 'play') {
     return (
       <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
         <path d="M8 5l11 7-11 7z" />
+      </svg>
+    )
+  }
+
+  if (name === 'pause') {
+    return (
+      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
+        <path d="M9 6v12" />
+        <path d="M15 6v12" />
       </svg>
     )
   }
@@ -153,6 +161,10 @@ function describeTrackSource(track: MusicTrack) {
     return track.localHandleId ? '本地文件 · 刷新后可恢复' : '本地文件 · 当前会话'
   }
 
+  if (!track.remoteId) {
+    return '手工添加 URL'
+  }
+
   try {
     return new URL(track.remoteUrl ?? '').hostname
   } catch {
@@ -232,9 +244,11 @@ export function MusicWorkspace() {
     queue,
     removeLocalFolder,
     removeTrack,
+    removeRemoteTrack,
     rescanLocalFolder,
     scanLocalDirectory,
     statusMessage,
+    togglePlay,
     tracks,
     remoteTracksHasMore,
     remoteTracksLoading,
@@ -245,9 +259,11 @@ export function MusicWorkspace() {
   } = useMusicPlayer()
   const [form, setForm] = useState(emptyForm)
   const [editingTrackId, setEditingTrackId] = useState<string | null>(null)
-  const [filter, setFilter] = useState<MusicFilter>('all')
+  const [filter, setFilter] = useState<MusicLibraryFilter>('all')
   const [folderScanInProgress, setFolderScanInProgress] = useState(false)
   const [rescanningFolderId, setRescanningFolderId] = useState<string | null>(null)
+  const [deletingTrackId, setDeletingTrackId] = useState<string | null>(null)
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null)
   const [sourceDrawerOpen, setSourceDrawerOpen] = useState(false)
   const [status, setStatus] = useState<ToolStatus>({
     kind: 'idle',
@@ -261,22 +277,21 @@ export function MusicWorkspace() {
     [editingTrackId, tracks],
   )
 
-  const visibleTracks = useMemo(() => {
-    if (filter === 'all') {
-      return tracks
+  const visibleTracks = useMemo(() => filterMusicTracks(tracks, filter), [filter, tracks])
+
+  const sourceCounts = useMemo(() => countMusicTrackCategories(tracks), [tracks])
+  const effectiveSelectedTrackId = selectedTrackId && tracks.some((track) => track.id === selectedTrackId)
+    ? selectedTrackId
+    : null
+
+  const playOrToggleTrack = (track: MusicTrack) => {
+    setSelectedTrackId(track.id)
+    if (currentTrackId === track.id) {
+      togglePlay()
+      return
     }
-
-    return tracks.filter((track) => track.source === filter)
-  }, [filter, tracks])
-
-  const sourceCounts = useMemo(
-    () => ({
-      all: tracks.length,
-      remote: tracks.filter((track) => track.source === 'remote').length,
-      local: tracks.filter((track) => track.source === 'local').length,
-    }),
-    [tracks],
-  )
+    playTrack(track.id)
+  }
 
   useEffect(() => {
     const sentinel = remoteListSentinelRef.current
@@ -294,10 +309,28 @@ export function MusicWorkspace() {
 
   const uploadTrack = async (track: MusicTrack) => {
     try {
-      await uploadLocalTrack(track.id)
-      setStatus({ kind: 'success', message: `《${track.title}》已上传，远程版本已加入列表。` })
+      const result = await uploadLocalTrack(track.id)
+      setStatus({
+        kind: result.duplicate ? 'warning' : 'success',
+        message: result.duplicate ? `《${track.title}》已存在，未重复上传。` : `《${track.title}》已上传，远程版本已加入列表。`,
+      })
     } catch (error) {
       setStatus({ kind: 'error', message: error instanceof Error ? error.message : '歌曲上传失败。' })
+    }
+  }
+
+  const deleteRemoteTrack = async (track: MusicTrack) => {
+    if (!track.remoteId || !window.confirm(`确定从远程曲库删除《${track.title}》吗？`)) {
+      return
+    }
+    setDeletingTrackId(track.id)
+    try {
+      await removeRemoteTrack(track.id)
+      setStatus({ kind: 'success', message: `已从远程曲库删除《${track.title}》。` })
+    } catch (error) {
+      setStatus({ kind: 'error', message: error instanceof Error ? error.message : '远程歌曲删除失败。' })
+    } finally {
+      setDeletingTrackId(null)
     }
   }
 
@@ -637,12 +670,14 @@ export function MusicWorkspace() {
             <div className="music-filter-grid">
               {[
                 { id: 'all', label: '全部', count: sourceCounts.all },
-                { id: 'remote', label: '云端', count: sourceCounts.remote },
+                { id: 'remote', label: '远程', count: sourceCounts.remote },
+                { id: 'local', label: '本地', count: sourceCounts.local },
+                { id: 'url', label: 'URL', count: sourceCounts.url },
               ].map((item) => (
                 <button
                   className={`music-filter-card${filter === item.id ? ' music-filter-card-active' : ''}`}
                   key={item.id}
-                  onClick={() => setFilter(item.id as MusicFilter)}
+                  onClick={() => setFilter(item.id as MusicLibraryFilter)}
                   type="button"
                 >
                   <span>{item.label}</span>
@@ -736,19 +771,36 @@ export function MusicWorkspace() {
               <p className="inline-empty-state-text">添加云端 URL 或选择本地文件后会显示在这里。</p>
             </div>
           ) : (
-            <div className="music-media-grid">
+            <div aria-label="音乐列表" className="music-media-grid" role="listbox">
               {visibleTracks.map((track) => {
-                const isActive = currentTrackId === track.id
+                const isSelected = effectiveSelectedTrackId === track.id
+                const isPlayingTrack = isPlaying && currentTrackId === track.id
                 return (
-                  <article className={`music-track-card${isActive ? ' music-track-card-active' : ''}`} key={track.id}>
+                  <article
+                    aria-selected={isSelected}
+                    className={`music-track-card${isSelected ? ' music-track-card-selected' : ''}${isPlayingTrack ? ' music-track-card-playing' : ''}`}
+                    key={track.id}
+                    onClick={() => setSelectedTrackId(track.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setSelectedTrackId(track.id)
+                      }
+                    }}
+                    role="option"
+                    tabIndex={0}
+                  >
                     <div className="music-track-card-main">
                       <span className={`music-track-art music-source-${track.source}`} aria-hidden="true">
-                        <ActionIcon name={isActive ? 'play' : track.source === 'remote' ? 'link' : 'folder'} />
+                        <ActionIcon name={isPlayingTrack ? 'pause' : track.source === 'remote' ? 'link' : 'folder'} />
                       </span>
                       <div className="music-track-copy">
                         <div className="music-track-title-row">
                           <h3>{track.title}</h3>
-                          {isActive ? <span className="music-playing-pill">播放中</span> : null}
+                          <span className="music-track-state-pills">
+                            {isSelected ? <span className="music-selected-pill">已选中</span> : null}
+                            {isPlayingTrack ? <span className="music-playing-pill">播放中</span> : null}
+                          </span>
                         </div>
                         <p>{track.artist || track.note || describeTrackSource(track)}</p>
                       </div>
@@ -756,7 +808,7 @@ export function MusicWorkspace() {
 
                     <div className="music-track-card-meta">
                       <span className={`music-source-pill music-source-${track.source}`}>
-                        {track.source === 'remote' ? '云端' : '本地'}
+                        {track.source === 'local' ? '本地' : track.remoteId ? '远程' : 'URL'}
                       </span>
                       <span className="music-meta-chip">
                         <ActionIcon name="clock" />
@@ -769,19 +821,26 @@ export function MusicWorkspace() {
 
                     <div className="music-track-actions">
                       <button
-                        aria-label={`播放 ${track.title}`}
-                        className="music-icon-action music-icon-action-primary"
-                        onClick={() => playTrack(track.id)}
+                        aria-label={`${isPlayingTrack ? '暂停' : currentTrackId === track.id ? '继续播放' : '播放'} ${track.title}`}
+                        className={`music-icon-action${isPlayingTrack ? ' music-icon-action-primary' : ''}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          playOrToggleTrack(track)
+                        }}
+                        title={isPlayingTrack ? '暂停' : currentTrackId === track.id ? '继续播放' : '播放'}
                         type="button"
                       >
-                        <ActionIcon name="play" />
+                        <ActionIcon name={isPlayingTrack ? 'pause' : 'play'} />
                       </button>
                       {track.source === 'local' ? (
                         <button
                           aria-label={`上传 ${track.title} 到远程曲库`}
                           className="music-icon-action"
                           disabled={uploadingTrackIds.has(track.id)}
-                          onClick={() => void uploadTrack(track)}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void uploadTrack(track)
+                          }}
                           title={uploadingTrackIds.has(track.id) ? '上传中' : '上传到远程曲库'}
                           type="button"
                         >
@@ -791,7 +850,10 @@ export function MusicWorkspace() {
                       <button
                         aria-label={`加入队列 ${track.title}`}
                         className="music-icon-action"
-                        onClick={() => enqueueTrack(track.id)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          enqueueTrack(track.id)
+                        }}
                         type="button"
                       >
                         <ActionIcon name="queue" />
@@ -799,19 +861,28 @@ export function MusicWorkspace() {
                       {!track.remoteId ? <button
                         aria-label={`编辑 ${track.title}`}
                         className="music-icon-action"
-                        onClick={() => startEditTrack(track)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          startEditTrack(track)
+                        }}
                         type="button"
                       >
                         <ActionIcon name="edit" />
                       </button> : null}
-                      {!track.remoteId ? <button
+                      <button
                         aria-label={`删除 ${track.title}`}
                         className="music-icon-action music-icon-action-danger"
-                        onClick={() => removeTrack(track.id)}
+                        disabled={deletingTrackId === track.id}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (track.remoteId) void deleteRemoteTrack(track)
+                          else removeTrack(track.id)
+                        }}
+                        title={deletingTrackId === track.id ? '删除中' : track.remoteId ? '从远程曲库删除' : '删除'}
                         type="button"
                       >
                         <ActionIcon name="trash" />
-                      </button> : null}
+                      </button>
                     </div>
                   </article>
                 )

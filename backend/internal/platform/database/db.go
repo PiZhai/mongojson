@@ -91,6 +91,8 @@ func (db *DB) Migrate(ctx context.Context) error {
 		`create table if not exists music_tracks (
 			id uuid primary key,
 			file_id uuid not null unique references tool_files(id) on delete cascade,
+			lyric_file_id uuid unique references tool_files(id) on delete set null,
+			content_sha256 text,
 			title text not null,
 			artist text not null default '',
 			note text not null default '',
@@ -98,9 +100,12 @@ func (db *DB) Migrate(ctx context.Context) error {
 			audio_quality jsonb not null default '{}'::jsonb,
 			created_at timestamptz not null default now()
 		);`,
+		`alter table music_tracks add column if not exists lyric_file_id uuid unique references tool_files(id) on delete set null;`,
+		`alter table music_tracks add column if not exists content_sha256 text;`,
 		`create index if not exists idx_tool_jobs_status on tool_jobs(status);`,
 		`create index if not exists idx_tool_files_expires_at on tool_files(expires_at);`,
 		`create index if not exists idx_music_tracks_created_at_id on music_tracks(created_at desc, id desc);`,
+		`create unique index if not exists idx_music_tracks_content_sha256 on music_tracks(content_sha256) where content_sha256 is not null;`,
 	}
 
 	for _, statement := range statements {

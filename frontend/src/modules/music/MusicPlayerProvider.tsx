@@ -36,7 +36,7 @@ import {
 import type { MusicAudioQuality } from './types'
 import { musicModule } from './manifest'
 import { getTrackSourceKey } from './lib/sourceKey'
-import { fetchRemoteMusicPage, uploadMusicTrack } from './api'
+import { deleteRemoteMusicTrack, fetchRemoteMusicPage, uploadMusicTrack } from './api'
 
 type RemoteTrackPayload = {
   title: string
@@ -113,13 +113,14 @@ type MusicPlayerContextValue = {
   addRemoteTrack: (payload: RemoteTrackPayload) => string
   addLocalFileHandles: (handles: LocalFileHandle[]) => Promise<void>
   addLocalFiles: (files: File[]) => Promise<void>
-  uploadLocalTrack: (id: string) => Promise<void>
+  uploadLocalTrack: (id: string) => Promise<{ duplicate: boolean }>
   loadMoreRemoteTracks: () => Promise<void>
   scanLocalDirectory: (handle: LocalDirectoryHandle) => Promise<FolderScanResult>
   rescanLocalFolder: (folderId: string) => Promise<FolderScanResult>
   removeLocalFolder: (folderId: string) => void
   updateTrack: (id: string, payload: TrackEditPayload) => void
   removeTrack: (id: string) => void
+  removeRemoteTrack: (id: string) => Promise<void>
   playTrack: (id: string) => void
   enqueueTrack: (id: string) => void
   removeFromQueue: (id: string) => void
@@ -615,6 +616,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
   const [remoteTracksInitialized, setRemoteTracksInitialized] = useState(false)
   const [uploadingTrackIds, setUploadingTrackIds] = useState<ReadonlySet<string>>(() => new Set())
   const [audioSrc, setAudioSrc] = useState<string | null>(null)
+  const [sourceReloadToken, setSourceReloadToken] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isQueueOpen, setIsQueueOpen] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -781,7 +783,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     return () => {
       cancelled = true
     }
-  }, [currentTrackSourceKey])
+  }, [currentTrackSourceKey, sourceReloadToken])
 
   useEffect(() => {
     let cancelled = false
@@ -799,6 +801,18 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
             lyricText = await readLyricFileText(file)
             sessionLyricsRef.current.set(track.id, lyricText)
           }
+        }
+
+        if (!lyricText && track.lyricUrl) {
+          const response = await fetch(track.lyricUrl)
+          if (!response.ok) {
+            throw new Error(`远程歌词加载失败：${response.status}`)
+          }
+          const lyricFile = new File([await response.blob()], track.lyricFileName ?? 'lyrics.lrc', {
+            type: response.headers.get('Content-Type') ?? 'text/plain',
+          })
+          lyricText = await readLyricFileText(lyricFile)
+          sessionLyricsRef.current.set(track.id, lyricText)
         }
 
         if (!lyricText) {
@@ -837,6 +851,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     const audio = audioRef.current
     if (!audio || !audioSrc) {
       pendingPlayRef.current = true
+      setSourceReloadToken((value) => value + 1)
       return
     }
 
@@ -1052,9 +1067,28 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
         throw new Error('本地文件授权已失效，请重新选择该歌曲后再上传。')
       }
 
-      const uploaded = await uploadMusicTrack(file, track)
-      setRemoteTracks((value) => [uploaded, ...value.filter((item) => item.id !== uploaded.id)])
-      setStatusMessage(`《${track.title}》已上传到远程曲库。`)
+      let lyricFile: File | undefined
+      if (track.lyricHandleId) {
+        const lyricHandle = await getLocalFileHandle(track.lyricHandleId)
+        if (lyricHandle) {
+          lyricFile = await readLocalHandleFile(lyricHandle)
+        }
+      }
+      if (!lyricFile && track.lyricFileName) {
+        const lyricText = sessionLyricsRef.current.get(id)
+        if (lyricText) {
+          lyricFile = new File([lyricText], track.lyricFileName, { type: 'text/plain' })
+        }
+      }
+
+      const result = await uploadMusicTrack(file, track, lyricFile)
+      setRemoteTracks((value) => [result.track, ...value.filter((item) => item.id !== result.track.id)])
+      setStatusMessage(
+        result.duplicate
+          ? `《${track.title}》已存在于远程曲库，未重复上传${result.track.lyricFileName ? '，歌词已同步' : ''}。`
+          : `《${track.title}》已上传到远程曲库${result.track.lyricFileName ? '，歌词已同步' : ''}。`,
+      )
+      return { duplicate: result.duplicate }
     } catch (error) {
       const message = error instanceof Error ? error.message : '歌曲上传失败。'
       setStatusMessage(message)
@@ -1385,6 +1419,25 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     setStatusMessage('已删除音乐。')
   }, [])
 
+  const removeRemoteTrack = useCallback(async (id: string) => {
+    const track = remoteTracks.find((item) => item.id === id)
+    if (!track?.remoteId) {
+      throw new Error('只能删除服务器远程歌曲。')
+    }
+    await deleteRemoteMusicTrack(track.remoteId)
+    setRemoteTracks((value) => value.filter((item) => item.id !== id))
+    setLibrary((value) => {
+      const queue = value.queue.filter((trackID) => trackID !== id)
+      return {
+        ...value,
+        queue,
+        currentTrackId: value.currentTrackId === id ? queue[0] : value.currentTrackId,
+      }
+    })
+    sessionLyricsRef.current.delete(id)
+    setStatusMessage(`已从远程曲库删除《${track.title}》。`)
+  }, [remoteTracks])
+
   const playTrack = useCallback(
     (id: string) => {
       pendingPlayRef.current = true
@@ -1614,6 +1667,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       removeLocalFolder,
       updateTrack,
       removeTrack,
+      removeRemoteTrack,
       playTrack,
       enqueueTrack,
       removeFromQueue,
@@ -1658,6 +1712,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       playTrack,
       removeLocalFolder,
       removeFromQueue,
+      removeRemoteTrack,
       removeTrack,
       rescanLocalFolder,
       scanLocalDirectory,

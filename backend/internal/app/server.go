@@ -48,6 +48,9 @@ func NewServer() (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "music"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir music: %w", err)
 	}
+	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "music-lyrics"), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir music lyrics: %w", err)
+	}
 
 	db, err := database.Connect(context.Background(), cfg.DatabaseURL)
 	if err != nil {
@@ -74,7 +77,7 @@ func NewServer() (*Server, error) {
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: false,
 		MaxAge:           300,
@@ -138,7 +141,7 @@ func checkStorage(root string) error {
 		return fmt.Errorf("storage dir is empty")
 	}
 
-	for _, dir := range []string{root, filepath.Join(root, "uploads"), filepath.Join(root, "outputs"), filepath.Join(root, "music")} {
+	for _, dir := range []string{root, filepath.Join(root, "uploads"), filepath.Join(root, "outputs"), filepath.Join(root, "music"), filepath.Join(root, "music-lyrics")} {
 		info, err := os.Stat(dir)
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", dir, err)

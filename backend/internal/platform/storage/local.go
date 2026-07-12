@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -19,25 +21,42 @@ func NewLocalStore(root string) *LocalStore {
 }
 
 func (s *LocalStore) SaveUploadedFile(file multipart.File, originalName string, category string) (storedName string, path string, size int64, err error) {
+	storedName, path, size, _, err = s.saveUploadedFile(file, originalName, category, false)
+	return
+}
+
+func (s *LocalStore) SaveUploadedFileWithSHA256(file multipart.File, originalName string, category string) (storedName string, path string, size int64, digest string, err error) {
+	return s.saveUploadedFile(file, originalName, category, true)
+}
+
+func (s *LocalStore) saveUploadedFile(file multipart.File, originalName string, category string, hashContent bool) (storedName string, path string, size int64, digest string, err error) {
 	defer file.Close()
 
 	storedName = fmt.Sprintf("%s-%s", uuid.NewString(), filepath.Base(originalName))
 	path = filepath.Join(s.root, category, storedName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", "", 0, err
+		return "", "", 0, "", err
 	}
 
 	dst, err := os.Create(path)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, "", err
 	}
 	defer dst.Close()
 
-	written, err := io.Copy(dst, file)
-	if err != nil {
-		return "", "", 0, err
+	var writer io.Writer = dst
+	var hasher = sha256.New()
+	if hashContent {
+		writer = io.MultiWriter(dst, hasher)
 	}
-	return storedName, path, written, nil
+	written, err := io.Copy(writer, file)
+	if err != nil {
+		return "", "", 0, "", err
+	}
+	if hashContent {
+		digest = hex.EncodeToString(hasher.Sum(nil))
+	}
+	return storedName, path, written, digest, nil
 }
 
 func (s *LocalStore) SaveBytes(content []byte, outputName string, category string) (storedName string, path string, size int64, err error) {

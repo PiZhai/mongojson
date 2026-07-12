@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -79,7 +80,7 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "missing file")
 		return
 	}
-
+	defer file.Close()
 	record, err := h.deps.FileService.SaveUpload(r.Context(), file, header)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -150,6 +151,17 @@ func (h *Handler) uploadMusicTrack(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "missing file")
 		return
 	}
+	defer file.Close()
+	var lyric multipart.File
+	var lyricHeader *multipart.FileHeader
+	lyric, lyricHeader, err = r.FormFile("lyric")
+	if err != nil && !errors.Is(err, http.ErrMissingFile) {
+		httpError(w, http.StatusBadRequest, "invalid lyric file")
+		return
+	}
+	if lyric != nil {
+		defer lyric.Close()
+	}
 	var duration *float64
 	if value := strings.TrimSpace(r.FormValue("duration")); value != "" {
 		parsed, err := strconv.ParseFloat(value, 64)
@@ -159,19 +171,23 @@ func (h *Handler) uploadMusicTrack(w http.ResponseWriter, r *http.Request) {
 		}
 		duration = &parsed
 	}
-	record, err := h.deps.MusicService.SaveUpload(r.Context(), music.UploadInput{
-		File: file, Header: header, Title: r.FormValue("title"), Artist: r.FormValue("artist"),
+	result, err := h.deps.MusicService.SaveUpload(r.Context(), music.UploadInput{
+		File: file, Header: header, Lyric: lyric, LyricHeader: lyricHeader, Title: r.FormValue("title"), Artist: r.FormValue("artist"),
 		Note: r.FormValue("note"), Duration: duration, AudioQuality: json.RawMessage(r.FormValue("audio_quality")),
 	})
 	if err != nil {
-		if errors.Is(err, music.ErrUnsupportedAudio) {
+		if errors.Is(err, music.ErrUnsupportedAudio) || errors.Is(err, music.ErrUnsupportedLyric) {
 			httpError(w, http.StatusUnsupportedMediaType, err.Error())
 			return
 		}
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	respondJSON(w, http.StatusCreated, map[string]domain.MusicTrackRecord{"track": record})
+	status := http.StatusCreated
+	if result.Duplicate {
+		status = http.StatusOK
+	}
+	respondJSON(w, status, result)
 }
 
 func (h *Handler) listMusicTracks(w http.ResponseWriter, r *http.Request) {
@@ -224,6 +240,47 @@ func (h *Handler) streamMusicTrack(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", record.MIMEType)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": record.OriginalName}))
 	http.ServeContent(w, r, record.OriginalName, info.ModTime(), file)
+}
+
+func (h *Handler) streamMusicLyrics(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	record, err := h.deps.MusicService.GetByID(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || record.LyricStoragePath == "" {
+		httpError(w, http.StatusNotFound, music.ErrLyricsNotFound.Error())
+		return
+	}
+	file, err := os.Open(record.LyricStoragePath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, music.ErrLyricsNotFound.Error())
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot inspect lyric file")
+		return
+	}
+	w.Header().Set("Content-Type", record.LyricMIMEType)
+	http.ServeContent(w, r, record.LyricFileName, info.ModTime(), file)
+}
+
+func (h *Handler) deleteMusicTrack(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	if err := h.deps.MusicService.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
+		if errors.Is(err, music.ErrTrackNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {

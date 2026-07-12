@@ -30,6 +30,7 @@ export type MusicTrack = {
   relativePath?: string
   lyricHandleId?: string
   lyricFileName?: string
+  lyricUrl?: string
   lyricRelativePath?: string
   fileName?: string
   mimeType?: string

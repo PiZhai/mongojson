@@ -118,9 +118,9 @@ func TestUploadFileRejectsBodyOverHardLimit(t *testing.T) {
 
 func TestUploadMusicTrackAcceptsMetadata(t *testing.T) {
 	var captured music.UploadInput
-	store := fakeMusicStore{saveUpload: func(_ context.Context, input music.UploadInput) (domain.MusicTrackRecord, error) {
+	store := fakeMusicStore{saveUpload: func(_ context.Context, input music.UploadInput) (music.UploadResult, error) {
 		captured = input
-		return domain.MusicTrackRecord{ID: "track-1", Title: input.Title, OriginalName: input.Header.Filename, CreatedAt: time.Now()}, nil
+		return music.UploadResult{Track: domain.MusicTrackRecord{ID: "track-1", Title: input.Title, OriginalName: input.Header.Filename, CreatedAt: time.Now()}}, nil
 	}}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -131,6 +131,11 @@ func TestUploadMusicTrackAcceptsMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = part.Write([]byte("audio-data"))
+	lyricPart, err := writer.CreateFormFile("lyric", "song.lrc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = lyricPart.Write([]byte("[00:00.00]Song"))
 	_ = writer.Close()
 
 	router := chi.NewRouter()
@@ -143,8 +148,29 @@ func TestUploadMusicTrackAcceptsMetadata(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if captured.Title != "Remote song" || captured.Artist != "Artist" || captured.Header.Filename != "song.mp3" {
+	if captured.Title != "Remote song" || captured.Artist != "Artist" || captured.Header.Filename != "song.mp3" || captured.LyricHeader.Filename != "song.lrc" {
 		t.Fatalf("unexpected upload input: %#v", captured)
+	}
+}
+
+func TestUploadMusicTrackReturnsOKForDuplicate(t *testing.T) {
+	store := fakeMusicStore{saveUpload: func(_ context.Context, _ music.UploadInput) (music.UploadResult, error) {
+		return music.UploadResult{Track: domain.MusicTrackRecord{ID: "existing"}, Duplicate: true}, nil
+	}}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "song.mp3")
+	_, _ = part.Write([]byte("same-audio"))
+	_ = writer.Close()
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodPost, "/api/music/tracks", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"duplicate":true`) {
+		t.Fatalf("unexpected duplicate response %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -185,6 +211,44 @@ func TestStreamMusicTrackSupportsRanges(t *testing.T) {
 
 	if rec.Code != http.StatusPartialContent || rec.Body.String() != "2345" {
 		t.Fatalf("unexpected range response %d: %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStreamMusicLyrics(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "lyrics-*.lrc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.Write([]byte("[00:00.00]Lyrics"))
+	_ = file.Close()
+	store := fakeMusicStore{getByID: func(_ context.Context, id string) (domain.MusicTrackRecord, error) {
+		return domain.MusicTrackRecord{ID: id, LyricFileName: "song.lrc", LyricMIMEType: "text/plain", LyricStoragePath: file.Name()}, nil
+	}}
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodGet, "/api/music/tracks/track-1/lyrics", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "[00:00.00]Lyrics" {
+		t.Fatalf("unexpected lyric response %d: %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteMusicTrack(t *testing.T) {
+	deletedID := ""
+	store := fakeMusicStore{deleteTrack: func(_ context.Context, id string) error {
+		deletedID = id
+		return nil
+	}}
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodDelete, "/api/music/tracks/track-1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent || deletedID != "track-1" {
+		t.Fatalf("unexpected delete response %d for %q", rec.Code, deletedID)
 	}
 }
 
@@ -293,12 +357,13 @@ type fakeMemoStore struct {
 }
 
 type fakeMusicStore struct {
-	saveUpload func(context.Context, music.UploadInput) (domain.MusicTrackRecord, error)
-	list       func(context.Context, string, int) (music.Page, error)
-	getByID    func(context.Context, string) (domain.MusicTrackRecord, error)
+	saveUpload  func(context.Context, music.UploadInput) (music.UploadResult, error)
+	list        func(context.Context, string, int) (music.Page, error)
+	getByID     func(context.Context, string) (domain.MusicTrackRecord, error)
+	deleteTrack func(context.Context, string) error
 }
 
-func (s fakeMusicStore) SaveUpload(ctx context.Context, input music.UploadInput) (domain.MusicTrackRecord, error) {
+func (s fakeMusicStore) SaveUpload(ctx context.Context, input music.UploadInput) (music.UploadResult, error) {
 	return s.saveUpload(ctx, input)
 }
 
@@ -308,6 +373,10 @@ func (s fakeMusicStore) List(ctx context.Context, cursor string, limit int) (mus
 
 func (s fakeMusicStore) GetByID(ctx context.Context, id string) (domain.MusicTrackRecord, error) {
 	return s.getByID(ctx, id)
+}
+
+func (s fakeMusicStore) Delete(ctx context.Context, id string) error {
+	return s.deleteTrack(ctx, id)
 }
 
 func (s fakeMemoStore) GetOrCreate(ctx context.Context, slug string) (domain.MemoRecord, error) {

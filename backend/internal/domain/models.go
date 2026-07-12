@@ -59,15 +59,21 @@ type MemoFloatingCard struct {
 }
 
 type MusicTrackRecord struct {
-	ID           string          `json:"id"`
-	Title        string          `json:"title"`
-	Artist       string          `json:"artist,omitempty"`
-	Note         string          `json:"note,omitempty"`
-	OriginalName string          `json:"original_name"`
-	MIMEType     string          `json:"mime_type"`
-	SizeBytes    int64           `json:"size_bytes"`
-	Duration     *float64        `json:"duration,omitempty"`
-	AudioQuality json.RawMessage `json:"audio_quality,omitempty"`
-	StoragePath  string          `json:"-"`
-	CreatedAt    time.Time       `json:"created_at"`
+	ID               string          `json:"id"`
+	FileID           string          `json:"-"`
+	LyricFileID      *string         `json:"-"`
+	Title            string          `json:"title"`
+	Artist           string          `json:"artist,omitempty"`
+	Note             string          `json:"note,omitempty"`
+	OriginalName     string          `json:"original_name"`
+	MIMEType         string          `json:"mime_type"`
+	SizeBytes        int64           `json:"size_bytes"`
+	Duration         *float64        `json:"duration,omitempty"`
+	AudioQuality     json.RawMessage `json:"audio_quality,omitempty"`
+	ContentSHA256    string          `json:"-"`
+	StoragePath      string          `json:"-"`
+	LyricFileName    string          `json:"lyric_file_name,omitempty"`
+	LyricMIMEType    string          `json:"lyric_mime_type,omitempty"`
+	LyricStoragePath string          `json:"-"`
+	CreatedAt        time.Time       `json:"created_at"`
 }

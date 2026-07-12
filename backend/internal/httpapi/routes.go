@@ -24,9 +24,10 @@ type MemoStore interface {
 }
 
 type MusicStore interface {
-	SaveUpload(context.Context, music.UploadInput) (domain.MusicTrackRecord, error)
+	SaveUpload(context.Context, music.UploadInput) (music.UploadResult, error)
 	List(context.Context, string, int) (music.Page, error)
 	GetByID(context.Context, string) (domain.MusicTrackRecord, error)
+	Delete(context.Context, string) error
 }
 
 type Dependencies struct {
@@ -54,6 +55,8 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/music/tracks", handler.uploadMusicTrack)
 		r.Get("/music/tracks", handler.listMusicTracks)
 		r.Get("/music/tracks/{id}/content", handler.streamMusicTrack)
+		r.Get("/music/tracks/{id}/lyrics", handler.streamMusicLyrics)
+		r.Delete("/music/tracks/{id}", handler.deleteMusicTrack)
 		r.Post("/jobs", handler.createJob)
 		r.Get("/jobs/{id}", handler.getJob)
 		r.Get("/presets", handler.listPresets)
