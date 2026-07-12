@@ -127,7 +127,7 @@ func (s *Service) SaveUpload(ctx context.Context, input UploadInput) (UploadResu
 		} else if input.Lyric != nil {
 			_ = input.Lyric.Close()
 		}
-		return UploadResult{Track: existing, Duplicate: true}, nil
+		return UploadResult{Track: validateTrackFiles(existing), Duplicate: true}, nil
 	}
 
 	now := time.Now().UTC()
@@ -187,7 +187,7 @@ func (s *Service) SaveUpload(ctx context.Context, input UploadInput) (UploadResu
 		cleanupFiles()
 		if isDigestConflict(err) {
 			if existing, found, lookupErr := s.findByHash(ctx, digest); lookupErr == nil && found {
-				return UploadResult{Track: existing, Duplicate: true}, nil
+				return UploadResult{Track: validateTrackFiles(existing), Duplicate: true}, nil
 			}
 		}
 		return UploadResult{}, fmt.Errorf("insert music track: %w", err)
@@ -196,7 +196,7 @@ func (s *Service) SaveUpload(ctx context.Context, input UploadInput) (UploadResu
 		cleanupFiles()
 		return UploadResult{}, fmt.Errorf("commit music upload: %w", err)
 	}
-	return UploadResult{Track: record}, nil
+	return UploadResult{Track: validateTrackFiles(record)}, nil
 }
 
 func (s *Service) attachLyric(ctx context.Context, track domain.MusicTrackRecord, file multipart.File, header *multipart.FileHeader) (domain.MusicTrackRecord, error) {

@@ -37,3 +37,20 @@ func TestValidateTrackFilesKeepsAudioPlayableWhenOnlyLyricsAreMissing(t *testing
 		t.Fatalf("unexpected issue: %q", record.RecordIssue)
 	}
 }
+
+func TestValidateTrackFilesMarksNewlyStoredAudioAsAvailable(t *testing.T) {
+	dir := t.TempDir()
+	audioPath := filepath.Join(dir, "uploaded.mp3")
+	if err := os.WriteFile(audioPath, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	record := validateTrackFiles(domain.MusicTrackRecord{StoragePath: audioPath})
+
+	if !record.FileAvailable {
+		t.Fatal("expected newly stored audio to be immediately available")
+	}
+	if record.RecordIssue != "" {
+		t.Fatalf("unexpected issue: %q", record.RecordIssue)
+	}
+}
