@@ -38,7 +38,7 @@ var supportedExtensions = map[string]bool{
 
 const trackSelectColumns = `mt.id, mt.file_id, mt.lyric_file_id, mt.title, mt.artist, mt.note,
 	tf.original_name, tf.mime_type, tf.size_bytes, mt.duration_seconds, mt.audio_quality,
-	mt.content_sha256, tf.storage_path, coalesce(lf.original_name, ''), coalesce(lf.mime_type, ''),
+	coalesce(mt.content_sha256, ''), tf.storage_path, coalesce(lf.original_name, ''), coalesce(lf.mime_type, ''),
 	coalesce(lf.storage_path, ''), mt.created_at`
 
 type Service struct {
@@ -267,7 +267,7 @@ func (s *Service) List(ctx context.Context, cursor string, limit int) (Page, err
 		if err != nil {
 			return Page{}, fmt.Errorf("scan music track: %w", err)
 		}
-		items = append(items, item)
+		items = append(items, validateTrackFiles(item))
 	}
 	if err := rows.Err(); err != nil {
 		return Page{}, fmt.Errorf("iterate music tracks: %w", err)
@@ -292,7 +292,7 @@ func (s *Service) GetByID(ctx context.Context, id string) (domain.MusicTrackReco
 		}
 		return domain.MusicTrackRecord{}, fmt.Errorf("get music track: %w", err)
 	}
-	return item, nil
+	return validateTrackFiles(item), nil
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
@@ -398,6 +398,21 @@ func scanTrack(row rowScanner) (domain.MusicTrackRecord, error) {
 		&item.ContentSHA256, &item.StoragePath, &item.LyricFileName, &item.LyricMIMEType,
 		&item.LyricStoragePath, &item.CreatedAt)
 	return item, err
+}
+
+func validateTrackFiles(item domain.MusicTrackRecord) domain.MusicTrackRecord {
+	item.FileAvailable = true
+	if _, err := os.Stat(item.StoragePath); err != nil {
+		item.FileAvailable = false
+		item.RecordIssue = "音频文件缺失，建议删除此歌曲记录"
+		return item
+	}
+	if item.LyricStoragePath != "" {
+		if _, err := os.Stat(item.LyricStoragePath); err != nil {
+			item.RecordIssue = "歌词文件缺失，歌曲仍可播放"
+		}
+	}
+	return item
 }
 
 func isDigestConflict(err error) bool {

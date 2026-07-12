@@ -13,6 +13,8 @@ type RemoteMusicTrack = {
   audio_quality?: MusicAudioQuality
   lyric_file_name?: string
   lyric_mime_type?: string
+  file_available: boolean
+  record_issue?: string
   created_at: string
 }
 
@@ -25,6 +27,8 @@ function toMusicTrack(track: RemoteMusicTrack): MusicTrack {
   return {
     id: `server:${track.id}`,
     remoteId: track.id,
+    fileAvailable: track.file_available,
+    recordIssue: track.record_issue,
     source: 'remote',
     title: track.title,
     artist: track.artist,

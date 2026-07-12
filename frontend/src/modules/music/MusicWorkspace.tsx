@@ -775,6 +775,7 @@ export function MusicWorkspace() {
               {visibleTracks.map((track) => {
                 const isSelected = effectiveSelectedTrackId === track.id
                 const isPlayingTrack = isPlaying && currentTrackId === track.id
+                const isPlayable = track.fileAvailable !== false
                 return (
                   <article
                     aria-selected={isSelected}
@@ -815,19 +816,21 @@ export function MusicWorkspace() {
                         {formatTrackDuration(track.duration)}
                       </span>
                       <span className="music-meta-chip">{describeTrackAudioQuality(track)}</span>
+                      {track.recordIssue ? <span className="music-record-issue-pill">{track.recordIssue}</span> : null}
                       <span className="music-track-source-text">{describeTrackSource(track)}</span>
                       {track.lyricFileName ? <span className="music-track-source-text">{describeTrackLyric(track)}</span> : null}
                     </div>
 
                     <div className="music-track-actions">
                       <button
-                        aria-label={`${isPlayingTrack ? '暂停' : currentTrackId === track.id ? '继续播放' : '播放'} ${track.title}`}
+                        aria-label={`${isPlayable ? isPlayingTrack ? '暂停' : currentTrackId === track.id ? '继续播放' : '播放' : '无法播放'} ${track.title}`}
                         className={`music-icon-action${isPlayingTrack ? ' music-icon-action-primary' : ''}`}
+                        disabled={!isPlayable}
                         onClick={(event) => {
                           event.stopPropagation()
                           playOrToggleTrack(track)
                         }}
-                        title={isPlayingTrack ? '暂停' : currentTrackId === track.id ? '继续播放' : '播放'}
+                        title={isPlayable ? isPlayingTrack ? '暂停' : currentTrackId === track.id ? '继续播放' : '播放' : track.recordIssue}
                         type="button"
                       >
                         <ActionIcon name={isPlayingTrack ? 'pause' : 'play'} />

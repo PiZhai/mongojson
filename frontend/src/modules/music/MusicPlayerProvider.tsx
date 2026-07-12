@@ -726,6 +726,12 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       setAudioSrc(null)
 
       if (nextTrack.source === 'remote') {
+        if (nextTrack.fileAvailable === false) {
+          setStatusMessage(nextTrack.recordIssue ?? '远程歌曲文件缺失，建议删除此歌曲记录。')
+          pendingPlayRef.current = false
+          setIsPlaying(false)
+          return
+        }
         if (!nextTrack.remoteUrl) {
           setStatusMessage('这首云端音乐缺少可播放 URL。')
           pendingPlayRef.current = false

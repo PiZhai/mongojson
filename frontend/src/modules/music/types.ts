@@ -20,6 +20,8 @@ export type MusicAudioQuality = {
 export type MusicTrack = {
   id: string
   remoteId?: string
+  fileAvailable?: boolean
+  recordIssue?: string
   source: MusicTrackSource
   title: string
   artist?: string

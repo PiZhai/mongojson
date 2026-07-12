@@ -75,5 +75,7 @@ type MusicTrackRecord struct {
 	LyricFileName    string          `json:"lyric_file_name,omitempty"`
 	LyricMIMEType    string          `json:"lyric_mime_type,omitempty"`
 	LyricStoragePath string          `json:"-"`
+	FileAvailable    bool            `json:"file_available"`
+	RecordIssue      string          `json:"record_issue,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 }
