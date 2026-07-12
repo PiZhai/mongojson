@@ -14,6 +14,7 @@ const routeByModule = {
   'memo-docs': '/tools/memo-docs',
   music: '/tools/music',
   'watch-party': '/tools/watch-party',
+  canvas: '/tools/canvas',
 }
 const cssMarkerByModule = {
   inspect: '.inspect-',
@@ -22,6 +23,7 @@ const cssMarkerByModule = {
   'memo-docs': '.memo-',
   music: '.music-',
   'watch-party': '.watch-',
+  canvas: '.canvas-',
 }
 
 function walk(directory) {

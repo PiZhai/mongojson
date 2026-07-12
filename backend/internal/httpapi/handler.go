@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"mongojson/backend/internal/domain"
+	"mongojson/backend/internal/service/canvas"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
 	"mongojson/backend/internal/service/music"
@@ -29,6 +30,7 @@ type Handler struct {
 
 const maxUploadBytes = 64 << 20
 const maxMusicUploadBytes = 512 << 20
+const maxCanvasSceneBytes = 16 << 20
 const multipartMemoryBytes = 32 << 20
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -281,6 +283,173 @@ func (h *Handler) deleteMusicTrack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) listCanvasBoards(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	items, err := h.deps.CanvasService.List(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.CanvasBoardRecord{"boards": items})
+}
+
+func (h *Handler) createCanvasBoard(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.CanvasService.Create(r.Context(), body.Title)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.CanvasBoardRecord{"board": record})
+}
+
+func (h *Handler) getCanvasBoard(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	record, err := h.deps.CanvasService.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, canvas.ErrBoardNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.CanvasBoardRecord{"board": record})
+}
+
+func (h *Handler) saveCanvasBoard(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	var body struct {
+		Title    string          `json:"title"`
+		Scene    json.RawMessage `json:"scene"`
+		Revision int64           `json:"revision"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCanvasSceneBytes)).Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "canvas scene exceeds 16 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.CanvasService.Save(r.Context(), chi.URLParam(r, "id"), canvas.SaveInput{
+		Title: body.Title, Scene: body.Scene, Revision: body.Revision,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, canvas.ErrBoardNotFound):
+			httpError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, canvas.ErrRevisionConflict):
+			httpError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, canvas.ErrInvalidScene):
+			httpError(w, http.StatusBadRequest, err.Error())
+		default:
+			httpError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.CanvasBoardRecord{"board": record})
+}
+
+func (h *Handler) deleteCanvasBoard(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	if err := h.deps.CanvasService.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
+		if errors.Is(err, canvas.ErrBoardNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) uploadCanvasAsset(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(multipartMemoryBytes); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "canvas asset exceeds 64 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid canvas asset upload")
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "missing file")
+		return
+	}
+	defer file.Close()
+	record, err := h.deps.CanvasService.UploadAsset(r.Context(), chi.URLParam(r, "id"), r.FormValue("canvas_file_id"), file, header)
+	if err != nil {
+		if errors.Is(err, canvas.ErrBoardNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.CanvasAssetRecord{"asset": record})
+}
+
+func (h *Handler) streamCanvasAsset(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	record, err := h.deps.CanvasService.GetAsset(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	file, err := os.Open(record.StoragePath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "canvas asset file not found")
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot inspect canvas asset")
+		return
+	}
+	w.Header().Set("Content-Type", record.MIMEType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": record.OriginalName}))
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	http.ServeContent(w, r, record.OriginalName, info.ModTime(), file)
 }
 
 func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {

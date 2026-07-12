@@ -91,6 +91,16 @@ function NavIcon({ icon }: { icon: ToolModuleIcon }) {
     )
   }
 
+  if (icon === 'canvas') {
+    return (
+      <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">
+        <path d="M5 5h14v14H5z" />
+        <path d="M8 15l3-4 2.5 3 2-2 2.5 3" />
+        <circle cx="15.5" cy="8.5" r="1.2" />
+      </svg>
+    )
+  }
+
   return (
     <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24">
       <path d="M5 16.5h3.5V10H5zM10.25 16.5h3.5V6.5h-3.5zM15.5 16.5H19V12h-3.5z" />

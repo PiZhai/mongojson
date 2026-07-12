@@ -102,10 +102,28 @@ func (db *DB) Migrate(ctx context.Context) error {
 		);`,
 		`alter table music_tracks add column if not exists lyric_file_id uuid unique references tool_files(id) on delete set null;`,
 		`alter table music_tracks add column if not exists content_sha256 text;`,
+		`create table if not exists canvas_boards (
+			id uuid primary key,
+			title text not null,
+			scene_json jsonb not null default '{"elements":[],"appState":{},"files":{}}'::jsonb,
+			revision bigint not null default 1,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists canvas_assets (
+			id uuid primary key,
+			board_id uuid not null references canvas_boards(id) on delete cascade,
+			file_id uuid not null unique references tool_files(id) on delete cascade,
+			canvas_file_id text not null,
+			created_at timestamptz not null default now(),
+			unique(board_id, canvas_file_id)
+		);`,
 		`create index if not exists idx_tool_jobs_status on tool_jobs(status);`,
 		`create index if not exists idx_tool_files_expires_at on tool_files(expires_at);`,
 		`create index if not exists idx_music_tracks_created_at_id on music_tracks(created_at desc, id desc);`,
 		`create unique index if not exists idx_music_tracks_content_sha256 on music_tracks(content_sha256) where content_sha256 is not null;`,
+		`create index if not exists idx_canvas_boards_updated_at on canvas_boards(updated_at desc, id desc);`,
+		`create index if not exists idx_canvas_assets_board_id on canvas_assets(board_id);`,
 	}
 
 	for _, statement := range statements {

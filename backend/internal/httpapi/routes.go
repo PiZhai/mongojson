@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 
 	"mongojson/backend/internal/config"
 	"mongojson/backend/internal/domain"
+	"mongojson/backend/internal/service/canvas"
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
@@ -30,12 +32,23 @@ type MusicStore interface {
 	Delete(context.Context, string) error
 }
 
+type CanvasStore interface {
+	Create(context.Context, string) (domain.CanvasBoardRecord, error)
+	List(context.Context) ([]domain.CanvasBoardRecord, error)
+	Get(context.Context, string) (domain.CanvasBoardRecord, error)
+	Save(context.Context, string, canvas.SaveInput) (domain.CanvasBoardRecord, error)
+	Delete(context.Context, string) error
+	UploadAsset(context.Context, string, string, multipart.File, *multipart.FileHeader) (domain.CanvasAssetRecord, error)
+	GetAsset(context.Context, string) (domain.CanvasAssetRecord, error)
+}
+
 type Dependencies struct {
 	Config        config.Config
 	FileService   *filemeta.Service
 	JobService    *jobs.Service
 	MemoService   MemoStore
 	MusicService  MusicStore
+	CanvasService CanvasStore
 	PresetService *presets.Service
 	WatchSync     *watchsync.Hub
 	Readiness     func(context.Context) (map[string]string, error)
@@ -57,6 +70,13 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/music/tracks/{id}/content", handler.streamMusicTrack)
 		r.Get("/music/tracks/{id}/lyrics", handler.streamMusicLyrics)
 		r.Delete("/music/tracks/{id}", handler.deleteMusicTrack)
+		r.Get("/canvas/boards", handler.listCanvasBoards)
+		r.Post("/canvas/boards", handler.createCanvasBoard)
+		r.Get("/canvas/boards/{id}", handler.getCanvasBoard)
+		r.Put("/canvas/boards/{id}", handler.saveCanvasBoard)
+		r.Delete("/canvas/boards/{id}", handler.deleteCanvasBoard)
+		r.Post("/canvas/boards/{id}/assets", handler.uploadCanvasAsset)
+		r.Get("/canvas/assets/{id}/content", handler.streamCanvasAsset)
 		r.Post("/jobs", handler.createJob)
 		r.Get("/jobs/{id}", handler.getJob)
 		r.Get("/presets", handler.listPresets)

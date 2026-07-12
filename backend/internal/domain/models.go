@@ -79,3 +79,24 @@ type MusicTrackRecord struct {
 	RecordIssue      string          `json:"record_issue,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 }
+
+type CanvasBoardRecord struct {
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	Scene     json.RawMessage `json:"scene,omitempty"`
+	Revision  int64           `json:"revision"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+type CanvasAssetRecord struct {
+	ID           string    `json:"id"`
+	BoardID      string    `json:"board_id"`
+	FileID       string    `json:"-"`
+	CanvasFileID string    `json:"canvas_file_id"`
+	OriginalName string    `json:"original_name"`
+	MIMEType     string    `json:"mime_type"`
+	SizeBytes    int64     `json:"size_bytes"`
+	StoragePath  string    `json:"-"`
+	CreatedAt    time.Time `json:"created_at"`
+}

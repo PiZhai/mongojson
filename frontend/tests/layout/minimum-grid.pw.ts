@@ -116,7 +116,13 @@ test('memo card toolbar and add button remain contained and centered', async ({ 
   await page.setViewportSize({ width: 1404, height: 1000 })
   await page.goto('/tools/memo-docs')
   const rail = region(page, 'memo-card-rail')
-  const card = rail.locator('.memo-floating-card').first()
+  let card = rail.locator('.memo-floating-card').first()
+  let createdCard = false
+  if (await card.count() === 0) {
+    await rail.getByRole('button', { name: '添加卡片' }).click()
+    card = rail.locator('.memo-floating-card').first()
+    createdCard = true
+  }
   const toolbar = card.locator('.memo-floating-card-toolbar')
   const add = rail.locator('.memo-floating-bottom-add')
   await expect(card).toBeVisible()
@@ -126,4 +132,5 @@ test('memo card toolbar and add button remain contained and centered', async ({ 
   expect(toolbarBox!.x).toBeGreaterThanOrEqual(cardBox!.x)
   expect(toolbarBox!.x + toolbarBox!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width + 1)
   expect(Math.abs((addBox!.x + addBox!.width / 2) - (railBox!.x + railBox!.width / 2))).toBeLessThanOrEqual(2)
+  if (createdCard) await card.getByRole('button', { name: '删除卡片 1' }).click()
 })

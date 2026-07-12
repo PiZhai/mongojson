@@ -8,10 +8,11 @@ export type ToolModuleId =
   | 'memo-docs'
   | 'music'
   | 'watch-party'
+  | 'canvas'
 
 export type ToolModuleGroup = 'data' | 'documents' | 'media'
 
-export type ToolModuleIcon = 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'music' | 'watch'
+export type ToolModuleIcon = 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'music' | 'watch' | 'canvas'
 
 export type CapabilityId =
   | 'json.format'

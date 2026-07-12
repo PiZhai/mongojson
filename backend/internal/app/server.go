@@ -16,6 +16,7 @@ import (
 	"mongojson/backend/internal/httpapi"
 	"mongojson/backend/internal/platform/database"
 	"mongojson/backend/internal/platform/storage"
+	"mongojson/backend/internal/service/canvas"
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
@@ -51,6 +52,9 @@ func NewServer() (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "music-lyrics"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir music lyrics: %w", err)
 	}
+	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "canvas-assets"), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir canvas assets: %w", err)
+	}
 
 	db, err := database.Connect(context.Background(), cfg.DatabaseURL)
 	if err != nil {
@@ -66,6 +70,7 @@ func NewServer() (*Server, error) {
 	presetService := presets.NewService(db)
 	memoService := memo.NewService(db)
 	musicService := music.NewService(db, fileStore)
+	canvasService := canvas.NewService(db, fileStore)
 	watchSyncHub := watchsync.NewHub()
 
 	worker := jobs.NewWorker(jobService, cfg)
@@ -89,6 +94,7 @@ func NewServer() (*Server, error) {
 		JobService:    jobService,
 		MemoService:   memoService,
 		MusicService:  musicService,
+		CanvasService: canvasService,
 		PresetService: presetService,
 		WatchSync:     watchSyncHub,
 		Readiness:     readinessChecker(cfg, db, worker),
@@ -141,7 +147,7 @@ func checkStorage(root string) error {
 		return fmt.Errorf("storage dir is empty")
 	}
 
-	for _, dir := range []string{root, filepath.Join(root, "uploads"), filepath.Join(root, "outputs"), filepath.Join(root, "music"), filepath.Join(root, "music-lyrics")} {
+	for _, dir := range []string{root, filepath.Join(root, "uploads"), filepath.Join(root, "outputs"), filepath.Join(root, "music"), filepath.Join(root, "music-lyrics"), filepath.Join(root, "canvas-assets")} {
 		info, err := os.Stat(dir)
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", dir, err)

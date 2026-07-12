@@ -16,6 +16,7 @@
     "validate:breakpoints": "node scripts/validate-breakpoints.cjs"
   },
   "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
     "@monaco-editor/react": "^4.7.0",
     "@mongodb-js/shell-bson-parser": "^1.5.13",
     "@mongojson/vditor-core": "file:packages/vditor-core",
@@ -31,7 +32,9 @@
     "zod": "^4.4.3"
   },
   "overrides": {
-    "dompurify": "^3.4.11"
+    "dompurify": "^3.4.11",
+    "lodash-es": "^4.18.1",
+    "nanoid": "^5.1.16"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
