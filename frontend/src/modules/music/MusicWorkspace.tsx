@@ -1,145 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { MusicTrack, PlaybackMode } from './types'
+import type { MusicTrack } from './types'
 import type { ToolStatus } from '../../shared/ui/toolStatus'
 import { type WindowWithFilePicker } from './lib/storage'
-import { compactAudioQualityLabel, summarizeAudioQuality } from './lib/audioQuality'
+import { compactAudioQualityLabel } from './lib/audioQuality'
 import { StatusBanner } from '../../components/common/StatusBanner'
-import { useMusicPlayer } from './MusicPlayerProvider'
+import { useMusicPlayer } from './MusicPlayerContext'
 import { countMusicTrackCategories, filterMusicTracks, type MusicLibraryFilter } from './lib/catalog'
+import { MusicActionIcon } from './components/MusicActionIcon'
+import { NowPlayingPanel } from './components/NowPlayingPanel'
+import { TrackLibrary } from './components/TrackLibrary'
 
 const emptyForm = {
   title: '',
   artist: '',
   remoteUrl: '',
   note: '',
-}
-
-function ActionIcon({
-  name,
-}: {
-  name: 'play' | 'pause' | 'queue' | 'edit' | 'trash' | 'link' | 'folder' | 'close' | 'music' | 'clock' | 'plus' | 'refresh' | 'upload'
-}) {
-  if (name === 'play') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M8 5l11 7-11 7z" />
-      </svg>
-    )
-  }
-
-  if (name === 'pause') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M9 6v12" />
-        <path d="M15 6v12" />
-      </svg>
-    )
-  }
-
-  if (name === 'queue') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M5 7h10" />
-        <path d="M5 12h8" />
-        <path d="M5 17h6" />
-        <path d="M17 15v-4l3 2z" />
-      </svg>
-    )
-  }
-
-  if (name === 'edit') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M5 19h4l10-10-4-4L5 15z" />
-        <path d="M13 7l4 4" />
-      </svg>
-    )
-  }
-
-  if (name === 'trash') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M5 7h14" />
-        <path d="M9 7V5h6v2" />
-        <path d="M8 10v8" />
-        <path d="M12 10v8" />
-        <path d="M16 10v8" />
-      </svg>
-    )
-  }
-
-  if (name === 'folder') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M4 7h6l2 2h8v9H4z" />
-      </svg>
-    )
-  }
-
-  if (name === 'close') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M7 7l10 10" />
-        <path d="M17 7L7 17" />
-      </svg>
-    )
-  }
-
-  if (name === 'music') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M9 18V6l9-2v12" />
-        <circle cx="6.5" cy="18" r="2.5" />
-        <circle cx="15.5" cy="16" r="2.5" />
-      </svg>
-    )
-  }
-
-  if (name === 'clock') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 8v5l3 2" />
-      </svg>
-    )
-  }
-
-  if (name === 'plus') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M12 5v14" />
-        <path d="M5 12h14" />
-      </svg>
-    )
-  }
-
-  if (name === 'refresh') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M20 8a7 7 0 0 0-12-3l-2 2" />
-        <path d="M6 4v3h3" />
-        <path d="M4 16a7 7 0 0 0 12 3l2-2" />
-        <path d="M18 20v-3h-3" />
-      </svg>
-    )
-  }
-
-  if (name === 'upload') {
-    return (
-      <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-        <path d="M12 16V5" />
-        <path d="M8 9l4-4 4 4" />
-        <path d="M5 15v4h14v-4" />
-      </svg>
-    )
-  }
-
-  return (
-    <svg aria-hidden="true" className="music-action-icon" viewBox="0 0 24 24">
-      <path d="M10 13a5 5 0 0 0 7 0l1-1a5 5 0 0 0-7-7l-1 1" />
-      <path d="M14 11a5 5 0 0 0-7 0l-1 1a5 5 0 0 0 7 7l1-1" />
-    </svg>
-  )
 }
 
 function formatTrackDuration(value?: number) {
@@ -172,32 +47,8 @@ function describeTrackSource(track: MusicTrack) {
   }
 }
 
-function describeTrackLyric(track: MusicTrack) {
-  if (!track.lyricFileName) {
-    return '未匹配歌词'
-  }
-
-  return track.lyricRelativePath ? `歌词 · ${track.lyricRelativePath}` : `歌词 · ${track.lyricFileName}`
-}
-
 function describeTrackAudioQuality(track: MusicTrack) {
   return compactAudioQualityLabel(track.audioQuality) ?? '音质待识别'
-}
-
-function describeMode(mode: PlaybackMode) {
-  if (mode === 'repeat-all') {
-    return '列表循环'
-  }
-
-  if (mode === 'repeat-one') {
-    return '单曲循环'
-  }
-
-  if (mode === 'shuffle') {
-    return '随机播放'
-  }
-
-  return '顺序播放'
 }
 
 function formatScanTime(value?: string) {
@@ -224,24 +75,28 @@ function validateRemoteUrl(value: string) {
 
 export function MusicWorkspace() {
   const {
+    addTrackToPlaylist,
     addLocalFileHandles,
     addLocalFiles,
     addRemoteTrack,
     currentLyricIndex,
-    currentLyricLine,
     currentTrack,
     currentTrackId,
+    createPlaylist,
+    deletePlaylist,
     enqueueTrack,
     folders,
+    favoriteTrackIds,
     isPlaying,
     lyricStatusMessage,
     lyrics,
-    mode,
     openQueue,
+    playlists,
     persistentLocalFilesSupported,
     persistentMusicFoldersSupported,
     playTrack,
     queue,
+    recentTrackIds,
     removeLocalFolder,
     removeTrack,
     removeRemoteTrack,
@@ -249,6 +104,7 @@ export function MusicWorkspace() {
     scanLocalDirectory,
     statusMessage,
     togglePlay,
+    toggleFavorite,
     tracks,
     remoteTracksHasMore,
     remoteTracksLoading,
@@ -263,29 +119,113 @@ export function MusicWorkspace() {
   const [folderScanInProgress, setFolderScanInProgress] = useState(false)
   const [rescanningFolderId, setRescanningFolderId] = useState<string | null>(null)
   const [deletingTrackId, setDeletingTrackId] = useState<string | null>(null)
-  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null)
   const [sourceDrawerOpen, setSourceDrawerOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, setSortBy] = useState<'recent' | 'title' | 'artist'>('recent')
+  const [collectionId, setCollectionId] = useState('all')
+  const [playlistDialogOpen, setPlaylistDialogOpen] = useState(false)
+  const [playlistName, setPlaylistName] = useState('')
   const [status, setStatus] = useState<ToolStatus>({
     kind: 'idle',
     message: '添加云端音频 URL 或选择本地音乐文件。',
   })
   const fallbackFileInputRef = useRef<HTMLInputElement | null>(null)
   const remoteListSentinelRef = useRef<HTMLDivElement | null>(null)
+  const addMusicButtonRef = useRef<HTMLButtonElement | null>(null)
+  const sourceDrawerRef = useRef<HTMLElement | null>(null)
+  const sourceTitleInputRef = useRef<HTMLInputElement | null>(null)
+  const playlistButtonRef = useRef<HTMLButtonElement | null>(null)
+  const playlistDialogRef = useRef<HTMLElement | null>(null)
+
+  const closePlaylistDialog = () => {
+    setPlaylistDialogOpen(false)
+    window.requestAnimationFrame(() => playlistButtonRef.current?.focus())
+  }
+
+  const closeSourceDrawer = () => {
+    setSourceDrawerOpen(false)
+    window.requestAnimationFrame(() => addMusicButtonRef.current?.focus())
+  }
+
+  useEffect(() => {
+    if (!sourceDrawerOpen) return
+    sourceTitleInputRef.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeSourceDrawer()
+      if (event.key === 'Tab' && sourceDrawerRef.current) {
+        const focusable = Array.from(sourceDrawerRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'))
+        const first = focusable[0]
+        const last = focusable.at(-1)
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault()
+          last?.focus()
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault()
+          first?.focus()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [sourceDrawerOpen])
+
+  useEffect(() => {
+    if (!playlistDialogOpen) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closePlaylistDialog()
+        return
+      }
+      if (event.key === 'Tab' && playlistDialogRef.current) {
+        const focusable = Array.from(playlistDialogRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'))
+        const first = focusable[0]
+        const last = focusable.at(-1)
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault()
+          last?.focus()
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault()
+          first?.focus()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [playlistDialogOpen])
 
   const editingTrack = useMemo(
     () => tracks.find((track) => track.id === editingTrackId) ?? null,
     [editingTrackId, tracks],
   )
+  const favoriteTrackIdSet = useMemo(() => new Set(favoriteTrackIds), [favoriteTrackIds])
 
-  const visibleTracks = useMemo(() => filterMusicTracks(tracks, filter), [filter, tracks])
+  const visibleTracks = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase()
+    const sourceFiltered = filterMusicTracks(tracks, filter)
+    const collectionFiltered = collectionId === 'favorites'
+      ? sourceFiltered.filter((track) => favoriteTrackIds.includes(track.id))
+      : collectionId === 'recent'
+        ? sourceFiltered.filter((track) => recentTrackIds.includes(track.id))
+        : collectionId.startsWith('playlist:')
+          ? sourceFiltered.filter((track) => playlists.find((playlist) => `playlist:${playlist.id}` === collectionId)?.trackIds.includes(track.id))
+          : sourceFiltered
+    const filtered = collectionFiltered.filter((track) => {
+      if (!query) return true
+      return [track.title, track.artist, track.fileName, track.note]
+        .filter(Boolean)
+        .some((value) => value!.toLocaleLowerCase().includes(query))
+    })
+
+    return [...filtered].sort((left, right) => {
+      if (collectionId === 'recent' && sortBy === 'recent') return recentTrackIds.indexOf(left.id) - recentTrackIds.indexOf(right.id)
+      if (sortBy === 'title') return left.title.localeCompare(right.title, 'zh-CN')
+      if (sortBy === 'artist') return (left.artist || '').localeCompare(right.artist || '', 'zh-CN')
+      return new Date(right.addedAt).getTime() - new Date(left.addedAt).getTime()
+    })
+  }, [collectionId, favoriteTrackIds, filter, playlists, recentTrackIds, searchQuery, sortBy, tracks])
 
   const sourceCounts = useMemo(() => countMusicTrackCategories(tracks), [tracks])
-  const effectiveSelectedTrackId = selectedTrackId && tracks.some((track) => track.id === selectedTrackId)
-    ? selectedTrackId
-    : null
-
   const playOrToggleTrack = (track: MusicTrack) => {
-    setSelectedTrackId(track.id)
     if (currentTrackId === track.id) {
       togglePlay()
       return
@@ -334,20 +274,6 @@ export function MusicWorkspace() {
     }
   }
 
-  const lyricPreview = useMemo(() => {
-    if (lyrics.length === 0) {
-      return []
-    }
-
-    const activeIndex = currentLyricIndex >= 0 ? currentLyricIndex : 0
-    const start = Math.max(0, activeIndex - 3)
-    const end = Math.min(lyrics.length, activeIndex + 4)
-    return lyrics.slice(start, end).map((line, offset) => ({
-      line,
-      index: start + offset,
-    }))
-  }, [currentLyricIndex, lyrics])
-
   const resetForm = () => {
     setForm(emptyForm)
     setEditingTrackId(null)
@@ -385,7 +311,7 @@ export function MusicWorkspace() {
     }
 
     resetForm()
-    setSourceDrawerOpen(false)
+    closeSourceDrawer()
   }
 
   const startEditTrack = (track: MusicTrack) => {
@@ -505,399 +431,250 @@ export function MusicWorkspace() {
   }
 
   return (
-    <div className="page-shell music-page-shell layout-frame" data-layout-region="music-workspace">
-      <div className="music-workbench layout-min-grid" data-layout-region="music-grid">
-        <aside className="music-sidebar layout-cell" aria-label="音乐工作台侧栏" data-layout-region="music-sidebar">
-          <section className="music-sidebar-card music-source-card">
-            <div className="music-section-heading">
+    <div className="page-shell music-page-shell" data-layout-region="music-workspace">
+      <section className="music-page-intro" aria-labelledby="music-library-title">
+        <div>
+          <p className="music-overline">Personal listening space</p>
+          <h2 id="music-library-title">我的音乐</h2>
+          <p>整理本地与云端音乐，在一个安静、持续的空间里播放。</p>
+        </div>
+        <div className="music-page-actions">
+          <button className="button" onClick={chooseLocalFiles} type="button">
+            <MusicActionIcon name="folder" />
+            本地文件
+          </button>
+          <button className="button button-primary" onClick={() => setSourceDrawerOpen(true)} ref={addMusicButtonRef} type="button">
+            <MusicActionIcon name="plus" />
+            添加音乐
+          </button>
+        </div>
+      </section>
+
+      <div className="music-workbench">
+        <section className="music-library-panel" aria-label="音乐曲库">
+          <div className="music-library-toolbar">
+            <label className="music-search-field">
+              <span className="sr-only">搜索音乐</span>
+              <MusicActionIcon name="search" />
+              <input
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="搜索歌曲、歌手或文件名"
+                type="search"
+                value={searchQuery}
+              />
+            </label>
+
+            <div className="music-filter-tabs" aria-label="曲库来源筛选">
+              {[
+                { id: 'all', label: '全部', count: sourceCounts.all },
+                { id: 'remote', label: '云端', count: sourceCounts.remote },
+                { id: 'local', label: '本地', count: sourceCounts.local },
+                { id: 'url', label: 'URL', count: sourceCounts.url },
+              ].map((item) => (
+                <button
+                  aria-pressed={filter === item.id}
+                  className={filter === item.id ? 'is-active' : ''}
+                  key={item.id}
+                  onClick={() => setFilter(item.id as MusicLibraryFilter)}
+                  type="button"
+                >
+                  {item.label}<span>{item.count}</span>
+                </button>
+              ))}
+            </div>
+
+            <label className="music-sort-field">
+              <span className="sr-only">排序方式</span>
+              <select onChange={(event) => setSortBy(event.target.value as typeof sortBy)} value={sortBy}>
+                <option value="recent">最近添加</option>
+                <option value="title">按歌名</option>
+                <option value="artist">按歌手</option>
+              </select>
+              <MusicActionIcon name="chevron-down" />
+            </label>
+          </div>
+
+          <div className="music-collection-bar" aria-label="音乐集合">
+            <button className={collectionId === 'all' ? 'is-active' : ''} onClick={() => setCollectionId('all')} type="button">全部歌曲</button>
+            <button className={collectionId === 'favorites' ? 'is-active' : ''} onClick={() => setCollectionId('favorites')} type="button">我喜欢 <span>{favoriteTrackIds.length}</span></button>
+            <button className={collectionId === 'recent' ? 'is-active' : ''} onClick={() => setCollectionId('recent')} type="button">最近播放</button>
+            {playlists.map((playlist) => (
+              <button className={collectionId === `playlist:${playlist.id}` ? 'is-active' : ''} key={playlist.id} onClick={() => setCollectionId(`playlist:${playlist.id}`)} type="button">{playlist.name} <span>{playlist.trackIds.length}</span></button>
+            ))}
+            <button className="music-new-playlist-button" onClick={() => setPlaylistDialogOpen(true)} ref={playlistButtonRef} type="button"><MusicActionIcon name="plus" /> 新建歌单</button>
+          </div>
+
+          <div className="music-library-heading">
+            <div>
+              <h3>歌曲</h3>
+              <p>{visibleTracks.length === sourceCounts.all ? `共 ${sourceCounts.all} 首` : `显示 ${visibleTracks.length} / ${sourceCounts.all} 首`}</p>
+            </div>
+            <button className="music-text-action" onClick={openQueue} type="button">
+              播放队列 · {queue.length}
+            </button>
+          </div>
+
+          <div className="music-track-columns" aria-hidden="true">
+            <span>歌曲</span><span>来源</span><span>音质</span><span>时长</span><span>操作</span>
+          </div>
+
+          <TrackLibrary
+            currentTrackId={currentTrackId}
+            deletingTrackId={deletingTrackId}
+            describeAudioQuality={describeTrackAudioQuality}
+            describeSource={describeTrackSource}
+            formatDuration={formatTrackDuration}
+            favoriteTrackIds={favoriteTrackIdSet}
+            isPlaying={isPlaying}
+            onDelete={(track) => {
+              if (track.remoteId) void deleteRemoteTrack(track)
+              else removeTrack(track.id)
+            }}
+            onAddToPlaylist={(track, playlistId) => addTrackToPlaylist(track.id, playlistId)}
+            onEdit={startEditTrack}
+            onEnqueue={(track) => enqueueTrack(track.id)}
+            onPlay={playOrToggleTrack}
+            onToggleFavorite={(track) => toggleFavorite(track.id)}
+            onUpload={(track) => void uploadTrack(track)}
+            tracks={visibleTracks}
+            playlists={playlists}
+            uploadingTrackIds={uploadingTrackIds}
+          />
+
+          <div className="music-remote-list-sentinel" ref={remoteListSentinelRef}>
+            {remoteTracksLoading ? '正在加载云端歌曲…' : remoteTracksHasMore ? '继续下滑加载云端歌曲' : sourceCounts.remote > 0 ? '云端歌曲已全部加载' : ''}
+          </div>
+        </section>
+
+        <NowPlayingPanel
+          currentLyricIndex={currentLyricIndex}
+          currentTrack={currentTrack}
+          lyricStatusMessage={lyricStatusMessage}
+          lyrics={lyrics}
+          onOpenQueue={openQueue}
+        />
+      </div>
+
+      <input
+        accept="audio/*,.mp3,.flac,.wav,.ogg,.m4a,.aac,.opus,.webm,.lrc"
+        hidden
+        multiple
+        onChange={(event) => void handleFallbackFiles(event.target.files)}
+        ref={fallbackFileInputRef}
+        type="file"
+      />
+
+      {sourceDrawerOpen ? (
+        <div className="music-source-layer">
+          <button className="music-source-scrim" onClick={closeSourceDrawer} type="button" aria-label="关闭添加音乐面板" />
+          <aside aria-label="添加音乐" aria-modal="true" className="music-source-drawer" ref={sourceDrawerRef} role="dialog">
+            <header className="music-source-drawer-header">
               <div>
-                <p className="music-section-eyebrow">Source</p>
-                <h2>音乐来源</h2>
+                <p className="music-overline">Add to library</p>
+                <h2>{editingTrack ? '编辑音乐信息' : '添加音乐'}</h2>
               </div>
-              <button
-                aria-expanded={sourceDrawerOpen}
-                className="music-icon-action"
-                onClick={() => setSourceDrawerOpen((value) => !value)}
-                type="button"
-                aria-label={sourceDrawerOpen ? '收起来源抽屉' : '展开来源抽屉'}
-              >
-                <ActionIcon name={sourceDrawerOpen ? 'close' : 'plus'} />
+              <button className="music-icon-action" onClick={closeSourceDrawer} type="button" aria-label="关闭">
+                <MusicActionIcon name="close" />
+              </button>
+            </header>
+
+            <div className="music-source-quick-actions">
+              <button className="music-source-option" onClick={chooseLocalFiles} type="button">
+                <span><MusicActionIcon name="music" /></span>
+                <strong>选择本地文件</strong>
+                <small>支持 MP3、FLAC、WAV、M4A、OGG 和 LRC</small>
+              </button>
+              <button className="music-source-option" disabled={folderScanInProgress} onClick={chooseMusicFolder} type="button">
+                <span><MusicActionIcon name="folder" /></span>
+                <strong>{folderScanInProgress ? '正在扫描…' : '扫描音乐文件夹'}</strong>
+                <small>递归扫描音频，并自动匹配同名歌词</small>
               </button>
             </div>
 
-            <div className="music-source-actions">
-              <button className="button button-primary music-wide-action" onClick={() => setSourceDrawerOpen(true)} type="button">
-                <ActionIcon name="link" />
-                添加 URL
-              </button>
-              <button className="button music-wide-action" onClick={chooseLocalFiles} type="button">
-                <ActionIcon name="folder" />
-                本地文件
-              </button>
-              <button className="button music-wide-action" disabled={folderScanInProgress} onClick={chooseMusicFolder} type="button">
-                <ActionIcon name="folder" />
-                {folderScanInProgress ? '扫描中' : '扫描文件夹'}
-              </button>
+            <div className="music-source-divider"><span>或者添加 URL</span></div>
+
+            <div className="music-source-form">
+              <label className="field-label">
+                标题
+                <input className="field-input" onChange={(event) => setForm((value) => ({ ...value, title: event.target.value }))} placeholder="歌曲标题" ref={sourceTitleInputRef} type="text" value={form.title} />
+              </label>
+              <label className="field-label">
+                歌手
+                <input className="field-input" onChange={(event) => setForm((value) => ({ ...value, artist: event.target.value }))} placeholder="可选" type="text" value={form.artist} />
+              </label>
+              {editingTrack?.source === 'local' ? null : (
+                <label className="field-label">
+                  音频 URL
+                  <input className="field-input" onChange={(event) => setForm((value) => ({ ...value, remoteUrl: event.target.value }))} placeholder="https://example.com/song.mp3" type="url" value={form.remoteUrl} />
+                </label>
+              )}
+              <label className="field-label">
+                备注
+                <input className="field-input" onChange={(event) => setForm((value) => ({ ...value, note: event.target.value }))} placeholder="可选" type="text" value={form.note} />
+              </label>
+              <div className="music-source-submit-row">
+                <button className="button button-primary" onClick={submitRemoteTrack} type="button">{editingTrack ? '保存信息' : '添加到曲库'}</button>
+                {editingTrack ? <button className="button button-ghost" onClick={resetForm} type="button">取消编辑</button> : null}
+              </div>
             </div>
 
-            {sourceDrawerOpen ? (
-              <div className="music-source-drawer">
-                <label className="field-label">
-                  标题
-                  <input
-                    className="field-input"
-                    onChange={(event) => setForm((value) => ({ ...value, title: event.target.value }))}
-                    placeholder="例如：Demo Track"
-                    type="text"
-                    value={form.title}
-                  />
-                </label>
-                <label className="field-label">
-                  歌手
-                  <input
-                    className="field-input"
-                    onChange={(event) => setForm((value) => ({ ...value, artist: event.target.value }))}
-                    placeholder="可选"
-                    type="text"
-                    value={form.artist}
-                  />
-                </label>
-                {editingTrack?.source === 'local' ? null : (
-                  <label className="field-label">
-                    音频 URL
-                    <input
-                      className="field-input"
-                      onChange={(event) => setForm((value) => ({ ...value, remoteUrl: event.target.value }))}
-                      placeholder="https://example.com/music/song.mp3"
-                      type="url"
-                      value={form.remoteUrl}
-                    />
-                  </label>
-                )}
-                <label className="field-label">
-                  备注
-                  <input
-                    className="field-input"
-                    onChange={(event) => setForm((value) => ({ ...value, note: event.target.value }))}
-                    placeholder="可选"
-                    type="text"
-                    value={form.note}
-                  />
-                </label>
-                <div className="music-source-submit-row">
-                  <button className="button button-primary" onClick={submitRemoteTrack} type="button">
-                    {editingTrack ? '保存信息' : '添加 URL'}
-                  </button>
-                  {editingTrack ? (
-                    <button className="button button-ghost" onClick={resetForm} type="button">
-                      取消编辑
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            <input
-              accept="audio/*,.mp3,.flac,.wav,.ogg,.m4a,.aac,.opus,.webm,.lrc"
-              hidden
-              multiple
-              onChange={(event) => void handleFallbackFiles(event.target.files)}
-              ref={fallbackFileInputRef}
-              type="file"
-            />
             <StatusBanner
-              right={
-                persistentLocalFilesSupported
-                  ? persistentMusicFoldersSupported
-                    ? '文件/文件夹可恢复'
-                    : '文件可恢复'
-                  : '仅当前会话'
-              }
+              right={persistentLocalFilesSupported ? persistentMusicFoldersSupported ? '文件与文件夹可恢复' : '文件可恢复' : '仅当前会话'}
               status={statusMessage ? { kind: 'warning', message: statusMessage } : status}
             />
-            <div className="music-folder-panel">
-              <div className="music-folder-panel-header">
-                <span>已指定文件夹</span>
-                <strong>{folders.length}</strong>
-              </div>
-              {folders.length === 0 ? (
-                <p className="music-folder-empty">选择文件夹后会自动递归扫描音频文件，并匹配同名 .lrc 歌词。</p>
-              ) : (
+
+            <section className="music-folder-panel">
+              <div className="music-folder-panel-header"><span>已跟踪文件夹</span><strong>{folders.length}</strong></div>
+              {folders.length === 0 ? <p className="music-folder-empty">还没有跟踪文件夹。</p> : (
                 <div className="music-folder-list">
                   {folders.map((folder) => (
                     <article className="music-folder-item" key={folder.id}>
-                      <div className="music-folder-copy">
-                        <strong>{folder.name}</strong>
-                        <span>
-                          {folder.trackCount ?? 0} 首 · {formatScanTime(folder.lastScannedAt)}
-                        </span>
-                      </div>
+                      <div className="music-folder-copy"><strong>{folder.name}</strong><span>{folder.trackCount ?? 0} 首 · {formatScanTime(folder.lastScannedAt)}</span></div>
                       <div className="music-folder-actions">
-                        <button
-                          aria-label={`重新扫描 ${folder.name}`}
-                          className="music-icon-action"
-                          disabled={rescanningFolderId === folder.id}
-                          onClick={() => void rescanFolder(folder.id)}
-                          title="重新扫描"
-                          type="button"
-                        >
-                          <ActionIcon name="refresh" />
-                        </button>
-                        <button
-                          aria-label={`停止跟踪 ${folder.name}`}
-                          className="music-icon-action music-icon-action-danger"
-                          onClick={() => removeLocalFolder(folder.id)}
-                          title="停止跟踪"
-                          type="button"
-                        >
-                          <ActionIcon name="trash" />
-                        </button>
+                        <button aria-label={`重新扫描 ${folder.name}`} className="music-icon-action" disabled={rescanningFolderId === folder.id} onClick={() => void rescanFolder(folder.id)} type="button"><MusicActionIcon name="refresh" /></button>
+                        <button aria-label={`停止跟踪 ${folder.name}`} className="music-icon-action music-icon-action-danger" onClick={() => removeLocalFolder(folder.id)} type="button"><MusicActionIcon name="trash" /></button>
                       </div>
                     </article>
                   ))}
                 </div>
               )}
-            </div>
-          </section>
+            </section>
+          </aside>
+        </div>
+      ) : null}
 
-          <section className="music-sidebar-card">
-            <div className="music-section-heading">
-              <div>
-                <p className="music-section-eyebrow">Filter</p>
-                <h2>曲库筛选</h2>
+      {playlistDialogOpen ? (
+        <div className="music-source-layer music-playlist-dialog-layer">
+          <button className="music-source-scrim" onClick={closePlaylistDialog} type="button" aria-label="关闭歌单管理" />
+          <section aria-label="管理歌单" aria-modal="true" className="music-playlist-dialog" ref={playlistDialogRef} role="dialog">
+            <header className="music-source-drawer-header">
+              <div><p className="music-overline">Playlists</p><h2>管理歌单</h2></div>
+              <button className="music-icon-action" onClick={closePlaylistDialog} type="button" aria-label="关闭"><MusicActionIcon name="close" /></button>
+            </header>
+            <form className="music-playlist-create" onSubmit={(event) => {
+              event.preventDefault()
+              if (!playlistName.trim()) return
+              const id = createPlaylist(playlistName)
+              setCollectionId(`playlist:${id}`)
+              setPlaylistName('')
+              closePlaylistDialog()
+            }}>
+              <label className="field-label">歌单名称<input autoFocus className="field-input" onChange={(event) => setPlaylistName(event.target.value)} placeholder="例如：深夜循环" value={playlistName} /></label>
+              <button className="button button-primary" disabled={!playlistName.trim()} type="submit">创建歌单</button>
+            </form>
+            {playlists.length > 0 ? (
+              <div className="music-playlist-list">
+                {playlists.map((playlist) => (
+                  <div className="music-playlist-item" key={playlist.id}>
+                    <button onClick={() => { setCollectionId(`playlist:${playlist.id}`); closePlaylistDialog() }} type="button"><strong>{playlist.name}</strong><span>{playlist.trackIds.length} 首</span></button>
+                    <button className="music-icon-action music-icon-action-danger" onClick={() => { deletePlaylist(playlist.id); if (collectionId === `playlist:${playlist.id}`) setCollectionId('all') }} type="button" aria-label={`删除歌单 ${playlist.name}`}><MusicActionIcon name="trash" /></button>
+                  </div>
+                ))}
               </div>
-            </div>
-            <div className="music-filter-grid">
-              {[
-                { id: 'all', label: '全部', count: sourceCounts.all },
-                { id: 'remote', label: '远程', count: sourceCounts.remote },
-                { id: 'local', label: '本地', count: sourceCounts.local },
-                { id: 'url', label: 'URL', count: sourceCounts.url },
-              ].map((item) => (
-                <button
-                  className={`music-filter-card${filter === item.id ? ' music-filter-card-active' : ''}`}
-                  key={item.id}
-                  onClick={() => setFilter(item.id as MusicLibraryFilter)}
-                  type="button"
-                >
-                  <span>{item.label}</span>
-                  <strong>{item.count}</strong>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="music-sidebar-card music-current-summary">
-            <div className="music-section-heading">
-              <div>
-                <p className="music-section-eyebrow">Now</p>
-                <h2>当前播放</h2>
-              </div>
-            </div>
-            <div className="music-current-plate">
-              <span className="music-current-art" aria-hidden="true">
-                <ActionIcon name="music" />
-              </span>
-              <div className="music-current-copy">
-                <strong>{currentTrack?.title ?? '未选择音乐'}</strong>
-                <span>{currentTrack?.artist || currentTrack?.fileName || currentTrack?.remoteUrl || '从曲库选择一首歌开始播放'}</span>
-                {currentTrack?.audioQuality ? <span>{summarizeAudioQuality(currentTrack.audioQuality)}</span> : null}
-              </div>
-            </div>
-            <div className="music-sidebar-stats">
-              <span>{isPlaying ? '播放中' : '已暂停'}</span>
-              <span>{describeMode(mode)}</span>
-              <button className="music-inline-link" onClick={openQueue} type="button">
-                队列 {queue.length}
-              </button>
-            </div>
-          </section>
-
-        </aside>
-
-        <div className="music-main-column layout-cell" data-layout-region="music-main">
-          <section className="music-lyrics-stage">
-            <div className="music-lyrics-stage-header">
-              <div>
-                <p className="music-section-eyebrow">Lyrics</p>
-                <h2>同步歌词</h2>
-              </div>
-              <span className="music-lyrics-stage-meta">
-                {currentTrack?.lyricFileName ?? '未匹配 .lrc'}
-              </span>
-            </div>
-            {!currentTrack ? (
-              <div className="music-lyrics-empty music-lyrics-empty-large">选择一首音乐后显示歌词。</div>
-            ) : lyricStatusMessage ? (
-              <div className="music-lyrics-empty music-lyrics-empty-large">{lyricStatusMessage}</div>
-            ) : lyrics.length === 0 ? (
-              <div className="music-lyrics-empty music-lyrics-empty-large">
-                {currentTrack.lyricFileName ? '歌词文件暂无可识别时间轴。' : '未匹配同名 .lrc 歌词。'}
-              </div>
-            ) : (
-              <div className="music-lyrics-panel" aria-live="polite">
-                <div className="music-lyrics-lines">
-                  {lyricPreview.map(({ line, index }) => (
-                    <p
-                      className={`music-lyric-line${index === currentLyricIndex ? ' music-lyric-line-active' : ''}`}
-                      key={`${line.time}-${index}`}
-                    >
-                      {line.text}
-                    </p>
-                  ))}
-                </div>
-                <span className="music-lyrics-meta">
-                  {currentLyricLine ? '当前歌词' : '等待歌词开始'} · {currentTrack.title}
-                </span>
-              </div>
-            )}
-          </section>
-
-          <section className="music-library-panel">
-          <div className="music-library-header">
-            <div>
-              <p className="music-section-eyebrow">Library</p>
-              <h2>音乐列表</h2>
-            </div>
-            <div className="music-library-summary">
-              <span>共 {sourceCounts.all} 首</span>
-              <span>{currentTrack ? `当前：${currentTrack.title}` : '未播放'}</span>
-            </div>
-          </div>
-
-          {visibleTracks.length === 0 ? (
-            <div className="inline-empty-state">
-              <p className="inline-empty-state-title">暂无音乐</p>
-              <p className="inline-empty-state-text">添加云端 URL 或选择本地文件后会显示在这里。</p>
-            </div>
-          ) : (
-            <div aria-label="音乐列表" className="music-media-grid" role="listbox">
-              {visibleTracks.map((track) => {
-                const isSelected = effectiveSelectedTrackId === track.id
-                const isPlayingTrack = isPlaying && currentTrackId === track.id
-                const isPlayable = track.fileAvailable !== false
-                return (
-                  <article
-                    aria-selected={isSelected}
-                    className={`music-track-card${isSelected ? ' music-track-card-selected' : ''}${isPlayingTrack ? ' music-track-card-playing' : ''}`}
-                    key={track.id}
-                    onClick={() => setSelectedTrackId(track.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        setSelectedTrackId(track.id)
-                      }
-                    }}
-                    role="option"
-                    tabIndex={0}
-                  >
-                    <div className="music-track-card-main">
-                      <span className={`music-track-art music-source-${track.source}`} aria-hidden="true">
-                        <ActionIcon name={isPlayingTrack ? 'pause' : track.source === 'remote' ? 'link' : 'folder'} />
-                      </span>
-                      <div className="music-track-copy">
-                        <div className="music-track-title-row">
-                          <h3>{track.title}</h3>
-                          <span className="music-track-state-pills">
-                            {isSelected ? <span className="music-selected-pill">已选中</span> : null}
-                            {isPlayingTrack ? <span className="music-playing-pill">播放中</span> : null}
-                          </span>
-                        </div>
-                        <p>{track.artist || track.note || describeTrackSource(track)}</p>
-                      </div>
-                    </div>
-
-                    <div className="music-track-card-meta">
-                      <span className={`music-source-pill music-source-${track.source}`}>
-                        {track.source === 'local' ? '本地' : track.remoteId ? '远程' : 'URL'}
-                      </span>
-                      <span className="music-meta-chip">
-                        <ActionIcon name="clock" />
-                        {formatTrackDuration(track.duration)}
-                      </span>
-                      <span className="music-meta-chip">{describeTrackAudioQuality(track)}</span>
-                      {track.recordIssue ? <span className="music-record-issue-pill">{track.recordIssue}</span> : null}
-                      <span className="music-track-source-text">{describeTrackSource(track)}</span>
-                      {track.lyricFileName ? <span className="music-track-source-text">{describeTrackLyric(track)}</span> : null}
-                    </div>
-
-                    <div className="music-track-actions">
-                      <button
-                        aria-label={`${isPlayable ? isPlayingTrack ? '暂停' : currentTrackId === track.id ? '继续播放' : '播放' : '无法播放'} ${track.title}`}
-                        className={`music-icon-action${isPlayingTrack ? ' music-icon-action-primary' : ''}`}
-                        disabled={!isPlayable}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          playOrToggleTrack(track)
-                        }}
-                        title={isPlayable ? isPlayingTrack ? '暂停' : currentTrackId === track.id ? '继续播放' : '播放' : track.recordIssue}
-                        type="button"
-                      >
-                        <ActionIcon name={isPlayingTrack ? 'pause' : 'play'} />
-                      </button>
-                      {track.source === 'local' ? (
-                        <button
-                          aria-label={`上传 ${track.title} 到远程曲库`}
-                          className="music-icon-action"
-                          disabled={uploadingTrackIds.has(track.id)}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            void uploadTrack(track)
-                          }}
-                          title={uploadingTrackIds.has(track.id) ? '上传中' : '上传到远程曲库'}
-                          type="button"
-                        >
-                          <ActionIcon name="upload" />
-                        </button>
-                      ) : null}
-                      <button
-                        aria-label={`加入队列 ${track.title}`}
-                        className="music-icon-action"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          enqueueTrack(track.id)
-                        }}
-                        type="button"
-                      >
-                        <ActionIcon name="queue" />
-                      </button>
-                      {!track.remoteId ? <button
-                        aria-label={`编辑 ${track.title}`}
-                        className="music-icon-action"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          startEditTrack(track)
-                        }}
-                        type="button"
-                      >
-                        <ActionIcon name="edit" />
-                      </button> : null}
-                      <button
-                        aria-label={`删除 ${track.title}`}
-                        className="music-icon-action music-icon-action-danger"
-                        disabled={deletingTrackId === track.id}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          if (track.remoteId) void deleteRemoteTrack(track)
-                          else removeTrack(track.id)
-                        }}
-                        title={deletingTrackId === track.id ? '删除中' : track.remoteId ? '从远程曲库删除' : '删除'}
-                        type="button"
-                      >
-                        <ActionIcon name="trash" />
-                      </button>
-                    </div>
-                  </article>
-                )
-              })}
-            </div>
-          )}
-          <div className="music-remote-list-sentinel" ref={remoteListSentinelRef}>
-            {remoteTracksLoading ? '正在加载远程歌曲...' : remoteTracksHasMore ? '继续下滑加载远程歌曲' : '远程歌曲已全部加载'}
-          </div>
+            ) : null}
           </section>
         </div>
-      </div>
+      ) : null}
     </div>
   )
 }

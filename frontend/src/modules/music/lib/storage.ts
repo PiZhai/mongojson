@@ -42,6 +42,9 @@ export const defaultMusicLibraryState: MusicLibraryState = {
   tracks: [],
   folders: [],
   queue: [],
+  favoriteTrackIds: [],
+  recentTrackIds: [],
+  playlists: [],
   volume: 0.82,
   mode: 'order',
 }
@@ -67,6 +70,16 @@ export function loadMusicLibraryState(): MusicLibraryState {
     const trackIds = new Set(tracks.map((track) => track.id))
     const queue = Array.isArray(parsed.queue) ? parsed.queue.filter((id) => trackIds.has(id)) : tracks.map((track) => track.id)
     const currentTrackId = parsed.currentTrackId && trackIds.has(parsed.currentTrackId) ? parsed.currentTrackId : undefined
+    const favoriteTrackIds = Array.isArray(parsed.favoriteTrackIds) ? parsed.favoriteTrackIds.filter((id): id is string => typeof id === 'string') : []
+    const recentTrackIds = Array.isArray(parsed.recentTrackIds) ? parsed.recentTrackIds.filter((id): id is string => typeof id === 'string').slice(0, 50) : []
+    const playlists = Array.isArray(parsed.playlists)
+      ? parsed.playlists.filter((playlist) => playlist && typeof playlist.id === 'string' && typeof playlist.name === 'string').map((playlist) => ({
+          id: playlist.id,
+          name: playlist.name,
+          createdAt: playlist.createdAt || new Date().toISOString(),
+          trackIds: Array.isArray(playlist.trackIds) ? playlist.trackIds.filter((id): id is string => typeof id === 'string') : [],
+        }))
+      : []
     const mode =
       parsed.mode === 'repeat-one' || parsed.mode === 'repeat-all' || parsed.mode === 'shuffle' || parsed.mode === 'order'
         ? parsed.mode
@@ -76,6 +89,9 @@ export function loadMusicLibraryState(): MusicLibraryState {
       tracks,
       folders,
       queue,
+      favoriteTrackIds,
+      recentTrackIds,
+      playlists,
       currentTrackId,
       volume: normalizeVolume(parsed.volume),
       mode,

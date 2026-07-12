@@ -49,10 +49,20 @@ export type MusicLibraryFolder = {
   trackCount?: number
 }
 
+export type MusicPlaylist = {
+  id: string
+  name: string
+  trackIds: string[]
+  createdAt: string
+}
+
 export type MusicLibraryState = {
   tracks: MusicTrack[]
   folders: MusicLibraryFolder[]
   queue: string[]
+  favoriteTrackIds: string[]
+  recentTrackIds: string[]
+  playlists: MusicPlaylist[]
   currentTrackId?: string
   volume: number
   mode: PlaybackMode

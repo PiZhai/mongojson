@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { moduleRegistry } from '../../app/modules/registry'
 import { ShellExtensionSlot } from '../../app/modules/runtime'
@@ -128,6 +128,10 @@ export function AppShell() {
       return false
     }
 
+    if (window.matchMedia('(max-width: 768px)').matches) {
+      return true
+    }
+
     return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'
   })
 
@@ -135,6 +139,16 @@ export function AppShell() {
     () => pageMeta.get(location.pathname) ?? { title: 'Personal Tooling' },
     [location.pathname],
   )
+
+  useEffect(() => {
+    const mobileViewport = window.matchMedia('(max-width: 768px)')
+    const collapseForMobile = () => {
+      if (mobileViewport.matches) setSidebarCollapsed(true)
+    }
+    collapseForMobile()
+    mobileViewport.addEventListener('change', collapseForMobile)
+    return () => mobileViewport.removeEventListener('change', collapseForMobile)
+  }, [])
 
   const toggleSidebar = () => {
     setSidebarCollapsed((value) => {
@@ -187,6 +201,9 @@ export function AppShell() {
                     className={({ isActive }) => `nav-link${isActive ? ' nav-link-active' : ''}`}
                     data-nav-title={item.navigation.label}
                     key={item.id}
+                    onClick={() => {
+                      if (window.matchMedia('(max-width: 768px)').matches) setSidebarCollapsed(true)
+                    }}
                     to={item.route.path}
                   >
                     <span className="nav-icon" aria-hidden="true">

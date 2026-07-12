@@ -324,6 +324,7 @@
 
   .app-sidebar {
     min-height: auto;
+    padding: 12px 14px;
     border-right: none;
     border-bottom: 1px solid var(--border);
     overflow: visible;
@@ -331,6 +332,14 @@
 
   .app-shell[data-sidebar='collapsed'] .app-sidebar {
     padding-inline: 14px;
+  }
+
+  .app-shell[data-sidebar='collapsed'] .app-sidebar .nav-group {
+    display: none;
+  }
+
+  .app-shell[data-sidebar='collapsed'] .app-brand-badge {
+    display: none;
   }
 
   .app-shell[data-sidebar='collapsed'] .sidebar-topbar {
@@ -365,5 +374,15 @@
   .app-content {
     min-height: auto;
     overflow: visible;
+    padding: 10px;
+  }
+
+  .app-header {
+    min-height: 52px;
+    padding-inline: 14px;
+  }
+
+  .app-header-badge {
+    display: none;
   }
 }
