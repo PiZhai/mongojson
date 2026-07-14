@@ -1,5 +1,6 @@
 import type { PartialBlock } from '@blocknote/core'
 import { filterSuggestionItems, insertOrUpdateBlockForSlashMenu } from '@blocknote/core/extensions'
+import { en, zh } from '@blocknote/core/locales'
 import '@blocknote/core/fonts/inter.css'
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/mantine/style.css'
@@ -20,6 +21,11 @@ import type { MemoEditorHandle, MemoEditorProps } from './types'
 import type { MemoEditorSnapshot } from '../types'
 
 export const MEMO_SIDE_NOTE_DRAG_TYPE = 'application/x-mongojson-memo-side-note'
+
+const memoSlashMenuDictionary = {
+  ...en,
+  slash_menu: zh.slash_menu,
+}
 
 function getActiveBlockId(editor: MemoBlockNoteEditor) {
   try {
@@ -103,7 +109,7 @@ function createCustomSlashItems(editor: MemoBlockNoteEditor) {
     ...getDefaultReactSlashMenuItems(editor),
     {
       title: '提示块',
-      subtext: '插入可强调重要信息的 Callout',
+      subtext: '插入用于强调重要信息的提示块',
       aliases: ['callout', '提示', '提醒'],
       group: '文档能力',
       onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, { type: 'callout', props: { tone: 'info' } }),
@@ -160,6 +166,7 @@ export const BlockNoteMemoEditor = forwardRef<MemoEditorHandle, MemoEditorProps>
 
     const editor = useCreateBlockNote({
       schema: memoBlockNoteSchema,
+      dictionary: memoSlashMenuDictionary,
       initialContent: (initialBlocks.length > 0 ? initialBlocks : [{ type: 'paragraph' }]) as PartialBlock[],
       uploadFile: (file) => callbacksRef.current.onUpload(file),
     })
