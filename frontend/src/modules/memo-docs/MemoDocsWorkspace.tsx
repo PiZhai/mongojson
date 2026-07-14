@@ -10,17 +10,20 @@ import {
   getFileDownloadUrl,
   getMemoDocument,
   getMemoDocumentWebSocketUrl,
+  listMemoDocuments,
   listMemoSideNotes,
   saveMemoDocument,
   saveMemoSideNote,
   uploadFile,
 } from './api'
+import { MemoDocumentDrawer } from './components/MemoDocumentDrawer'
+import { MemoIcon } from './components/MemoIcon'
 import { BlockNoteMemoEditor } from './editor/BlockNoteMemoEditor'
 import type { MemoEditorHandle } from './editor/types'
 import { getBlockOrder, getMemoOutline, getMemoStats, normalizeBlockDocument } from './lib/document'
 import { clearMemoRecovery, loadMemoRecovery, saveMemoRecovery, type MemoRecoverySnapshot } from './lib/recovery'
 import { SideNoteRail } from './side-notes/SideNoteRail'
-import type { MemoDocumentRecord, MemoEditorSnapshot, MemoSideNoteRecord, MemoSyncEvent, MemoSyncStatus, MemoWorkspaceMode } from './types'
+import type { MemoDocumentRecord, MemoDocumentSummary, MemoEditorSnapshot, MemoSideNoteRecord, MemoSyncEvent, MemoSyncStatus, MemoWorkspaceMode } from './types'
 
 const MEMO_SLUG = 'inbox'
 const DOCUMENT_SCHEMA_VERSION = 1
@@ -30,10 +33,30 @@ const NOTE_RAIL_WIDTH_KEY = 'mongojson.memoDocs.noteRailWidth'
 const SAVE_DELAY_MS = 1000
 const NOTE_SAVE_DELAY_MS = 650
 
+function readMemoSlug() {
+  return new URLSearchParams(window.location.search).get('slug')?.trim() || MEMO_SLUG
+}
+
+async function waitUntil(check: () => boolean, timeoutMs = 10_000) {
+  const startedAt = Date.now()
+  while (!check()) {
+    if (Date.now() - startedAt >= timeoutMs) return false
+    await new Promise((resolve) => window.setTimeout(resolve, 25))
+  }
+  return true
+}
+
 function createMemoClientId() {
   return typeof window.crypto?.randomUUID === 'function'
     ? window.crypto.randomUUID()
     : `memo-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function createMemoDocumentSlug() {
+  const suffix = typeof window.crypto?.randomUUID === 'function'
+    ? window.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return `memo-${suffix}`
 }
 
 function formatDate(value: string) {
@@ -70,9 +93,13 @@ function updateNoteList(
 }
 
 export function MemoDocsWorkspace() {
-  const memoSlug = new URLSearchParams(window.location.search).get('slug')?.trim() || MEMO_SLUG
+  const [memoSlug, setMemoSlug] = useState(readMemoSlug)
   const editorRef = useRef<MemoEditorHandle | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
+  const archiveToggleRef = useRef<HTMLButtonElement | null>(null)
+  const archiveCloseButtonRef = useRef<HTMLButtonElement | null>(null)
+  const titleInputRef = useRef<HTMLInputElement | null>(null)
+  const focusTitleOnLoadRef = useRef(false)
   const clientIdRef = useRef(createMemoClientId())
   const documentRef = useRef<MemoDocumentRecord | null>(null)
   const snapshotRef = useRef<MemoEditorSnapshot>({ blocks: [], markdown: '', html: '', activeBlockId: null })
@@ -80,8 +107,10 @@ export function MemoDocsWorkspace() {
   const saveTimerRef = useRef<number | null>(null)
   const saveInFlightRef = useRef(false)
   const saveQueuedRef = useRef(false)
+  const documentSaveFailedRef = useRef(false)
   const noteTimersRef = useRef(new Map<string, number>())
   const noteSaveInFlightRef = useRef(new Set<string>())
+  const sideNoteSaveFailuresRef = useRef(new Set<string>())
   const conflictRef = useRef(false)
   const [document, setDocument] = useState<MemoDocumentRecord | null>(null)
   const [editorSeed, setEditorSeed] = useState<unknown[]>([])
@@ -91,6 +120,12 @@ export function MemoDocsWorkspace() {
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null)
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null)
   const [workspaceMode, setWorkspaceMode] = useState<MemoWorkspaceMode>(readStoredMode)
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  const [archivedDocuments, setArchivedDocuments] = useState<MemoDocumentSummary[]>([])
+  const [archiveLoading, setArchiveLoading] = useState(false)
+  const [archiveError, setArchiveError] = useState('')
+  const [switchingDocumentId, setSwitchingDocumentId] = useState<string>()
+  const [creatingDocument, setCreatingDocument] = useState(false)
   const [outlineOpen, setOutlineOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
   const [outlineWidth, setOutlineWidth] = useState(() => readStoredWidth(OUTLINE_WIDTH_KEY, 200, 160, 280))
@@ -108,6 +143,35 @@ export function MemoDocsWorkspace() {
     return next
   }, [])
 
+  const loadArchivedDocuments = useCallback(async () => {
+    setArchiveLoading(true)
+    setArchiveError('')
+    try {
+      const response = await listMemoDocuments()
+      setArchivedDocuments(response.documents)
+    } catch (error) {
+      setArchiveError(error instanceof Error ? `存档文件加载失败：${error.message}` : '存档文件加载失败。')
+    } finally {
+      setArchiveLoading(false)
+    }
+  }, [])
+
+  const closeArchive = useCallback(() => {
+    setArchiveOpen(false)
+    window.setTimeout(() => archiveToggleRef.current?.focus(), 0)
+  }, [])
+
+  const toggleArchive = () => {
+    setArchiveOpen((open) => {
+      const next = !open
+      if (next) {
+        setOutlineOpen(false)
+        setNotesOpen(false)
+      }
+      return next
+    })
+  }
+
   const reloadDocument = useCallback(async () => {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current)
@@ -124,19 +188,36 @@ export function MemoDocsWorkspace() {
       documentRef.current = loadedDocument
       snapshotRef.current = { blocks: structuredBlocks, markdown: loadedDocument.content_text, html: loadedDocument.content_html, activeBlockId: null }
       notesRef.current = noteResponse.notes
+      documentSaveFailedRef.current = false
+      sideNoteSaveFailuresRef.current.clear()
       setDocument(loadedDocument)
       setEditorSeed(structuredBlocks)
       setSnapshot(snapshotRef.current)
       setNotes(noteResponse.notes)
+      setActiveBlockId(null)
+      setActiveNoteId(null)
       setEditorKey((value) => value + 1)
       conflictRef.current = false
       setConflict(false)
       setRecovery(await loadMemoRecovery(loadedDocument.id).catch(() => null))
       setStatus({ kind: 'success', message: loadedDocument.editor_type === 'blocknote' ? '结构化随手记已加载。' : '旧版随手记已加载，正在准备无损迁移。' })
     } catch (error) {
+      focusTitleOnLoadRef.current = false
       setStatus({ kind: 'error', message: error instanceof Error ? error.message : '加载随手记失败。' })
+    } finally {
+      setSwitchingDocumentId(undefined)
     }
   }, [memoSlug])
+
+  useEffect(() => {
+    if (!document?.id || !focusTitleOnLoadRef.current) return
+    focusTitleOnLoadRef.current = false
+    const timer = window.setTimeout(() => {
+      titleInputRef.current?.focus()
+      titleInputRef.current?.select()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [document?.id])
 
   const refreshRemoteDocument = useCallback(async (minimumRevision?: number) => {
     const currentDocument = documentRef.current
@@ -171,10 +252,14 @@ export function MemoDocsWorkspace() {
       documentRef.current = remoteDocument
       snapshotRef.current = remoteSnapshot
       notesRef.current = noteResponse.notes
+      documentSaveFailedRef.current = false
+      sideNoteSaveFailuresRef.current.clear()
       setDocument(remoteDocument)
       setEditorSeed(structuredBlocks)
       setSnapshot(remoteSnapshot)
       setNotes(noteResponse.notes)
+      setActiveBlockId(null)
+      setActiveNoteId(null)
       setEditorKey((value) => value + 1)
       await clearMemoRecovery(remoteDocument.id).catch(() => undefined)
       setRecovery(null)
@@ -204,6 +289,21 @@ export function MemoDocsWorkspace() {
     const timer = window.setTimeout(() => void reloadDocument(), 0)
     return () => window.clearTimeout(timer)
   }, [reloadDocument])
+
+  useEffect(() => {
+    if (!archiveOpen) return
+    const loadTimer = window.setTimeout(() => void loadArchivedDocuments(), 0)
+    const focusTimer = window.setTimeout(() => archiveCloseButtonRef.current?.focus(), 0)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeArchive()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.clearTimeout(loadTimer)
+      window.clearTimeout(focusTimer)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [archiveOpen, closeArchive, loadArchivedDocuments])
 
   useEffect(() => {
     const documentId = document?.id
@@ -263,10 +363,10 @@ export function MemoDocsWorkspace() {
 
   async function saveDocumentNow(nextSnapshot: MemoEditorSnapshot) {
     const currentDocument = documentRef.current
-    if (!currentDocument || conflictRef.current) return
+    if (!currentDocument || conflictRef.current) return false
     if (saveInFlightRef.current) {
       saveQueuedRef.current = true
-      return
+      return false
     }
     saveInFlightRef.current = true
     setIsSaving(true)
@@ -287,8 +387,18 @@ export function MemoDocsWorkspace() {
       commitNotes(() => synchronizedNotes.notes)
       await clearMemoRecovery(response.document.id).catch(() => undefined)
       setRecovery(null)
+      documentSaveFailedRef.current = false
       setStatus({ kind: 'success', message: '文档已自动保存。' })
+      setArchivedDocuments((items) => items.map((item) => item.id === response.document.id ? {
+        ...item,
+        title: response.document.title,
+        revision: response.document.revision,
+        editor_type: response.document.editor_type,
+        updated_at: response.document.updated_at,
+      } : item))
+      return true
     } catch (error) {
+      documentSaveFailedRef.current = true
       if (error instanceof ApiRequestError && error.status === 409) {
         conflictRef.current = true
         setConflict(true)
@@ -296,6 +406,7 @@ export function MemoDocsWorkspace() {
       } else {
         setStatus({ kind: 'error', message: error instanceof Error ? `保存失败：${error.message}` : '保存失败。' })
       }
+      return false
     } finally {
       saveInFlightRef.current = false
       setIsSaving(false)
@@ -357,9 +468,12 @@ export function MemoDocsWorkspace() {
   }
 
   async function persistSideNote(noteId: string) {
-    if (noteSaveInFlightRef.current.has(noteId)) return
+    if (noteSaveInFlightRef.current.has(noteId)) return false
     const requestNote = notesRef.current.find((note) => note.id === noteId)
-    if (!requestNote) return
+    if (!requestNote) {
+      sideNoteSaveFailuresRef.current.delete(noteId)
+      return true
+    }
     noteSaveInFlightRef.current.add(noteId)
     try {
       const response = await saveMemoSideNote(noteId, {
@@ -379,13 +493,99 @@ export function MemoDocsWorkspace() {
       if (changedDuringSave) {
         window.setTimeout(() => void persistSideNote(noteId), 0)
       }
+      sideNoteSaveFailuresRef.current.delete(noteId)
+      return true
     } catch (error) {
+      sideNoteSaveFailuresRef.current.add(noteId)
       setStatus({
         kind: error instanceof ApiRequestError && error.status === 409 ? 'warning' : 'error',
         message: error instanceof Error ? `便签保存失败：${error.message}` : '便签保存失败。',
       })
+      return false
     } finally {
       noteSaveInFlightRef.current.delete(noteId)
+    }
+  }
+
+  async function flushPendingChanges() {
+    const documentSavePending = saveTimerRef.current !== null || saveQueuedRef.current || documentSaveFailedRef.current
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    saveQueuedRef.current = false
+    if (!await waitUntil(() => !saveInFlightRef.current)) return false
+    if (documentSavePending && !await saveDocumentNow(snapshotRef.current)) return false
+
+    const scheduledNoteIds = [...new Set([
+      ...noteTimersRef.current.keys(),
+      ...sideNoteSaveFailuresRef.current,
+    ])]
+    noteTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    noteTimersRef.current.clear()
+    if (!await waitUntil(() => noteSaveInFlightRef.current.size === 0)) return false
+    const noteResults = await Promise.all(scheduledNoteIds.map((noteId) => persistSideNote(noteId)))
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+    if (!await waitUntil(() => noteSaveInFlightRef.current.size === 0)) return false
+    return noteResults.every(Boolean)
+  }
+
+  const selectArchivedDocument = async (item: MemoDocumentSummary) => {
+    if (item.id === documentRef.current?.id) {
+      closeArchive()
+      return
+    }
+    setSwitchingDocumentId(item.id)
+    setStatus({ kind: 'idle', message: '正在保存当前文档并切换存档文件。' })
+    const flushed = await flushPendingChanges()
+    if (!flushed) {
+      setSwitchingDocumentId(undefined)
+      setStatus({ kind: 'warning', message: '当前文档或便签尚未保存成功，已取消切换以避免内容丢失。' })
+      return
+    }
+    const url = new URL(window.location.href)
+    if (item.slug === MEMO_SLUG) url.searchParams.delete('slug')
+    else url.searchParams.set('slug', item.slug)
+    window.history.replaceState(window.history.state, '', url)
+    setMemoSlug(item.slug)
+    closeArchive()
+  }
+
+  const createNewDocument = async () => {
+    if (creatingDocument || switchingDocumentId) return
+    setCreatingDocument(true)
+    setStatus({ kind: 'idle', message: '正在保存当前文档并创建新文档。' })
+    const flushed = await flushPendingChanges()
+    if (!flushed) {
+      setCreatingDocument(false)
+      setStatus({ kind: 'warning', message: '当前文档或便签尚未保存成功，已取消新建以避免内容丢失。' })
+      return
+    }
+
+    try {
+      const response = await createMemoDocument({ slug: createMemoDocumentSlug(), title: '未命名文档' })
+      const created = response.document
+      setArchivedDocuments((items) => [{
+        id: created.id,
+        slug: created.slug,
+        title: created.title,
+        revision: created.revision,
+        editor_type: created.editor_type,
+        note_count: 0,
+        created_at: created.created_at,
+        updated_at: created.updated_at,
+      }, ...items.filter((item) => item.id !== created.id)])
+      setSwitchingDocumentId(created.id)
+      focusTitleOnLoadRef.current = true
+      const url = new URL(window.location.href)
+      url.searchParams.set('slug', created.slug)
+      window.history.replaceState(window.history.state, '', url)
+      setMemoSlug(created.slug)
+      setArchiveOpen(false)
+    } catch (error) {
+      setStatus({ kind: 'error', message: error instanceof Error ? `新建文档失败：${error.message}` : '新建文档失败。' })
+    } finally {
+      setCreatingDocument(false)
     }
   }
 
@@ -603,8 +803,18 @@ export function MemoDocsWorkspace() {
     >
       <header className="memo-workspace-toolbar">
         <div className="memo-toolbar-leading">
-          <button aria-label="打开目录" className="memo-icon-button memo-panel-toggle" onClick={() => setOutlineOpen(true)} title="目录" type="button">☰</button>
-          <input aria-label="文档标题" className="memo-document-title" onChange={(event) => handleTitleChange(event.target.value)} value={document.title} />
+          <button
+            aria-controls="memo-document-drawer"
+            aria-expanded={archiveOpen}
+            aria-label={archiveOpen ? '收起存档文件' : '展开存档文件'}
+            className={`memo-icon-button memo-archive-toggle${archiveOpen ? ' memo-icon-button-active' : ''}`}
+            onClick={toggleArchive}
+            ref={archiveToggleRef}
+            title={archiveOpen ? '收起存档文件' : '展开存档文件'}
+            type="button"
+          ><MemoIcon name="archive" /></button>
+          <button aria-label="打开正文目录" className="memo-icon-button memo-panel-toggle" onClick={() => setOutlineOpen(true)} title="正文目录" type="button"><MemoIcon name="outline" /></button>
+          <input aria-label="文档标题" className="memo-document-title" onChange={(event) => handleTitleChange(event.target.value)} ref={titleInputRef} value={document.title} />
         </div>
         <div aria-label="编辑器宽度" className="memo-mode-control" role="group">
           {(['standard', 'focus', 'wide'] as MemoWorkspaceMode[]).map((mode) => (
@@ -618,7 +828,7 @@ export function MemoDocsWorkspace() {
           <button className="memo-command-button" onClick={() => downloadText(`${document.slug}.json`, JSON.stringify({ schema_version: DOCUMENT_SCHEMA_VERSION, blocks: snapshot.blocks }, null, 2), 'application/json')} type="button">JSON</button>
           <button className="memo-command-button" onClick={() => downloadText(`${document.slug}.md`, snapshot.markdown, 'text/markdown')} type="button">Markdown</button>
           <button className="memo-command-button" onClick={() => downloadText(`${document.slug}.html`, snapshot.html, 'text/html')} type="button">HTML</button>
-          <button aria-label="打开便签栏" className="memo-icon-button memo-panel-toggle" onClick={() => setNotesOpen(true)} title="侧边便签" type="button">▤</button>
+          <button aria-label="打开便签栏" className="memo-icon-button memo-panel-toggle" onClick={() => setNotesOpen(true)} title="侧边便签" type="button"><MemoIcon name="notes" /></button>
           <input
             accept=".json,.md,.markdown,.html,.htm,application/json,text/markdown,text/html"
             className="sr-only"
@@ -632,6 +842,20 @@ export function MemoDocsWorkspace() {
           />
         </div>
       </header>
+
+      <MemoDocumentDrawer
+        activeDocumentId={document.id}
+        closeButtonRef={archiveCloseButtonRef}
+        creating={creatingDocument}
+        documents={archivedDocuments}
+        error={archiveError}
+        loading={archiveLoading}
+        onClose={closeArchive}
+        onCreate={() => void createNewDocument()}
+        onSelect={(item) => void selectArchivedDocument(item)}
+        open={archiveOpen}
+        switchingDocumentId={switchingDocumentId}
+      />
 
       {(hasNewerRecovery || conflict) && (
         <div className="memo-recovery-banner" role="status">
@@ -650,7 +874,7 @@ export function MemoDocsWorkspace() {
         <aside className={`memo-outline-panel${outlineOpen ? ' memo-panel-open' : ''}`} data-layout-region="memo-outline">
           <header className="memo-panel-header">
             <strong>目录</strong>
-            <button aria-label="关闭目录" className="memo-icon-button memo-mobile-only" onClick={() => setOutlineOpen(false)} title="关闭" type="button">×</button>
+            <button aria-label="关闭目录" className="memo-icon-button memo-mobile-only" onClick={() => setOutlineOpen(false)} title="关闭" type="button"><MemoIcon name="close" /></button>
           </header>
           <nav aria-label="文档目录" className="memo-outline-list">
             {outline.length > 0 ? outline.map((item) => (
@@ -716,7 +940,18 @@ export function MemoDocsWorkspace() {
           open={notesOpen}
         />
       </div>
-      {(outlineOpen || notesOpen) && <button aria-label="关闭面板" className="memo-panel-backdrop" onClick={() => { setOutlineOpen(false); setNotesOpen(false) }} type="button" />}
+      {(archiveOpen || outlineOpen || notesOpen) && (
+        <button
+          aria-label="关闭面板"
+          className={`memo-panel-backdrop${archiveOpen ? ' memo-archive-backdrop' : ''}`}
+          onClick={() => {
+            if (archiveOpen) closeArchive()
+            setOutlineOpen(false)
+            setNotesOpen(false)
+          }}
+          type="button"
+        />
+      )}
     </div>
   )
 }

@@ -32,6 +32,13 @@ export type MemoDocumentRecord = {
   updated_at: string
 }
 
+export type MemoDocumentSummary = Pick<
+  MemoDocumentRecord,
+  'id' | 'slug' | 'title' | 'revision' | 'editor_type' | 'created_at' | 'updated_at'
+> & {
+  note_count: number
+}
+
 export type MemoSideNoteBody = {
   text: string
 }

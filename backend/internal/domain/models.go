@@ -54,6 +54,17 @@ type MemoRecord struct {
 	UpdatedAt     time.Time          `json:"updated_at"`
 }
 
+type MemoDocumentSummary struct {
+	ID         string    `json:"id"`
+	Slug       string    `json:"slug"`
+	Title      string    `json:"title"`
+	Revision   int64     `json:"revision"`
+	EditorType string    `json:"editor_type"`
+	NoteCount  int       `json:"note_count"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 type MemoFloatingCard struct {
 	ID        string    `json:"id"`
 	Content   string    `json:"content"`

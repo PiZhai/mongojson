@@ -2,6 +2,7 @@
   --memo-outline-width: 200px;
   --memo-note-rail-width: 380px;
   --memo-editor-width: 920px;
+  position: relative;
   display: grid;
   grid-template-rows: 54px minmax(0, 1fr);
   width: 100%;
@@ -53,6 +54,8 @@
 
 .memo-toolbar-actions::-webkit-scrollbar { display: none; }
 
+.memo-archive-toggle { margin-right: 2px; }
+
 .memo-document-title {
   width: min(100%, 360px);
   min-width: 100px;
@@ -94,6 +97,21 @@
 .memo-icon-button { width: 32px; padding: 0; font-size: 16px; }
 .memo-command-button { padding: 0 10px; }
 
+.memo-command-icon {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.memo-icon-button-active {
+  border-color: #a8d4ff;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .memo-icon-button:hover,
 .memo-command-button:hover,
 .memo-mode-control button:hover,
@@ -122,6 +140,160 @@
 
 .memo-mode-control button { height: 27px; border: 0; background: transparent; }
 .memo-mode-control button[aria-pressed='true'] { background: #fff; box-shadow: 0 1px 3px rgb(24 39 75 / 12%); color: var(--accent); }
+
+.memo-icon-button:focus-visible,
+.memo-command-button:focus-visible,
+.memo-mode-control button:focus-visible,
+.memo-document-create:focus-visible,
+.memo-document-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.memo-document-drawer {
+  position: absolute;
+  z-index: 30;
+  top: 54px;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, calc(100% - 48px));
+  border-right: 1px solid var(--border);
+  background: #fff;
+  box-shadow: 16px 0 36px rgb(24 39 75 / 18%);
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-104%);
+  transition: transform 180ms ease, visibility 0s linear 180ms;
+}
+
+.memo-document-drawer-open {
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition-delay: 0s;
+}
+
+.memo-document-drawer-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.memo-document-drawer-header > div,
+.memo-document-drawer-header > div > span:last-child {
+  display: flex;
+  align-items: center;
+}
+
+.memo-document-drawer-header > div { gap: 10px; }
+.memo-document-drawer-header > div > span:last-child { align-items: flex-start; flex-direction: column; gap: 3px; }
+.memo-document-drawer-header strong { color: var(--text-strong); font-size: 14px; }
+.memo-document-drawer-header small { color: var(--text-muted); font-size: 11px; }
+
+.memo-document-drawer-icon,
+.memo-document-item-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.memo-document-drawer-icon { width: 34px; height: 34px; }
+.memo-document-item-icon { width: 36px; height: 36px; }
+
+.memo-document-create-area {
+  flex: 0 0 auto;
+  padding: 10px 10px 0;
+}
+
+.memo-document-create {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font: 650 13px/1 var(--font-sans);
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+.memo-document-create:hover { border-color: #0069db; background: #0069db; }
+.memo-document-create:disabled { cursor: wait; opacity: 0.52; }
+
+.memo-document-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.memo-document-item {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 60px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+.memo-document-item:hover { border-color: var(--border); background: #f6f8fb; color: var(--text-strong); }
+.memo-document-item:disabled { cursor: wait; opacity: 0.62; }
+.memo-document-item-active { border-color: #cbe3ff; background: var(--accent-soft); color: var(--text-strong); }
+.memo-document-item-active .memo-document-item-icon { background: #fff; }
+
+.memo-document-item-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.memo-document-item-copy strong,
+.memo-document-item-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-document-item-copy strong { color: inherit; font-size: 13px; font-weight: 650; }
+.memo-document-item-copy small { color: var(--text-muted); font-size: 11px; }
+.memo-document-current { color: var(--accent); font-size: 11px; font-weight: 650; }
+
+.memo-document-list-state {
+  margin: 16px 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.memo-document-list-error { color: #a72b50; }
 
 .memo-recovery-banner {
   z-index: 4;
@@ -501,6 +673,15 @@
 .memo-mobile-only,
 .memo-panel-toggle { display: none; }
 .memo-panel-backdrop { display: none; }
+.memo-panel-backdrop.memo-archive-backdrop {
+  position: absolute;
+  z-index: 29;
+  inset: 54px 0 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: rgb(18 29 44 / 34%);
+}
 
 .memo-mode-focus .memo-workbench { grid-template-columns: minmax(0, 1fr); width: min(100%, 1120px); }
 .memo-mode-focus .memo-outline-panel,
@@ -591,6 +772,25 @@
   }
   .memo-side-note-rail.memo-panel-open { transform: translateY(0); }
   .memo-panel-backdrop { z-index: 21; }
+  .memo-document-drawer {
+    position: fixed;
+    z-index: 30;
+    top: 58px;
+    bottom: 0;
+    width: min(320px, calc(100vw - 32px));
+  }
+  .memo-panel-backdrop.memo-archive-backdrop {
+    position: fixed;
+    z-index: 29;
+    inset: 58px 0 0;
+  }
   .memo-recovery-banner { align-items: stretch; flex-direction: column; }
   .memo-document-meta { justify-content: flex-start; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memo-document-drawer,
+  .memo-document-item {
+    transition: none;
+  }
 }

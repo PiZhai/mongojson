@@ -44,6 +44,36 @@ func TestSaveMemoDocumentPassesStructuredContent(t *testing.T) {
 	}
 }
 
+func TestListMemoDocumentsReturnsArchiveSummaries(t *testing.T) {
+	updatedAt := time.Date(2026, time.July, 14, 9, 30, 0, 0, time.UTC)
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MemoService: fakeMemoStore{
+		listDocuments: func(context.Context) ([]domain.MemoDocumentSummary, error) {
+			return []domain.MemoDocumentSummary{{
+				ID: "memo-1", Slug: "inbox", Title: "随手记", Revision: 7,
+				EditorType: "blocknote", NoteCount: 3, UpdatedAt: updatedAt,
+			}}, nil
+		},
+	}})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/memo/documents", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Documents []domain.MemoDocumentSummary `json:"documents"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Documents) != 1 || response.Documents[0].Slug != "inbox" || response.Documents[0].NoteCount != 3 {
+		t.Fatalf("unexpected documents: %#v", response.Documents)
+	}
+}
+
 func TestSaveMemoDocumentReturnsConflict(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{MemoService: fakeMemoStore{

@@ -354,6 +354,7 @@ func (r repeatingReader) Read(p []byte) (int, error) {
 type fakeMemoStore struct {
 	getOrCreate    func(context.Context, string) (domain.MemoRecord, error)
 	saveMemo       func(context.Context, memo.SaveInput) (domain.MemoRecord, error)
+	listDocuments  func(context.Context) ([]domain.MemoDocumentSummary, error)
 	getDocument    func(context.Context, string) (domain.MemoRecord, error)
 	saveDocument   func(context.Context, string, memo.DocumentSaveInput) (domain.MemoRecord, error)
 	listSideNotes  func(context.Context, string) ([]domain.MemoSideNoteRecord, error)
@@ -400,6 +401,13 @@ func (s fakeMemoStore) SaveMemo(ctx context.Context, input memo.SaveInput) (doma
 
 func (s fakeMemoStore) CreateDocument(_ context.Context, slug, title string) (domain.MemoRecord, error) {
 	return domain.MemoRecord{ID: "memo-1", Slug: slug, Title: title, Revision: 1}, nil
+}
+
+func (s fakeMemoStore) ListDocuments(ctx context.Context) ([]domain.MemoDocumentSummary, error) {
+	if s.listDocuments != nil {
+		return s.listDocuments(ctx)
+	}
+	return []domain.MemoDocumentSummary{}, nil
 }
 
 func (s fakeMemoStore) GetDocument(ctx context.Context, slug string) (domain.MemoRecord, error) {

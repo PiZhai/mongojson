@@ -25,6 +25,7 @@ type MemoStore interface {
 	GetOrCreate(context.Context, string) (domain.MemoRecord, error)
 	SaveMemo(context.Context, memo.SaveInput) (domain.MemoRecord, error)
 	CreateDocument(context.Context, string, string) (domain.MemoRecord, error)
+	ListDocuments(context.Context) ([]domain.MemoDocumentSummary, error)
 	GetDocument(context.Context, string) (domain.MemoRecord, error)
 	SaveDocument(context.Context, string, memo.DocumentSaveInput) (domain.MemoRecord, error)
 	DeleteDocument(context.Context, string) error
@@ -75,6 +76,7 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/files/{id}/download", handler.downloadFile)
 		r.Get("/memo", handler.getMemo)
 		r.Put("/memo", handler.saveMemo)
+		r.Get("/memo/documents", handler.listMemoDocuments)
 		r.Post("/memo/documents", handler.createMemoDocument)
 		r.Get("/memo/documents/{slug}", handler.getMemoDocument)
 		r.Put("/memo/documents/{id}", handler.saveMemoDocument)

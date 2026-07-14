@@ -122,6 +122,39 @@ func (s *Service) GetDocument(ctx context.Context, slug string) (domain.MemoReco
 	return record, err
 }
 
+func (s *Service) ListDocuments(ctx context.Context) ([]domain.MemoDocumentSummary, error) {
+	rows, err := s.db.Pool.Query(ctx, `
+		select memo.id, memo.slug, memo.title, memo.revision, memo.editor_type,
+		       count(note.id) filter (where note.status <> 'archived')::int,
+		       memo.created_at, memo.updated_at
+		from tool_memos memo
+		left join memo_side_notes note on note.document_id = memo.id
+		group by memo.id, memo.slug, memo.title, memo.revision, memo.editor_type,
+		         memo.created_at, memo.updated_at
+		order by memo.updated_at desc, memo.created_at desc
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list memo documents: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.MemoDocumentSummary, 0)
+	for rows.Next() {
+		var item domain.MemoDocumentSummary
+		if err := rows.Scan(
+			&item.ID, &item.Slug, &item.Title, &item.Revision, &item.EditorType,
+			&item.NoteCount, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan memo document summary: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memo documents: %w", err)
+	}
+	return items, nil
+}
+
 func (s *Service) SaveDocument(ctx context.Context, id string, input DocumentSaveInput) (domain.MemoRecord, error) {
 	contentJSON, blockIDs, err := normalizeDocumentJSON(input.ContentJSON)
 	if err != nil {

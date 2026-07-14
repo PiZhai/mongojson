@@ -2,6 +2,7 @@ import { API_BASE, apiRequest, resolveApiUrl } from '../../platform/http/client'
 import type {
   FileSummary,
   MemoDocumentRecord,
+  MemoDocumentSummary,
   MemoFloatingCardRecord,
   MemoSideNoteBody,
   MemoSideNoteRecord,
@@ -23,6 +24,10 @@ export function getFileDownloadUrl(id: string) {
 
 export async function getMemoDocument(slug = 'inbox') {
   return apiRequest<{ document: MemoDocumentRecord }>(`${API_BASE}/memo/documents/${encodeURIComponent(slug)}`)
+}
+
+export async function listMemoDocuments() {
+  return apiRequest<{ documents: MemoDocumentSummary[] }>(`${API_BASE}/memo/documents`)
 }
 
 export async function createMemoDocument(payload: { slug: string; title: string }) {

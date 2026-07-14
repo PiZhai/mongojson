@@ -153,6 +153,15 @@ func (h *Handler) createMemoDocument(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusCreated, map[string]domain.MemoRecord{"document": record})
 }
 
+func (h *Handler) listMemoDocuments(w http.ResponseWriter, r *http.Request) {
+	items, err := h.deps.MemoService.ListDocuments(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.MemoDocumentSummary{"documents": items})
+}
+
 func (h *Handler) getMemoDocument(w http.ResponseWriter, r *http.Request) {
 	record, err := h.deps.MemoService.GetDocument(r.Context(), chi.URLParam(r, "slug"))
 	if err != nil {
