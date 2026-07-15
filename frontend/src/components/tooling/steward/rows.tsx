@@ -334,6 +334,21 @@ export function AutonomyRuleRow({
           <option value="auto">低风险自动</option>
           <option value="never">禁止</option>
         </select>
+        <select
+          aria-label={`${rule.name} 最高权限`}
+          className="steward-inline-select"
+          disabled={busy}
+          onChange={(event) =>
+            onUpdate(rule.id, {
+              max_permission_level: event.currentTarget.value,
+            })
+          }
+          value={rule.max_permission_level}
+        >
+          {Array.from({ length: 10 }, (_, rank) => `A${rank}`).map((level) => (
+            <option key={level} value={level}>最高 {level}</option>
+          ))}
+        </select>
       </div>
     </article>
   );

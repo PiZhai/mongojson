@@ -5,6 +5,7 @@ import type {
   MemoRecord,
   PresetRecord,
   StewardAgentStatus,
+  StewardActivitySession,
   StewardApprovalRequest,
   StewardAuditLog,
   StewardAutonomousRun,
@@ -14,6 +15,13 @@ import type {
   StewardAutonomyRule,
   StewardAutonomySettings,
   StewardCollectorConfig,
+  StewardDataPolicy,
+  StewardPermissionPolicy,
+  StewardModelDispatch,
+  StewardToolDefinition,
+  StewardConversation,
+  StewardConversationMessage,
+  StewardConversationSuggestion,
   StewardDataTag,
   StewardDevice,
   StewardDevicePermission,
@@ -21,9 +29,18 @@ import type {
   StewardDeviceTrustVerification,
   StewardEvent,
   StewardIntent,
+  StewardInsight,
   StewardKnowledgeItem,
   StewardMemory,
   StewardMemoryVersion,
+  StewardEntity,
+  StewardHabit,
+  StewardLifecycleEvaluation,
+  StewardLifecycleStatus,
+  StewardObservation,
+  StewardPurgeResult,
+  StewardRelation,
+  StewardRetentionPolicy,
   StewardOverview,
   StewardSearchResult,
   StewardSourceRef,
@@ -148,6 +165,7 @@ export async function updateStewardCollector(
   payload: {
     enabled?: boolean
     scope_summary?: string
+    settings?: Record<string, unknown>
   },
 ) {
   return request<{ collector: StewardCollectorConfig }>(`${API_BASE}/steward/collectors/${encodeURIComponent(name)}`, {
@@ -157,6 +175,181 @@ export async function updateStewardCollector(
     },
     body: JSON.stringify(payload),
   })
+}
+
+export async function getStewardDataPolicies() {
+  return request<{ data_policies: StewardDataPolicy[] }>(`${API_BASE}/steward/automation/data-policies`)
+}
+
+export async function updateStewardDataPolicy(payload: Partial<StewardDataPolicy> & {
+  data_level: string
+  source_pattern: string
+}) {
+  return request<{ data_policy: StewardDataPolicy }>(`${API_BASE}/steward/automation/data-policies`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardPermissionPolicies() {
+  return request<{ permission_policies: StewardPermissionPolicy[] }>(`${API_BASE}/steward/automation/permission-policies`)
+}
+
+export async function updateStewardPermissionPolicy(payload: Partial<StewardPermissionPolicy> & {
+  permission_level: string
+  action_pattern: string
+}) {
+  return request<{ permission_policy: StewardPermissionPolicy }>(`${API_BASE}/steward/automation/permission-policies`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardModelDispatches(limit = 60) {
+  return request<{ model_dispatches: StewardModelDispatch[] }>(`${API_BASE}/steward/automation/model-dispatches?limit=${limit}`)
+}
+
+export async function runStewardModelDispatches(limit = 20) {
+  return request<{ model_dispatches: StewardModelDispatch[] }>(`${API_BASE}/steward/automation/model-dispatches/run?limit=${limit}`, {
+    method: 'POST',
+  })
+}
+
+export async function getStewardToolDefinitions() {
+  return request<{ tools: StewardToolDefinition[] }>(`${API_BASE}/steward/automation/tools`)
+}
+
+export async function updateStewardToolDefinition(payload: Omit<StewardToolDefinition, 'id' | 'created_at' | 'updated_at'>) {
+  return request<{ tool: StewardToolDefinition }>(`${API_BASE}/steward/automation/tools`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardObservations(limit = 100) {
+  return request<{ observations: StewardObservation[] }>(`${API_BASE}/steward/activity/observations?limit=${limit}`)
+}
+
+export async function createStewardObservation(payload: Record<string, unknown>) {
+  return request<{ observation: StewardObservation }>(`${API_BASE}/steward/activity/observations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardActivitySessions(limit = 100) {
+  return request<{ sessions: StewardActivitySession[] }>(`${API_BASE}/steward/activity/sessions?limit=${limit}`)
+}
+
+export async function getStewardEntities(limit = 100) {
+  return request<{ entities: StewardEntity[] }>(`${API_BASE}/steward/entities?limit=${limit}`)
+}
+
+export async function getStewardEntityRelations(id: string, limit = 100) {
+  return request<{ relations: StewardRelation[] }>(`${API_BASE}/steward/entities/${encodeURIComponent(id)}/relations?limit=${limit}`)
+}
+
+export async function getStewardHabits(limit = 100) {
+  return request<{ habits: StewardHabit[] }>(`${API_BASE}/steward/habits?limit=${limit}`)
+}
+
+export async function updateStewardHabit(id: string, payload: Record<string, unknown>) {
+  return request<{ habit: StewardHabit }>(`${API_BASE}/steward/habits/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardInsights(limit = 100) {
+  return request<{ insights: StewardInsight[] }>(`${API_BASE}/steward/insights?limit=${limit}`)
+}
+
+export async function updateStewardInsight(id: string, payload: Record<string, unknown>) {
+  return request<{ insight: StewardInsight }>(`${API_BASE}/steward/insights/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardLifecycleStatus() {
+  return request<{ lifecycle: StewardLifecycleStatus }>(`${API_BASE}/steward/lifecycle/status`)
+}
+
+export async function evaluateStewardLifecycle(limit = 1000) {
+  return request<{ evaluation: StewardLifecycleEvaluation }>(`${API_BASE}/steward/lifecycle/evaluate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ limit }),
+  })
+}
+
+export async function purgeStewardLifecycle(evaluationId: string) {
+  return request<{ purge: StewardPurgeResult }>(`${API_BASE}/steward/lifecycle/purge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ evaluation_id: evaluationId, execute: true }),
+  })
+}
+
+export async function getStewardRetentionPolicies() {
+  return request<{ retention_policies: StewardRetentionPolicy[] }>(`${API_BASE}/steward/retention-policies`)
+}
+
+export async function updateStewardRetentionPolicy(id: string, payload: Record<string, unknown>) {
+  return request<{ retention_policy: StewardRetentionPolicy }>(`${API_BASE}/steward/retention-policies/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardConversations(limit = 30) {
+  return request<{ conversations: StewardConversation[] }>(`${API_BASE}/steward/conversations?limit=${limit}`)
+}
+
+export async function createStewardConversation(payload: { title?: string; data_level?: string }) {
+  return request<{ conversation: StewardConversation }>(`${API_BASE}/steward/conversations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardConversationMessages(id: string, limit = 100) {
+  return request<{ messages: StewardConversationMessage[] }>(
+    `${API_BASE}/steward/conversations/${encodeURIComponent(id)}/messages?limit=${limit}`,
+  )
+}
+
+export async function sendStewardConversationMessage(
+  id: string,
+  payload: { content: string; data_level: string; context_limit?: number },
+) {
+  return request<{ conversation: StewardConversation; message: StewardConversationMessage }>(
+    `${API_BASE}/steward/conversations/${encodeURIComponent(id)}/messages`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export async function decideStewardConversationSuggestion(id: string, decision: 'accepted' | 'dismissed') {
+  return request<{ suggestion: StewardConversationSuggestion }>(
+    `${API_BASE}/steward/conversation-suggestions/${encodeURIComponent(id)}/decision`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision }),
+    },
+  )
 }
 
 export async function createStewardEvent(payload: {

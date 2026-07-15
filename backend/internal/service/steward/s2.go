@@ -1136,6 +1136,47 @@ func (s *Service) Search(ctx context.Context, input SearchInput) ([]domain.Stewa
 	`, queryText, limit); err != nil {
 		return nil, fmt.Errorf("search knowledge items: %w", err)
 	}
+	if err := addResults("observation", `
+		select id::text, type, coalesce(nullif(summary,''),type) as title, summary, status,
+		       data_level, source, created_at
+		from steward_observations
+		where summary ilike $1 or ($3 <> '' and search_vector @@ websearch_to_tsquery('simple',$3))
+		order by occurred_at desc limit $2
+	`, queryText, limit, strings.TrimSpace(input.Query)); err != nil {
+		return nil, fmt.Errorf("search observations: %w", err)
+	}
+	if err := addResults("activity_session", `
+		select id::text, type, title, summary, status, data_level, source, updated_at
+		from steward_activity_sessions
+		where title ilike $1 or summary ilike $1 or ($3 <> '' and search_vector @@ websearch_to_tsquery('simple',$3))
+		order by updated_at desc limit $2
+	`, queryText, limit, strings.TrimSpace(input.Query)); err != nil {
+		return nil, fmt.Errorf("search activity sessions: %w", err)
+	}
+	if err := addResults("entity", `
+		select id::text, type, display_name, summary, status, data_level, 'entity-graph', updated_at
+		from steward_entities
+		where display_name ilike $1 or summary ilike $1 or ($3 <> '' and search_vector @@ websearch_to_tsquery('simple',$3))
+		order by updated_at desc limit $2
+	`, queryText, limit, strings.TrimSpace(input.Query)); err != nil {
+		return nil, fmt.Errorf("search entities: %w", err)
+	}
+	if err := addResults("habit", `
+		select id::text, type, title, summary, status, data_level, 'habit-engine', updated_at
+		from steward_habits
+		where status <> 'deleted' and (title ilike $1 or summary ilike $1 or pattern ilike $1)
+		order by updated_at desc limit $2
+	`, queryText, limit); err != nil {
+		return nil, fmt.Errorf("search habits: %w", err)
+	}
+	if err := addResults("insight", `
+		select id::text, type, title, summary, status, data_level, 'insight-engine', updated_at
+		from steward_insights
+		where status <> 'deleted' and (title ilike $1 or summary ilike $1 or suggested_action ilike $1)
+		order by updated_at desc limit $2
+	`, queryText, limit); err != nil {
+		return nil, fmt.Errorf("search insights: %w", err)
+	}
 
 	if len(results) > limit {
 		results = results[:limit]

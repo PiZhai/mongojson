@@ -72,7 +72,7 @@ func NewServer() (*Server, error) {
 	jobService := jobs.NewService(db, fileStore, cfg.FileRetention)
 	presetService := presets.NewService(db)
 	memoService := memo.NewService(db)
-	stewardService := steward.NewService(db, steward.WithPeerDiscovery(peerDiscovery))
+	stewardService := steward.NewService(db, steward.WithPeerDiscovery(peerDiscovery), steward.WithStorageDir(cfg.StorageDir))
 	watchSyncHub := watchsync.NewHub()
 	if err := stewardService.EnsureDefaults(context.Background()); err != nil {
 		db.Close()

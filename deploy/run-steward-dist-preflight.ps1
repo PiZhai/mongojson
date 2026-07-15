@@ -148,6 +148,14 @@ try {
     target_file_counts = @($verification.artifacts | ForEach-Object { @{ target = $_.target; files = $_.file_count } })
   }
 
+  $missingCompanions = @($verification.artifacts | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.companion_path) })
+  if ($missingCompanions.Count -ne 0) {
+    throw "one or more steward target directories do not include steward-companion"
+  }
+  Add-Check $checks "dist_preflight.companion" "ok" "every target directory contains a checksum-verified companion buffer" @{
+    companion_paths = @($verification.artifacts | ForEach-Object { $_.companion_path })
+  }
+
   if ($null -eq $verification.current_binary_smoke -or $verification.current_binary_smoke.name -ne "steward") {
     throw "current platform steward binary smoke result is missing"
   }

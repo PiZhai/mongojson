@@ -107,14 +107,15 @@ func TestAutonomyControlValuesAreStrictAndCanonical(t *testing.T) {
 	}
 }
 
-func TestAutonomyAutomaticPermissionRejectsA4AndAbove(t *testing.T) {
-	for _, permission := range []string{PermissionA4, PermissionA5, PermissionA9} {
-		if _, err := autonomyAutoPermissionValue(permission, ""); err == nil {
-			t.Fatalf("expected automatic permission %s to fail", permission)
+func TestAutonomyAutomaticPermissionAcceptsFullConfiguredRange(t *testing.T) {
+	for _, expected := range []string{PermissionA0, PermissionA1, PermissionA2, PermissionA3, PermissionA4, PermissionA5, PermissionA6, PermissionA7, PermissionA8, PermissionA9} {
+		permission, err := autonomyAutoPermissionValue(expected, "")
+		if err != nil || permission != expected {
+			t.Fatalf("automatic permission %s = %q, %v", expected, permission, err)
 		}
 	}
-	if permission, err := autonomyAutoPermissionValue(PermissionA3, ""); err != nil || permission != PermissionA3 {
-		t.Fatalf("A3 automatic permission = %q, %v", permission, err)
+	if _, err := autonomyAutoPermissionValue("A10", ""); err == nil {
+		t.Fatal("expected unsupported automatic permission to fail")
 	}
 }
 
@@ -158,8 +159,8 @@ func TestAutonomyMutationsValidateBeforeRepositoryAccess(t *testing.T) {
 	if _, err := service.UpdateAutonomySettings(context.Background(), UpdateAutonomySettingsInput{Mode: "automatic"}); err == nil {
 		t.Fatal("invalid mode reached autonomy settings repository")
 	}
-	if _, err := service.UpdateAutonomySettings(context.Background(), UpdateAutonomySettingsInput{MaxAutoPermission: PermissionA4}); err == nil {
-		t.Fatal("A4 automatic permission reached autonomy settings repository")
+	if _, err := service.UpdateAutonomySettings(context.Background(), UpdateAutonomySettingsInput{MaxAutoPermission: "A10"}); err == nil {
+		t.Fatal("invalid automatic permission reached autonomy settings repository")
 	}
 	invalidPolicy := "allow"
 	if _, err := service.UpdateAutonomyRule(context.Background(), "rule-id", UpdateAutonomyRuleInput{Policy: &invalidPolicy}); err == nil {
@@ -315,18 +316,8 @@ func TestValidateProposalTransition(t *testing.T) {
 			target:    ProposalApproved,
 			wantError: "only candidate",
 		},
-		{
-			name:      "high risk cannot be approved",
-			proposal:  proposalWithRisk(base, "high", PermissionA3),
-			target:    ProposalApproved,
-			wantError: "cannot be approved",
-		},
-		{
-			name:      "permission A4 cannot be approved",
-			proposal:  proposalWithRisk(base, "low", PermissionA4),
-			target:    ProposalApproved,
-			wantError: "cannot be approved",
-		},
+		{name: "high risk can enter policy approval", proposal: proposalWithRisk(base, "high", PermissionA3), target: ProposalApproved},
+		{name: "permission A4 can enter policy approval", proposal: proposalWithRisk(base, "low", PermissionA4), target: ProposalApproved},
 		{
 			name:      "never policy cannot be approved",
 			proposal:  proposalWithPolicy(base, AutonomyPolicyNever),

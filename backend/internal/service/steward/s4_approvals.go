@@ -105,6 +105,15 @@ func (s *Service) decideApproval(ctx context.Context, id string, status string, 
 				s.recordAutonomyApprovalPolicyDenied(ctx, "approval_request", current.ID, issue)
 				return domain.StewardApprovalRequest{}, fmt.Errorf("current autonomy rule blocks approval: %s", issue)
 			}
+			permissionPolicy, permissionErr := s.ResolvePermissionPolicy(ctx, proposal.PermissionLevel, proposal.Action)
+			if permissionErr != nil || permissionPolicy.ExecutionMode == PolicyModeDeny {
+				issue := "permission policy denies approval"
+				if permissionErr != nil {
+					issue = permissionErr.Error()
+				}
+				s.recordAutonomyApprovalPolicyDenied(ctx, "approval_request", current.ID, issue)
+				return domain.StewardApprovalRequest{}, fmt.Errorf("permission policy blocks approval: %s", issue)
+			}
 		}
 	}
 

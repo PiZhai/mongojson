@@ -100,6 +100,22 @@ func (s *Service) executeAutonomyProposal(ctx context.Context, id string, manual
 		}
 		return run, nil
 	}
+	permissionPolicy, permissionPolicyErr := s.ResolvePermissionPolicy(ctx, proposal.PermissionLevel, proposal.Action)
+	if permissionPolicyErr != nil || permissionPolicy.ExecutionMode == PolicyModeDeny {
+		issue := "permission policy denies execution"
+		if permissionPolicyErr != nil {
+			issue = permissionPolicyErr.Error()
+		}
+		run, runErr := s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
+			proposal.TriggerReason, "permission policy blocked execution", issue)
+		if runErr != nil {
+			return domain.StewardAutonomousRun{}, runErr
+		}
+		if proposal.Status != ProposalDismissed && proposal.Status != ProposalExecuted {
+			_, _ = s.updateProposalStatusLocked(ctx, id, ProposalBlocked, "autonomy.proposal.permission_block")
+		}
+		return run, nil
+	}
 	if manualRetry {
 		latestFailed, retryErr := s.latestAutonomyExecutionFailed(ctx, proposal.ID)
 		if retryErr != nil {
@@ -126,10 +142,11 @@ func (s *Service) executeAutonomyProposal(ctx context.Context, id string, manual
 		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "autonomy paused; execution skipped", "resume autonomy before executing")
 	}
-	automaticAllowed := proposal.Policy == AutonomyPolicyAuto
+	automaticAllowed := proposal.Policy == AutonomyPolicyAuto && permissionPolicy.ExecutionMode == PolicyModeAuto
 	if proposal.RuleID != nil {
 		var currentRuleIssue string
-		automaticAllowed, currentRuleIssue, err = s.currentRuleExecutionPolicy(ctx, proposal)
+		var ruleAutomatic bool
+		ruleAutomatic, currentRuleIssue, err = s.currentRuleExecutionPolicy(ctx, proposal)
 		if err != nil {
 			return domain.StewardAutonomousRun{}, err
 		}
@@ -137,17 +154,17 @@ func (s *Service) executeAutonomyProposal(ctx context.Context, id string, manual
 			return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 				proposal.TriggerReason, "current autonomy rule blocked execution", currentRuleIssue)
 		}
+		automaticAllowed = ruleAutomatic && permissionPolicy.ExecutionMode == PolicyModeAuto
 	}
 	if proposal.Status != ProposalApproved && !automaticAllowed {
 		_, _ = s.createApprovalRequest(ctx, &proposal.ID, "approve autonomous execution", "proposal needs explicit approval", proposal.ImpactSummary)
 		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "approval required before execution", "approve proposal or change rule policy")
 	}
-	if proposal.Policy == AutonomyPolicyNever || isHighRisk(proposal.RiskLevel, proposal.PermissionLevel) ||
-		permissionRank(proposal.PermissionLevel) > permissionRank(settings.MaxAutoPermission) {
+	if proposal.Policy == AutonomyPolicyNever || permissionRank(proposal.PermissionLevel) > permissionRank(settings.MaxAutoPermission) {
 		_, _ = s.createApprovalRequest(ctx, &proposal.ID, "manual high-risk review", proposal.RiskLevel, proposal.ImpactSummary)
 		run, runErr := s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
-			proposal.TriggerReason, "high-risk proposal blocked; plan only", "manually review and execute outside autonomy")
+			proposal.TriggerReason, "proposal exceeds the configured global permission ceiling", "raise max_auto_permission or lower the proposal permission")
 		if runErr != nil {
 			return domain.StewardAutonomousRun{}, runErr
 		}
@@ -164,6 +181,31 @@ func (s *Service) executeAutonomyProposal(ctx context.Context, id string, manual
 		}
 		_, _ = s.updateProposalStatusLocked(ctx, id, ProposalBlocked, "autonomy.proposal.block")
 		return run, nil
+	}
+	if permissionPolicy.CooldownSeconds > 0 {
+		ready, retryAt, cooldownErr := s.permissionExecutionCooldownReady(ctx, proposal, permissionPolicy)
+		if cooldownErr != nil {
+			return domain.StewardAutonomousRun{}, cooldownErr
+		}
+		if !ready {
+			return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
+				proposal.TriggerReason, "permission policy cooldown is active", "retry after "+retryAt.UTC().Format(time.RFC3339))
+		}
+	}
+	if permissionPolicy.RequireSimulation || permissionPolicy.RequireRollback {
+		simulation, simulationErr := executor.Simulate(ctx, proposal)
+		if simulationErr != nil {
+			return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
+				proposal.TriggerReason, "required simulation failed", simulationErr.Error())
+		}
+		if validationErr := validateAutonomyExecutionResult(executor, simulation, false); validationErr != nil {
+			return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
+				proposal.TriggerReason, "required simulation returned an invalid result", validationErr.Error())
+		}
+		if permissionPolicy.RequireRollback && strings.TrimSpace(simulation.RecoveryHint) == "" {
+			return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
+				proposal.TriggerReason, "permission policy requires a rollback plan", "executor simulation did not provide recovery_hint")
+		}
 	}
 	execution, err := executor.Execute(ctx, proposal)
 	if err != nil {

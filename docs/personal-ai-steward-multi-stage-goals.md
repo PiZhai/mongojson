@@ -177,6 +177,7 @@
 ### 关键交付物
 
 - [S2 个人数据底座](personal-ai-steward-s2-data-foundation.md)。
+- [自动记录、关联记忆与信息生命周期](personal-ai-steward-activity-memory-lifecycle.md)。
 - 数据模型文档。
 - 数据库迁移策略。
 - 时间线页面。

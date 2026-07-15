@@ -34,12 +34,34 @@ func (s *Service) CreateAutonomyProposal(ctx context.Context, input CreateAutono
 	status := ProposalCandidate
 	blockedReason := ""
 	executor, executorFound := s.autonomyActionExecutor(action)
-	if policy == AutonomyPolicyNever || isHighRisk(risk, permission) {
+	permissionPolicy, permissionPolicyErr := s.ResolvePermissionPolicy(ctx, permission, action)
+	if policy == AutonomyPolicyNever {
 		status = ProposalBlocked
-		blockedReason = "high risk or denied policy"
+		blockedReason = "rule policy is never"
+	} else if permissionPolicyErr != nil || permissionPolicy.ExecutionMode == PolicyModeDeny {
+		status = ProposalBlocked
+		blockedReason = "permission policy denied action"
+		if permissionPolicyErr != nil {
+			blockedReason = permissionPolicyErr.Error()
+		}
 	} else if !executorFound {
 		status = ProposalBlocked
 		blockedReason = "no registered executor for action " + action
+	} else if strings.HasPrefix(action, AutonomyActionConfiguredToolPrefix) {
+		tool, found, toolErr := s.findToolDefinition(ctx, action)
+		if toolErr != nil {
+			return domain.StewardAutonomyProposal{}, toolErr
+		}
+		if !found || !tool.Enabled {
+			status = ProposalBlocked
+			blockedReason = "configured tool is missing or disabled"
+		} else if permissionRank(permission) < permissionRank(tool.PermissionLevel) {
+			status = ProposalBlocked
+			blockedReason = fmt.Sprintf("configured tool requires at least %s", tool.PermissionLevel)
+		} else if autonomyRiskRank(risk) < autonomyRiskRank(tool.RiskLevel) {
+			status = ProposalBlocked
+			blockedReason = fmt.Sprintf("configured tool requires risk level %s", tool.RiskLevel)
+		}
 	} else if maxPermission := defaultString(executor.Capability().MaxPermissionLevel, PermissionA3); permissionRank(permission) > permissionRank(maxPermission) {
 		status = ProposalBlocked
 		blockedReason = fmt.Sprintf("action %s allows up to %s", action, maxPermission)
@@ -153,6 +175,15 @@ func (s *Service) ApproveAutonomyProposal(ctx context.Context, id string) (domai
 	} else if issue != "" {
 		s.recordAutonomyApprovalPolicyDenied(gatedCtx, "autonomy_proposal", proposal.ID, issue)
 		return domain.StewardAutonomyProposal{}, fmt.Errorf("current autonomy rule blocks approval: %s", issue)
+	}
+	permissionPolicy, err := s.ResolvePermissionPolicy(gatedCtx, proposal.PermissionLevel, proposal.Action)
+	if err != nil || permissionPolicy.ExecutionMode == PolicyModeDeny {
+		issue := "permission policy denies approval"
+		if err != nil {
+			issue = err.Error()
+		}
+		s.recordAutonomyApprovalPolicyDenied(gatedCtx, "autonomy_proposal", proposal.ID, issue)
+		return domain.StewardAutonomyProposal{}, fmt.Errorf("permission policy blocks approval: %s", issue)
 	}
 	return s.updateProposalStatusLocked(gatedCtx, id, ProposalApproved, "autonomy.proposal.approve")
 }

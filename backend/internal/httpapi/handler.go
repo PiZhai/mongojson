@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -316,6 +317,205 @@ func (h *Handler) updateStewardCollector(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.StewardCollectorConfig{"collector": collector})
+}
+
+func (h *Handler) listStewardDataPolicies(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardAutomationPolicyService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListDataPolicies(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardDataPolicy{"data_policies": items})
+}
+
+func (h *Handler) upsertStewardDataPolicy(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardAutomationPolicyService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpsertDataPolicyInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.UpsertDataPolicy(r.Context(), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardDataPolicy{"data_policy": item})
+}
+
+func (h *Handler) listStewardPermissionPolicies(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardAutomationPolicyService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListPermissionPolicies(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardPermissionPolicy{"permission_policies": items})
+}
+
+func (h *Handler) upsertStewardPermissionPolicy(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardAutomationPolicyService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpsertPermissionPolicyInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.UpsertPermissionPolicy(r.Context(), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardPermissionPolicy{"permission_policy": item})
+}
+
+func (h *Handler) listStewardModelDispatches(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardAutomationPolicyService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListModelDispatches(r.Context(), queryLimit(r, 100))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardModelDispatch{"model_dispatches": items})
+}
+
+func (h *Handler) runStewardModelDispatches(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardAutomationPolicyService(w)
+	if !ok {
+		return
+	}
+	items, err := service.RunModelDispatches(r.Context(), queryLimit(r, 20))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardModelDispatch{"model_dispatches": items})
+}
+
+func (h *Handler) listStewardToolDefinitions(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardAutomationPolicyService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListToolDefinitions(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardToolDefinition{"tools": items})
+}
+
+func (h *Handler) upsertStewardToolDefinition(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardAutomationPolicyService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpsertToolDefinitionInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.UpsertToolDefinition(r.Context(), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardToolDefinition{"tool": item})
+}
+
+func (h *Handler) listStewardConversations(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListConversations(r.Context(), queryLimit(r, 30))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardConversation{"conversations": items})
+}
+
+func (h *Handler) createStewardConversation(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	var body steward.CreateConversationInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.CreateConversation(r.Context(), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.StewardConversation{"conversation": item})
+}
+
+func (h *Handler) listStewardConversationMessages(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListConversationMessages(r.Context(), chi.URLParam(r, "id"), queryLimit(r, 100))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardConversationMessage{"messages": items})
+}
+
+func (h *Handler) sendStewardConversationMessage(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	var body steward.SendConversationMessageInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	result, err := service.SendConversationMessage(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, result)
+}
+
+func (h *Handler) decideStewardConversationSuggestion(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	var body steward.DecideConversationSuggestionInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.DecideConversationSuggestion(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardConversationSuggestion{"suggestion": item})
 }
 
 func (h *Handler) listStewardEvents(w http.ResponseWriter, r *http.Request) {
@@ -1425,12 +1625,271 @@ func (h *Handler) listStewardAutonomousRuns(w http.ResponseWriter, r *http.Reque
 	respondJSON(w, http.StatusOK, map[string][]domain.StewardAutonomousRun{"runs": runs})
 }
 
+func (h *Handler) createStewardObservation(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	if !isLocalRequest(r) {
+		httpError(w, http.StatusForbidden, "activity observations can only be written through the local management endpoint")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 44<<20)
+	var body steward.CreateObservationInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid observation JSON body")
+		return
+	}
+	item, err := service.CreateObservation(r.Context(), body)
+	if err != nil {
+		if errors.Is(err, steward.ErrCredentialDataBlocked) {
+			httpError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.StewardObservation{"observation": item})
+}
+
+func (h *Handler) listStewardObservations(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListObservations(r.Context(), queryLimit(r, 100))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardObservation{"observations": items})
+}
+
+func (h *Handler) listStewardActivitySessions(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListActivitySessions(r.Context(), queryLimit(r, 100))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardActivitySession{"sessions": items})
+}
+
+func (h *Handler) listStewardEntities(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListEntities(r.Context(), queryLimit(r, 100))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardEntity{"entities": items})
+}
+
+func (h *Handler) listStewardEntityRelations(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListEntityRelations(r.Context(), chi.URLParam(r, "id"), queryLimit(r, 100))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardRelation{"relations": items})
+}
+
+func (h *Handler) listStewardHabits(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListHabits(r.Context(), queryLimit(r, 100))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardHabit{"habits": items})
+}
+
+func (h *Handler) updateStewardHabit(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpdateInferenceInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid habit decision JSON body")
+		return
+	}
+	item, err := service.UpdateHabit(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardHabit{"habit": item})
+}
+
+func (h *Handler) listStewardInsights(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListInsights(r.Context(), queryLimit(r, 100))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardInsight{"insights": items})
+}
+
+func (h *Handler) updateStewardInsight(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpdateInferenceInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid insight decision JSON body")
+		return
+	}
+	item, err := service.UpdateInsight(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardInsight{"insight": item})
+}
+
+func (h *Handler) getStewardLifecycleStatus(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	status, err := service.GetLifecycleStatus(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardLifecycleStatus{"lifecycle": status})
+}
+
+func (h *Handler) evaluateStewardLifecycle(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	var body steward.EvaluateLifecycleInput
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	evaluation, err := service.EvaluateLifecycle(r.Context(), body)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardLifecycleEvaluation{"evaluation": evaluation})
+}
+
+func (h *Handler) purgeStewardLifecycle(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	var body steward.PurgeLifecycleInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid lifecycle purge JSON body")
+		return
+	}
+	result, err := service.PurgeLifecycle(r.Context(), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardPurgeResult{"purge": result})
+}
+
+func (h *Handler) listStewardRetentionPolicies(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListRetentionPolicies(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardRetentionPolicy{"retention_policies": items})
+}
+
+func (h *Handler) updateStewardRetentionPolicy(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardActivityService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpdateRetentionPolicyInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid retention policy JSON body")
+		return
+	}
+	item, err := service.UpdateRetentionPolicy(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardRetentionPolicy{"retention_policy": item})
+}
+
+func isLocalRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(r.RemoteAddr)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func (h *Handler) requireStewardService(w http.ResponseWriter) (StewardStore, bool) {
 	if h.deps.StewardService == nil {
 		httpError(w, http.StatusServiceUnavailable, "steward S1 prototype is not configured")
 		return nil, false
 	}
 	return h.deps.StewardService, true
+}
+
+func (h *Handler) requireStewardActivityService(w http.ResponseWriter) (StewardActivityStore, bool) {
+	service, ok := h.deps.StewardService.(StewardActivityStore)
+	if !ok || service == nil {
+		httpError(w, http.StatusServiceUnavailable, "steward activity and lifecycle service is not configured")
+		return nil, false
+	}
+	return service, true
+}
+
+func (h *Handler) requireStewardConversationService(w http.ResponseWriter) (StewardConversationStore, bool) {
+	service, ok := h.deps.StewardService.(StewardConversationStore)
+	if !ok || service == nil {
+		httpError(w, http.StatusServiceUnavailable, "steward conversation service is not configured")
+		return nil, false
+	}
+	return service, true
+}
+
+func (h *Handler) requireStewardAutomationPolicyService(w http.ResponseWriter) (StewardAutomationPolicyStore, bool) {
+	service, ok := h.deps.StewardService.(StewardAutomationPolicyStore)
+	if !ok || service == nil {
+		httpError(w, http.StatusServiceUnavailable, "steward automation policy service is not configured")
+		return nil, false
+	}
+	return service, true
 }
 
 func (h *Handler) requireStewardPeerService(w http.ResponseWriter) (StewardPeerStore, bool) {

@@ -111,7 +111,7 @@ func TestValidateStrictServiceSecurityRejectsUnsafeAdvisorConfig(t *testing.T) {
 		"STEWARD_LLM_BASE_URL":       "https://api.openai.com/v1",
 		"STEWARD_LLM_MODEL":          "advisor-model",
 		"STEWARD_LLM_API_KEY":        "advisor-key",
-		"STEWARD_LLM_MAX_DATA_LEVEL": "D2",
+		"STEWARD_LLM_MAX_DATA_LEVEL": "D7",
 	}
 	err = validateStrictServiceSecurity(options)
 	if err == nil || !strings.Contains(err.Error(), "STEWARD_LLM_MAX_DATA_LEVEL") {
@@ -377,7 +377,7 @@ func TestServiceInstallOptionsFromEnvSupportsStrictValidation(t *testing.T) {
 	env["STEWARD_LLM_BASE_URL"] = "https://api.openai.com/v1"
 	env["STEWARD_LLM_MODEL"] = "advisor-model"
 	env["STEWARD_LLM_API_KEY"] = "advisor-key"
-	env["STEWARD_LLM_MAX_DATA_LEVEL"] = "D2"
+	env["STEWARD_LLM_MAX_DATA_LEVEL"] = "D7"
 	err = validateStrictServiceSecurity(serviceInstallOptionsFromEnv("MongojsonSteward", env))
 	if err == nil || !strings.Contains(err.Error(), "STEWARD_LLM_MAX_DATA_LEVEL") {
 		t.Fatalf("expected advisor env to participate in strict validation, got %v", err)

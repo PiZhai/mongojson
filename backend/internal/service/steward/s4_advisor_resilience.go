@@ -92,6 +92,52 @@ func (a *resilientAutonomyAdvisor) Suggest(ctx context.Context, input AutonomyAd
 	return suggestion, nil
 }
 
+func (a *resilientAutonomyAdvisor) Converse(ctx context.Context, input ConversationAdvisorInput) (ConversationAdvisorResponse, error) {
+	if a == nil || a.base == nil {
+		return ConversationAdvisorResponse{}, fmt.Errorf("autonomy advisor disabled: disabled")
+	}
+	conversationAdvisor, ok := a.base.(ConversationAdvisor)
+	if !ok {
+		return ConversationAdvisorResponse{}, fmt.Errorf("configured advisor does not support conversation")
+	}
+	if err := a.checkCircuit(); err != nil {
+		return ConversationAdvisorResponse{}, err
+	}
+	response, err := conversationAdvisor.Converse(ctx, input)
+	if err != nil {
+		if errors.Is(err, ErrAdvisorDataLevelDenied) {
+			return ConversationAdvisorResponse{}, err
+		}
+		a.recordFailure(err)
+		return ConversationAdvisorResponse{}, err
+	}
+	a.recordSuccess()
+	return response, nil
+}
+
+func (a *resilientAutonomyAdvisor) AnalyzeObservation(ctx context.Context, input ObservationModelInput) (ObservationModelOutput, error) {
+	if a == nil || a.base == nil {
+		return ObservationModelOutput{}, fmt.Errorf("autonomy advisor disabled: disabled")
+	}
+	advisor, ok := a.base.(ObservationModelAdvisor)
+	if !ok {
+		return ObservationModelOutput{}, fmt.Errorf("configured advisor does not support observation analysis")
+	}
+	if err := a.checkCircuit(); err != nil {
+		return ObservationModelOutput{}, err
+	}
+	response, err := advisor.AnalyzeObservation(ctx, input)
+	if err != nil {
+		if errors.Is(err, ErrAdvisorDataLevelDenied) {
+			return ObservationModelOutput{}, err
+		}
+		a.recordFailure(err)
+		return ObservationModelOutput{}, err
+	}
+	a.recordSuccess()
+	return response, nil
+}
+
 func (a *resilientAutonomyAdvisor) checkCircuit() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

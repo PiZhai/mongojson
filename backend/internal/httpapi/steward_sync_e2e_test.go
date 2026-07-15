@@ -1358,7 +1358,7 @@ func TestStewardAutonomyControlRejectsInvalidValuesThroughHTTP(t *testing.T) {
 		body   string
 	}{
 		{name: "unknown mode", method: http.MethodPatch, path: "/steward/autonomy/settings", body: `{"mode":"automatic"}`},
-		{name: "A4 automatic permission", method: http.MethodPatch, path: "/steward/autonomy/settings", body: `{"max_auto_permission":"A4"}`},
+		{name: "unknown automatic permission", method: http.MethodPatch, path: "/steward/autonomy/settings", body: `{"max_auto_permission":"A10"}`},
 		{name: "unknown rule policy", method: http.MethodPatch, path: "/steward/autonomy/rules/" + ruleBefore.ID, body: `{"policy":"allow"}`},
 		{name: "unknown proposal risk", method: http.MethodPost, path: "/steward/autonomy/proposals", body: `{"title":"invalid","risk_level":"unknown"}`},
 		{name: "unknown proposal data level", method: http.MethodPost, path: "/steward/autonomy/proposals", body: `{"title":"invalid","data_level":"secret"}`},

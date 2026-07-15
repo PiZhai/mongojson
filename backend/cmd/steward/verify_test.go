@@ -208,7 +208,7 @@ func TestRunRuntimeVerificationStrictSecurityChecksAdvisorRuntime(t *testing.T) 
 			"provider":       "openai-compatible",
 			"model":          "advisor-model",
 			"base_url":       "https://api.openai.com/v1",
-			"max_data_level": "D2",
+			"max_data_level": "D7",
 		})})
 	})
 
@@ -345,16 +345,16 @@ func TestRunRuntimeVerificationAdvisorPrivacyProbe(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode privacy probe body: %v", err)
 		}
-		if body["data_level"] != "D2" {
-			t.Fatalf("privacy probe data_level = %#v, want D2", body["data_level"])
+		if body["data_level"] != "D7" {
+			t.Fatalf("privacy probe data_level = %#v, want D7", body["data_level"])
 		}
 		advisorPrivacyProbeCalled = true
 		writeTestJSON(w, map[string]any{"probe": map[string]any{
 			"ok":          false,
-			"data_level":  "D2",
+			"data_level":  "D7",
 			"duration_ms": 0,
 			"probed_at":   "2026-07-05T00:00:00Z",
-			"error":       "data level D2 exceeds advisor max D1",
+			"error":       "data level D7 exceeds advisor max D1",
 			"status": map[string]any{
 				"enabled":        true,
 				"provider":       "openai-compatible",
@@ -1457,22 +1457,23 @@ func TestAutonomyRetryRuntimeIssues(t *testing.T) {
 }
 
 func TestAutonomyPolicyRuntimeIssues(t *testing.T) {
-	validSettings := map[string]any{"mode": "controlled", "max_auto_permission": "A3"}
+	validSettings := map[string]any{"mode": "controlled", "max_auto_permission": "A9"}
 	validRules := []any{
 		map[string]any{"name": "auto-low", "action": "create_local_task", "policy": "auto", "risk_level": "low", "max_permission_level": "A3"},
 		map[string]any{"name": "high-plan", "action": "block_high_risk_execution", "policy": "never", "risk_level": "high", "max_permission_level": "A4"},
+		map[string]any{"name": "configured-high", "action": "tool:backup", "policy": "auto", "risk_level": "high", "max_permission_level": "A7"},
 	}
 	if issues := autonomyPolicyRuntimeIssues(validSettings, validRules); len(issues) != 0 {
 		t.Fatalf("valid autonomy policy issues = %v", issues)
 	}
-	invalidSettings := map[string]any{"mode": "automatic", "max_auto_permission": "A4"}
+	invalidSettings := map[string]any{"mode": "automatic", "max_auto_permission": "A10"}
 	invalidRules := []any{
 		map[string]any{"name": "unsafe-auto", "action": "send", "policy": "auto", "risk_level": "medium", "max_permission_level": "A6"},
 		map[string]any{"name": "invalid", "policy": "allow", "risk_level": "unknown", "max_permission_level": "root"},
 	}
 	issues := autonomyPolicyRuntimeIssues(invalidSettings, invalidRules)
-	if len(issues) != 7 {
-		t.Fatalf("invalid autonomy policy issues = %v, want 7", issues)
+	if len(issues) != 6 {
+		t.Fatalf("invalid autonomy policy issues = %v, want 6", issues)
 	}
 }
 

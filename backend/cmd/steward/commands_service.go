@@ -243,6 +243,7 @@ func serviceInstall(args []string) error {
 		LocalEncryptionKeyID:        envOrDefault("STEWARD_LOCAL_ENCRYPTION_KEY_ID", ""),
 		LocalEncryptionPreviousKeys: envOrDefault("STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS", ""),
 		HeartbeatInterval:           envDurationOrDefault("STEWARD_HEARTBEAT_INTERVAL", time.Minute),
+		CollectionInterval:          envDurationOrDefault("STEWARD_COLLECTION_INTERVAL", 5*time.Minute),
 		SyncInterval:                envDurationOrDefault("STEWARD_SYNC_INTERVAL", 0),
 		AutonomyInterval:            envDurationOrDefault("STEWARD_AUTONOMY_INTERVAL", 0),
 		LogDir:                      envOrDefault("STEWARD_LOG_DIR", ""),
@@ -282,6 +283,7 @@ func serviceInstall(args []string) error {
 	fs.StringVar(&opts.LocalEncryptionKeyID, "local-encryption-key-id", opts.LocalEncryptionKeyID, "STEWARD_LOCAL_ENCRYPTION_KEY_ID stored in local encrypted sync payload envelopes")
 	fs.StringVar(&opts.LocalEncryptionPreviousKeys, "local-encryption-previous-keys", opts.LocalEncryptionPreviousKeys, "STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS comma-separated key_id:base64 entries accepted for decrypt-only local key rotation")
 	fs.DurationVar(&opts.HeartbeatInterval, "heartbeat-interval", opts.HeartbeatInterval, "STEWARD_HEARTBEAT_INTERVAL for agent heartbeat updates")
+	fs.DurationVar(&opts.CollectionInterval, "collection-interval", opts.CollectionInterval, "STEWARD_COLLECTION_INTERVAL for enabled local metadata collectors")
 	fs.DurationVar(&opts.SyncInterval, "sync-interval", opts.SyncInterval, "STEWARD_SYNC_INTERVAL for background trusted-peer sync; 0 disables it")
 	fs.DurationVar(&opts.AutonomyInterval, "autonomy-interval", opts.AutonomyInterval, "STEWARD_AUTONOMY_INTERVAL for background autonomy scans; 0 disables it")
 	fs.StringVar(&opts.LogDir, "log-dir", opts.LogDir, "STEWARD_LOG_DIR for append-only service process logs")
@@ -291,7 +293,7 @@ func serviceInstall(args []string) error {
 	llmAPIKey := fs.String("llm-api-key", envOrDefault("STEWARD_LLM_API_KEY", ""), "STEWARD_LLM_API_KEY for the S4 autonomy advisor; dry-run output is redacted")
 	llmAllowNoAPIKey := fs.Bool("llm-allow-no-api-key", envBoolOrDefault("STEWARD_LLM_ALLOW_NO_API_KEY", false), "Set STEWARD_LLM_ALLOW_NO_API_KEY=true for local OpenAI-compatible endpoints")
 	llmTimeout := fs.Duration("llm-timeout", envDurationOrDefault("STEWARD_LLM_TIMEOUT", 0), "STEWARD_LLM_TIMEOUT for advisor HTTP requests; 0 omits the value")
-	llmMaxDataLevel := fs.String("llm-max-data-level", envOrDefault("STEWARD_LLM_MAX_DATA_LEVEL", ""), "STEWARD_LLM_MAX_DATA_LEVEL sent to the S4 autonomy advisor, normally D0 or D1")
+	llmMaxDataLevel := fs.String("llm-max-data-level", envOrDefault("STEWARD_LLM_MAX_DATA_LEVEL", ""), "STEWARD_LLM_MAX_DATA_LEVEL sent to the configured model, D0-D6; per-level database policy remains authoritative")
 	llmFailureThreshold := fs.Int("llm-failure-threshold", envIntOrDefault("STEWARD_LLM_FAILURE_THRESHOLD", 0), "STEWARD_LLM_FAILURE_THRESHOLD for advisor circuit breaking; 0 omits the value")
 	llmFailureCooldown := fs.Duration("llm-failure-cooldown", envDurationOrDefault("STEWARD_LLM_FAILURE_COOLDOWN", 0), "STEWARD_LLM_FAILURE_COOLDOWN for advisor circuit breaking; 0 omits the value")
 	autonomyRetryMaxAttempts := fs.Int("autonomy-retry-max-attempts", envIntOrDefault("STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS", 0), "Maximum automatic execution attempts before manual recovery is required; 0 omits the value")
@@ -313,7 +315,7 @@ func serviceInstall(args []string) error {
 	fs.DurationVar(&postVerify.WatchInterval, "verify-watch-interval", time.Minute, "Interval between post-install verification samples when --verify-watch-duration is set")
 	fs.BoolVar(&postVerify.AdvisorProbe, "verify-advisor-probe", false, "Call the configured S4 autonomy advisor during post-install verification")
 	fs.BoolVar(&postVerify.AdvisorProbeEachSample, "verify-advisor-probe-each-sample", false, "When used with --verify-advisor-probe and --verify-watch-duration, call the advisor in every watch sample")
-	fs.BoolVar(&postVerify.AdvisorPrivacyProbe, "verify-advisor-privacy-probe", false, "Verify the S4 autonomy advisor rejects D2 data during post-install verification")
+	fs.BoolVar(&postVerify.AdvisorPrivacyProbe, "verify-advisor-privacy-probe", false, "Verify the S4 autonomy advisor rejects unsupported D7 data during post-install verification")
 	fs.StringVar(&postVerify.EvidenceDir, "verify-evidence-dir", "", "Write post-install verification evidence JSON to this directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -542,7 +544,7 @@ func serviceEnv(args []string) error {
 	fs.DurationVar(&postVerify.WatchInterval, "verify-watch-interval", time.Minute, "Interval between post-apply verification samples when --verify-watch-duration is set")
 	fs.BoolVar(&postVerify.AdvisorProbe, "verify-advisor-probe", false, "Call the configured S4 autonomy advisor during post-apply verification")
 	fs.BoolVar(&postVerify.AdvisorProbeEachSample, "verify-advisor-probe-each-sample", false, "When used with --verify-advisor-probe and --verify-watch-duration, call the advisor in every watch sample")
-	fs.BoolVar(&postVerify.AdvisorPrivacyProbe, "verify-advisor-privacy-probe", false, "Verify the S4 autonomy advisor rejects D2 data during post-apply verification")
+	fs.BoolVar(&postVerify.AdvisorPrivacyProbe, "verify-advisor-privacy-probe", false, "Verify the S4 autonomy advisor rejects unsupported D7 data during post-apply verification")
 	fs.StringVar(&postVerify.EvidenceDir, "verify-evidence-dir", "", "Write post-apply verification evidence JSON to this directory")
 	rotateSyncKeyID := fs.String("rotate-sync-key-id", "", "Generate a new STEWARD_SYNC_ENCRYPTION_KEY with this id and keep the current key as a previous decrypt-only key")
 	rotateLocalKeyID := fs.String("rotate-local-key-id", "", "Generate a new STEWARD_LOCAL_ENCRYPTION_KEY with this id and keep the current key as a previous decrypt-only key")

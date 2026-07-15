@@ -480,7 +480,7 @@ commands:
                       use --verify-evidence-dir to persist post-install verification JSON
                       use --verify-advisor-probe to include S4 model live checks
                       use --verify-advisor-probe-each-sample with --verify-watch-duration for long-run model checks
-                      use --verify-advisor-privacy-probe to prove D2 data is rejected before model submission
+                      use --verify-advisor-privacy-probe to prove unsupported D7 data is rejected before model submission
   service plan        render offline Windows/macOS/Linux service install plans from --current-env-file
                       use --target windows,darwin,linux to choose platforms
                       use --strict-security to validate S3/S4 keys before rendering
@@ -495,7 +495,7 @@ commands:
                       use --verify-evidence-dir to persist post-apply verification JSON
                       use --verify-advisor-probe to include S4 model live checks
                       use --verify-advisor-probe-each-sample with --verify-watch-duration for long-run model checks
-                      use --verify-advisor-privacy-probe to prove D2 data is rejected before model submission
+                      use --verify-advisor-privacy-probe to prove unsupported D7 data is rejected before model submission
   service uninstall   uninstall the system service entry
   service start       start the installed service
   service stop        stop the installed service
@@ -505,7 +505,7 @@ commands:
                       use --evidence-dir to persist timestamped verification JSON
                       use --advisor-probe to call the configured S4 model advisor once
                       use --advisor-probe-each-sample with --watch-duration for long-run model checks
-                      use --advisor-privacy-probe to verify D2 data is rejected before model submission
+                      use --advisor-privacy-probe to verify unsupported D7 data is rejected before model submission
                       use --expect-advisor-provider/model/max-data-level to verify loaded S4 config
                       use --watch-duration to require repeated runtime samples and heartbeat advance
   verify service      verify system service status and S3/S4 runtime checks together
@@ -553,7 +553,7 @@ important flags:
   --strict-security                    require complete S3/S4 runtime safety status
   --write-probes                       create low-risk sync/autonomy probes
   --advisor-probe                      call configured S4 advisor with D0 data
-  --advisor-privacy-probe              prove D2 data is blocked before model submission
+  --advisor-privacy-probe              prove unsupported D7 data is blocked before model submission
   --watch-duration 24h                 require repeated samples and heartbeat advance
   --evidence-dir <dir>                 persist timestamped evidence JSON
   --scope user|system                  with verify service, check this service manager scope

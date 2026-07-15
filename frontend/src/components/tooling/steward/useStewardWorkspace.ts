@@ -456,6 +456,7 @@ export function useStewardWorkspace() {
     loading,
     busy,
     error,
+    refresh,
     runAction,
     submitEvent,
     submitTask,

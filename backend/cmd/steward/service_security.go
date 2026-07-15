@@ -118,6 +118,7 @@ func serviceInstallOptionsFromEnv(name string, env map[string]string) servicecon
 		LocalEncryptionKeyID:        strings.TrimSpace(env["STEWARD_LOCAL_ENCRYPTION_KEY_ID"]),
 		LocalEncryptionPreviousKeys: strings.TrimSpace(env["STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS"]),
 		HeartbeatInterval:           serviceEnvDuration(env, "STEWARD_HEARTBEAT_INTERVAL"),
+		CollectionInterval:          serviceEnvDuration(env, "STEWARD_COLLECTION_INTERVAL"),
 		SyncInterval:                serviceEnvDuration(env, "STEWARD_SYNC_INTERVAL"),
 		AutonomyInterval:            serviceEnvDuration(env, "STEWARD_AUTONOMY_INTERVAL"),
 		LogDir:                      strings.TrimSpace(env["STEWARD_LOG_DIR"]),
@@ -320,8 +321,9 @@ func validateStrictAdvisorEnvironment(env map[string]string) error {
 	if maxDataLevel == "" {
 		maxDataLevel = "D1"
 	}
-	if maxDataLevel != "D0" && maxDataLevel != "D1" {
-		problems = append(problems, "STEWARD_LLM_MAX_DATA_LEVEL must be D0 or D1 under strict security")
+	if maxDataLevel != "D0" && maxDataLevel != "D1" && maxDataLevel != "D2" && maxDataLevel != "D3" &&
+		maxDataLevel != "D4" && maxDataLevel != "D5" && maxDataLevel != "D6" {
+		problems = append(problems, "STEWARD_LLM_MAX_DATA_LEVEL must be D0-D6")
 	}
 
 	if value := strings.TrimSpace(env["STEWARD_LLM_TIMEOUT"]); value != "" {

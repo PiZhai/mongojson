@@ -283,7 +283,7 @@ func (s *Service) createSyncConflictDiagnosticProposals(ctx context.Context, lim
 
 func (s *Service) executeControlledAutoProposals(ctx context.Context, limit int) error {
 	rows, err := s.db.Pool.Query(ctx, `
-		select p.id::text,
+		select p.id::text, p.permission_level, p.action,
 		       count(run.id) filter (where run.mode = $4 and run.status = $5)::int,
 		       max(run.created_at) filter (where run.mode = $4 and run.status = $5)
 		from steward_autonomy_proposals p
@@ -302,16 +302,26 @@ func (s *Service) executeControlledAutoProposals(ctx context.Context, limit int)
 		return fmt.Errorf("list controlled auto proposals: %w", err)
 	}
 	ids := []string{}
+	batchCounts := map[string]int{}
 	for rows.Next() {
-		var id string
+		var id, permissionLevel, action string
 		var record autonomyRetryRecord
-		if err := rows.Scan(&id, &record.failedAttempts, &record.lastFailedAt); err != nil {
+		if err := rows.Scan(&id, &permissionLevel, &action, &record.failedAttempts, &record.lastFailedAt); err != nil {
 			rows.Close()
 			return err
 		}
 		proposal := domain.StewardAutonomyProposal{ID: id, Status: ProposalCandidate, Policy: AutonomyPolicyAuto}
 		s.retryPolicy.apply(&proposal, record)
 		if s.retryPolicy.automaticRetryReady(proposal) {
+			permissionPolicy, policyErr := s.ResolvePermissionPolicy(ctx, permissionLevel, action)
+			if policyErr != nil || permissionPolicy.ExecutionMode != PolicyModeAuto {
+				continue
+			}
+			batchKey := permissionLevel + "\x00" + action
+			if batchCounts[batchKey] >= permissionPolicy.MaxBatchSize {
+				continue
+			}
+			batchCounts[batchKey]++
 			ids = append(ids, id)
 			if len(ids) >= limit {
 				break

@@ -46,13 +46,17 @@ func (s *Service) recordAutonomousRun(ctx context.Context, proposalID *string, r
 		}
 		errorSummary = stringPtr(summary)
 	}
+	permissionLevel, dataLevel := PermissionA3, DataD2
+	if proposalID != nil && strings.TrimSpace(*proposalID) != "" {
+		_ = s.db.Pool.QueryRow(ctx, `select permission_level,data_level from steward_autonomy_proposals where id=$1`, *proposalID).Scan(&permissionLevel, &dataLevel)
+	}
 	auditID, _ := s.recordAudit(ctx, AuditInput{
 		Actor:           "autonomy",
 		Action:          "autonomy.run." + status,
 		TargetType:      "autonomous_run",
 		Source:          mode,
-		PermissionLevel: PermissionA3,
-		DataLevel:       DataD2,
+		PermissionLevel: permissionLevel,
+		DataLevel:       dataLevel,
 		InputSummary:    triggerReason,
 		OutputSummary:   impactSummary,
 		ResultStatus:    mapRunStatusToAudit(status),

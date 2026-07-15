@@ -60,7 +60,7 @@ go run ./cmd/server
 
 ### Private Steward Software
 
-私人管家可以构建为 Windows、macOS 和 Linux 后台软件目录。每个默认产物同时包含 `steward` CLI/服务二进制和 Web 工作台：
+私人管家可以构建为 Windows、macOS 和 Linux 后台软件目录。每个默认产物同时包含 `steward` CLI/服务二进制、`steward-companion` 用户态加密缓冲进程和 Web 工作台：
 
 ```powershell
 .\deploy\build-steward.ps1 -Version local
@@ -77,7 +77,9 @@ go run ./cmd/server
 ./steward run
 ```
 
-默认本地管理地址是 `http://127.0.0.1:18080`，工作台入口是 `http://127.0.0.1:18080/tools/steward`。二进制会自动托管同级 `ui/`，仍需要可用的 PostgreSQL `DATABASE_URL`。从构建发布包到三台真实设备安装、配对和 24 小时验收的完整步骤见 [三端打包、安装与验证教程](docs/personal-ai-steward-three-platform-deployment-guide.md)；协议和验收字段定义见 [S3/S4 运行与验证基线](docs/personal-ai-steward-s3-s4-runtime.md)。
+默认本地管理地址是 `http://127.0.0.1:18080`，工作台入口是 `http://127.0.0.1:18080/tools/steward`。二进制会自动托管同级 `ui/`，仍需要可用的 PostgreSQL `DATABASE_URL`。从构建发布包到三台真实设备安装、配对和 24 小时验收的完整步骤见 [三端打包、安装与验证教程](docs/personal-ai-steward-three-platform-deployment-guide.md)；自动记录、证据关系和清理规则见 [自动记录、关联记忆与信息生命周期](docs/personal-ai-steward-activity-memory-lifecycle.md)；协议和验收字段定义见 [S3/S4 运行与验证基线](docs/personal-ai-steward-s3-s4-runtime.md)。
+
+工作台支持本机持久化对话，以及 D0-D6 数据策略和 A0-A9 操作策略矩阵。每个数据等级可按来源独立设置禁止、手动或自动采集，独立设置是否发送模型及 `metadata/summary/redacted/raw` 内容形态；每个权限等级可按动作独立设置执行模式、模拟、回滚、批量和冷却。D4-D6 观察、对话和候选使用本地 AES-GCM 加密。D5 凭据检测会先把伪装成低等级的内容提升为 D5；默认仍拒绝，只有 companion 白名单、中央数据策略、A6 模型外发策略和模型最高等级同时允许时才可保存或外发。高权限执行只接受已登记的结构化工具，不把模型文本作为 shell 命令。
 
 目标主机安装先用受保护的服务环境 JSON 做无写入计划；确认后必须从管理员/root 终端显式执行真实安装：
 

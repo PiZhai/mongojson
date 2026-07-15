@@ -18,7 +18,7 @@ func (c cli) verifyRuntime(args []string) error {
 	fs.BoolVar(&opts.StrictSecurity, "strict-security", false, "Fail when sync security or enabled S4 advisor runtime safety is incomplete")
 	fs.BoolVar(&opts.AdvisorProbe, "advisor-probe", false, "Call the configured S4 autonomy advisor with a D0 live probe")
 	fs.BoolVar(&opts.AdvisorProbeEachSample, "advisor-probe-each-sample", false, "When used with --advisor-probe and --watch-duration, call the S4 advisor in every watch sample")
-	fs.BoolVar(&opts.AdvisorPrivacyProbe, "advisor-privacy-probe", false, "Verify the S4 autonomy advisor rejects a D2 privacy probe before model submission")
+	fs.BoolVar(&opts.AdvisorPrivacyProbe, "advisor-privacy-probe", false, "Verify the S4 autonomy advisor rejects an unsupported D7 privacy probe before model submission")
 	fs.IntVar(&opts.AutonomyLimit, "autonomy-limit", 5, "Autonomy scan limit when write probes are enabled")
 	fs.StringVar(&opts.ExpectAgentID, "expect-agent-id", "", "Fail unless the runtime reports this local steward agent id")
 	fs.StringVar(&opts.ExpectAgentVersion, "expect-agent-version", "", "Fail unless the runtime reports this steward agent version")
@@ -648,9 +648,9 @@ func autonomyPolicyRuntimeIssues(settings map[string]any, rules []any) []string 
 		issues = append(issues, "settings.mode must be suggest_only or controlled")
 	}
 	maxAutoPermission := strings.ToUpper(strings.TrimSpace(stringAt(settings, "max_auto_permission")))
-	maxAutoRank, ok := autonomyPermissionRuntimeRank(maxAutoPermission)
-	if !ok || maxAutoRank > 3 {
-		issues = append(issues, "settings.max_auto_permission must be A0-A3")
+	_, ok := autonomyPermissionRuntimeRank(maxAutoPermission)
+	if !ok {
+		issues = append(issues, "settings.max_auto_permission must be A0-A9")
 	}
 	for index, item := range rules {
 		rule, _ := item.(map[string]any)
@@ -670,12 +670,9 @@ func autonomyPolicyRuntimeIssues(settings map[string]any, rules []any) []string 
 			issues = append(issues, label+" risk_level is invalid")
 		}
 		permission := strings.ToUpper(strings.TrimSpace(stringAt(rule, "max_permission_level")))
-		permissionRank, permissionOK := autonomyPermissionRuntimeRank(permission)
+		_, permissionOK := autonomyPermissionRuntimeRank(permission)
 		if !permissionOK {
 			issues = append(issues, label+" max_permission_level is invalid")
-		}
-		if policy == "auto" && (risk != "low" || !permissionOK || permissionRank > 3) {
-			issues = append(issues, label+" auto policy exceeds the low-risk A0-A3 execution boundary")
 		}
 	}
 	return issues
@@ -801,8 +798,8 @@ func (c cli) runRuntimeAdvisorPrivacyProbe(result *runtimeVerificationResult, ad
 		"kind":               "privacy_gate_probe",
 		"source_entity_type": "verification",
 		"title":              "S4 advisor privacy gate verification probe",
-		"summary":            "D2 probe created by steward verify runtime --advisor-privacy-probe; it must be rejected before model submission.",
-		"data_level":         "D2",
+		"summary":            "D7 probe created by steward verify runtime --advisor-privacy-probe; unsupported levels must be rejected before model submission.",
+		"data_level":         "D7",
 		"rule_name":          "advisor-privacy-probe",
 		"rule_scope":         "privacy gate verification only",
 	}
@@ -813,13 +810,13 @@ func (c cli) runRuntimeAdvisorPrivacyProbe(result *runtimeVerificationResult, ad
 	}
 	probe := mapAt(response, "probe")
 	if boolAt(probe, "ok") {
-		add("s4.advisor.privacy_probe", "error", "advisor accepted a D2 privacy probe; lower STEWARD_LLM_MAX_DATA_LEVEL before enabling S4 model suggestions", compactAdvisorProbe(probe))
+		add("s4.advisor.privacy_probe", "error", "advisor accepted an unsupported D7 privacy probe", compactAdvisorProbe(probe))
 		return
 	}
 	errorText := stringAt(probe, "error")
 	if strings.Contains(strings.ToLower(errorText), "exceeds advisor max") {
 		result.Artifacts["advisor_privacy_probe_at"] = stringAt(probe, "probed_at")
-		add("s4.advisor.privacy_probe", "ok", "advisor rejected D2 data before model submission", map[string]any{
+		add("s4.advisor.privacy_probe", "ok", "advisor rejected unsupported D7 data before model submission", map[string]any{
 			"data_level": stringAt(probe, "data_level"),
 			"error":      errorText,
 			"status":     mapAt(probe, "status"),

@@ -7,6 +7,24 @@ func (s *Service) enhanceAutonomyProposal(ctx context.Context, input CreateAuton
 	if !advisor.Status().Enabled {
 		return input
 	}
+	if s != nil && s.db != nil && s.db.Pool != nil {
+		dataPolicy, err := s.ResolveDataPolicy(ctx, defaultString(advisorInput.DataLevel, DataD0), "autonomy:"+defaultString(advisorInput.SourceEntityType, "unknown"))
+		if err != nil || dataPolicy.ModelMode != PolicyModeAuto {
+			if err == nil {
+				err = ErrDataPolicyDenied
+			}
+			s.recordAdvisorSuggestionFallback(ctx, advisorInput, err)
+			return input
+		}
+		permissionPolicy, err := s.ResolvePermissionPolicy(ctx, PermissionA6, "model:autonomy-advisor")
+		if err != nil || permissionPolicy.ExecutionMode != PolicyModeAuto {
+			if err == nil {
+				err = ErrDataPolicyDenied
+			}
+			s.recordAdvisorSuggestionFallback(ctx, advisorInput, err)
+			return input
+		}
+	}
 	suggestion, err := advisor.Suggest(ctx, advisorInput)
 	if err != nil {
 		s.recordAdvisorSuggestionFallback(ctx, advisorInput, err)

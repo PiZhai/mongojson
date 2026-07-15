@@ -64,14 +64,7 @@ func autonomyPermissionValue(value string, fallback string) (string, error) {
 }
 
 func autonomyAutoPermissionValue(value string, fallback string) (string, error) {
-	permission, err := autonomyPermissionValue(value, fallback)
-	if err != nil {
-		return "", err
-	}
-	if permissionRank(permission) > permissionRank(PermissionA3) {
-		return "", fmt.Errorf("autonomy automatic permission must be A0-A3, got %s", permission)
-	}
-	return permission, nil
+	return autonomyPermissionValue(value, fallback)
 }
 
 func autonomyDataLevelValue(value string, fallback string) (string, error) {
@@ -133,8 +126,8 @@ func validateProposalTransition(proposal domain.StewardAutonomyProposal, targetS
 		if issue := autonomyProposalPolicyIssue(proposal); issue != "" {
 			return fmt.Errorf("autonomy proposal policy contract is invalid: %s", issue)
 		}
-		if proposalRequiresManualReview(proposal) {
-			return fmt.Errorf("high-risk or denied-policy proposals cannot be approved for autonomous execution")
+		if proposal.Policy == AutonomyPolicyNever {
+			return fmt.Errorf("denied-policy proposals cannot be approved for autonomous execution")
 		}
 		return nil
 	case ProposalDismissed:
@@ -180,7 +173,7 @@ func approvalProposalTransition(approval domain.StewardApprovalRequest, proposal
 }
 
 func proposalRequiresManualReview(proposal domain.StewardAutonomyProposal) bool {
-	return autonomyProposalPolicyIssue(proposal) != "" || proposal.Policy == AutonomyPolicyNever || isHighRisk(proposal.RiskLevel, proposal.PermissionLevel)
+	return autonomyProposalPolicyIssue(proposal) != "" || proposal.Policy == AutonomyPolicyNever
 }
 
 func autonomyProposalPolicyIssue(proposal domain.StewardAutonomyProposal) string {
@@ -223,9 +216,6 @@ func evaluateCurrentRuleExecutionPolicy(proposal domain.StewardAutonomyProposal,
 	}
 	if rule.Policy == AutonomyPolicyNever {
 		return false, "current rule policy is never"
-	}
-	if isHighRisk(rule.RiskLevel, rule.MaxPermissionLevel) {
-		return false, "current rule is outside the low-risk autonomy boundary"
 	}
 	if permissionRank(proposal.PermissionLevel) > permissionRank(rule.MaxPermissionLevel) {
 		return false, "proposal permission exceeds the current rule ceiling"

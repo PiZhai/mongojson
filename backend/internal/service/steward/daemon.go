@@ -2,6 +2,7 @@ package steward
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,14 +12,19 @@ import (
 )
 
 const (
-	DefaultHeartbeatInterval = time.Minute
+	DefaultHeartbeatInterval     = time.Minute
+	DefaultCollectionInterval    = 5 * time.Minute
+	DefaultModelDispatchInterval = time.Minute
 )
 
 type DaemonOptions struct {
-	HeartbeatInterval time.Duration
-	SyncInterval      time.Duration
-	AutonomyInterval  time.Duration
-	AutonomyLimit     int
+	HeartbeatInterval     time.Duration
+	CollectionInterval    time.Duration
+	SyncInterval          time.Duration
+	AutonomyInterval      time.Duration
+	AutonomyLimit         int
+	ModelDispatchInterval time.Duration
+	ModelDispatchLimit    int
 }
 
 type Daemon struct {
@@ -40,10 +46,13 @@ func NewDaemon(service *Service, options DaemonOptions) *Daemon {
 
 func DaemonOptionsFromEnv() DaemonOptions {
 	return normalizeDaemonOptions(DaemonOptions{
-		HeartbeatInterval: durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
-		SyncInterval:      durationEnv("STEWARD_SYNC_INTERVAL", 0),
-		AutonomyInterval:  durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
-		AutonomyLimit:     intEnv("STEWARD_AUTONOMY_LIMIT", 12),
+		HeartbeatInterval:     durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
+		CollectionInterval:    durationEnv("STEWARD_COLLECTION_INTERVAL", DefaultCollectionInterval),
+		SyncInterval:          durationEnv("STEWARD_SYNC_INTERVAL", 0),
+		AutonomyInterval:      durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
+		AutonomyLimit:         intEnv("STEWARD_AUTONOMY_LIMIT", 12),
+		ModelDispatchInterval: durationEnv("STEWARD_MODEL_DISPATCH_INTERVAL", DefaultModelDispatchInterval),
+		ModelDispatchLimit:    intEnv("STEWARD_MODEL_DISPATCH_LIMIT", 20),
 	})
 }
 
@@ -65,8 +74,10 @@ func (d *Daemon) Start(parent context.Context) {
 		interval time.Duration
 	}{
 		{name: "heartbeat", interval: d.options.HeartbeatInterval},
+		{name: "collection", interval: d.options.CollectionInterval},
 		{name: "sync", interval: d.options.SyncInterval},
 		{name: "autonomy", interval: d.options.AutonomyInterval},
+		{name: "model-dispatch", interval: d.options.ModelDispatchInterval},
 	} {
 		if err := d.service.configureDaemonLoop(ctx, loop.name, loop.interval, loop.interval > 0); err != nil {
 			log.Printf("steward daemon %s loop status initialization failed: %v", loop.name, err)
@@ -76,6 +87,18 @@ func (d *Daemon) Start(parent context.Context) {
 	started := false
 	started = d.startLoop(ctx, "heartbeat", d.options.HeartbeatInterval, func(ctx context.Context) error {
 		return d.service.Heartbeat(ctx, "")
+	}) || started
+	started = d.startLoop(ctx, "collection", d.options.CollectionInterval, func(ctx context.Context) error {
+		enabled, err := d.service.BackgroundWorkEnabled(ctx)
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			return nil
+		}
+		lifecycleErr := d.service.RunLifecycleMaintenance(ctx)
+		collectorErr := d.service.RunEnabledCollectors(ctx)
+		return errors.Join(collectorErr, lifecycleErr)
 	}) || started
 	started = d.startLoop(ctx, "sync", d.options.SyncInterval, func(ctx context.Context) error {
 		enabled, err := d.service.BackgroundWorkEnabled(ctx)
@@ -97,6 +120,17 @@ func (d *Daemon) Start(parent context.Context) {
 			return nil
 		}
 		_, err = d.service.RunAutonomyCycle(ctx, d.options.AutonomyLimit)
+		return err
+	}) || started
+	started = d.startLoop(ctx, "model-dispatch", d.options.ModelDispatchInterval, func(ctx context.Context) error {
+		enabled, err := d.service.BackgroundWorkEnabled(ctx)
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			return nil
+		}
+		_, err = d.service.RunModelDispatches(ctx, d.options.ModelDispatchLimit)
 		return err
 	}) || started
 
@@ -210,11 +244,26 @@ func normalizeDaemonOptions(input DaemonOptions) DaemonOptions {
 	if out.SyncInterval < 0 {
 		out.SyncInterval = 0
 	}
+	if out.CollectionInterval < 0 {
+		out.CollectionInterval = 0
+	}
+	if out.CollectionInterval == 0 {
+		out.CollectionInterval = DefaultCollectionInterval
+	}
 	if out.AutonomyInterval < 0 {
 		out.AutonomyInterval = 0
 	}
 	if out.AutonomyLimit <= 0 || out.AutonomyLimit > 50 {
 		out.AutonomyLimit = 12
+	}
+	if out.ModelDispatchInterval < 0 {
+		out.ModelDispatchInterval = 0
+	}
+	if out.ModelDispatchInterval == 0 {
+		out.ModelDispatchInterval = DefaultModelDispatchInterval
+	}
+	if out.ModelDispatchLimit <= 0 || out.ModelDispatchLimit > 100 {
+		out.ModelDispatchLimit = 20
 	}
 	return out
 }

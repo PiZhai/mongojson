@@ -45,6 +45,7 @@ type InstallOptions struct {
 	LocalEncryptionKeyID        string            `json:"local_encryption_key_id,omitempty"`
 	LocalEncryptionPreviousKeys string            `json:"-"`
 	HeartbeatInterval           time.Duration     `json:"heartbeat_interval"`
+	CollectionInterval          time.Duration     `json:"collection_interval"`
 	SyncInterval                time.Duration     `json:"sync_interval"`
 	AutonomyInterval            time.Duration     `json:"autonomy_interval"`
 	LogDir                      string            `json:"log_dir"`
@@ -234,6 +235,9 @@ func NormalizeInstallOptionsForPlatform(platform string, input InstallOptions) (
 	if out.HeartbeatInterval < 0 {
 		out.HeartbeatInterval = 0
 	}
+	if out.CollectionInterval < 0 {
+		out.CollectionInterval = 0
+	}
 	if out.SyncInterval < 0 {
 		out.SyncInterval = 0
 	}
@@ -305,6 +309,9 @@ func Environment(options InstallOptions) map[string]string {
 	}
 	if options.HeartbeatInterval > 0 {
 		env["STEWARD_HEARTBEAT_INTERVAL"] = options.HeartbeatInterval.String()
+	}
+	if options.CollectionInterval > 0 {
+		env["STEWARD_COLLECTION_INTERVAL"] = options.CollectionInterval.String()
 	}
 	if options.SyncInterval > 0 {
 		env["STEWARD_SYNC_INTERVAL"] = options.SyncInterval.String()

@@ -110,6 +110,42 @@ type StewardPeerStore interface {
 	ImportSyncChanges(context.Context, steward.ImportSyncChangesInput) (steward.ImportSyncChangesResult, error)
 }
 
+type StewardConversationStore interface {
+	CreateConversation(context.Context, steward.CreateConversationInput) (domain.StewardConversation, error)
+	ListConversations(context.Context, int) ([]domain.StewardConversation, error)
+	ListConversationMessages(context.Context, string, int) ([]domain.StewardConversationMessage, error)
+	SendConversationMessage(context.Context, string, steward.SendConversationMessageInput) (steward.SendConversationMessageResult, error)
+	DecideConversationSuggestion(context.Context, string, steward.DecideConversationSuggestionInput) (domain.StewardConversationSuggestion, error)
+}
+
+type StewardActivityStore interface {
+	CreateObservation(context.Context, steward.CreateObservationInput) (domain.StewardObservation, error)
+	ListObservations(context.Context, int) ([]domain.StewardObservation, error)
+	ListActivitySessions(context.Context, int) ([]domain.StewardActivitySession, error)
+	ListEntities(context.Context, int) ([]domain.StewardEntity, error)
+	ListEntityRelations(context.Context, string, int) ([]domain.StewardRelation, error)
+	ListHabits(context.Context, int) ([]domain.StewardHabit, error)
+	UpdateHabit(context.Context, string, steward.UpdateInferenceInput) (domain.StewardHabit, error)
+	ListInsights(context.Context, int) ([]domain.StewardInsight, error)
+	UpdateInsight(context.Context, string, steward.UpdateInferenceInput) (domain.StewardInsight, error)
+	GetLifecycleStatus(context.Context) (domain.StewardLifecycleStatus, error)
+	EvaluateLifecycle(context.Context, steward.EvaluateLifecycleInput) (domain.StewardLifecycleEvaluation, error)
+	PurgeLifecycle(context.Context, steward.PurgeLifecycleInput) (domain.StewardPurgeResult, error)
+	ListRetentionPolicies(context.Context) ([]domain.StewardRetentionPolicy, error)
+	UpdateRetentionPolicy(context.Context, string, steward.UpdateRetentionPolicyInput) (domain.StewardRetentionPolicy, error)
+}
+
+type StewardAutomationPolicyStore interface {
+	ListDataPolicies(context.Context) ([]domain.StewardDataPolicy, error)
+	UpsertDataPolicy(context.Context, steward.UpsertDataPolicyInput) (domain.StewardDataPolicy, error)
+	ListPermissionPolicies(context.Context) ([]domain.StewardPermissionPolicy, error)
+	UpsertPermissionPolicy(context.Context, steward.UpsertPermissionPolicyInput) (domain.StewardPermissionPolicy, error)
+	ListModelDispatches(context.Context, int) ([]domain.StewardModelDispatch, error)
+	RunModelDispatches(context.Context, int) ([]domain.StewardModelDispatch, error)
+	ListToolDefinitions(context.Context) ([]domain.StewardToolDefinition, error)
+	UpsertToolDefinition(context.Context, steward.UpsertToolDefinitionInput) (domain.StewardToolDefinition, error)
+}
+
 type Dependencies struct {
 	Config         config.Config
 	FileService    *filemeta.Service
@@ -156,6 +192,34 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/steward/agent/stop", handler.stopStewardAgent)
 		r.Get("/steward/collectors", handler.listStewardCollectors)
 		r.Patch("/steward/collectors/{name}", handler.updateStewardCollector)
+		r.Get("/steward/automation/data-policies", handler.listStewardDataPolicies)
+		r.Put("/steward/automation/data-policies", handler.upsertStewardDataPolicy)
+		r.Get("/steward/automation/permission-policies", handler.listStewardPermissionPolicies)
+		r.Put("/steward/automation/permission-policies", handler.upsertStewardPermissionPolicy)
+		r.Get("/steward/automation/model-dispatches", handler.listStewardModelDispatches)
+		r.Post("/steward/automation/model-dispatches/run", handler.runStewardModelDispatches)
+		r.Get("/steward/automation/tools", handler.listStewardToolDefinitions)
+		r.Put("/steward/automation/tools", handler.upsertStewardToolDefinition)
+		r.Get("/steward/conversations", handler.listStewardConversations)
+		r.Post("/steward/conversations", handler.createStewardConversation)
+		r.Get("/steward/conversations/{id}/messages", handler.listStewardConversationMessages)
+		r.Post("/steward/conversations/{id}/messages", handler.sendStewardConversationMessage)
+		r.Post("/steward/conversation-suggestions/{id}/decision", handler.decideStewardConversationSuggestion)
+		r.Get("/steward/activity/observations", handler.listStewardObservations)
+		r.Post("/steward/activity/observations", handler.createStewardObservation)
+		r.Get("/steward/activity/sessions", handler.listStewardActivitySessions)
+		r.Get("/steward/activity/timeline", handler.listStewardTimelineSegments)
+		r.Get("/steward/entities", handler.listStewardEntities)
+		r.Get("/steward/entities/{id}/relations", handler.listStewardEntityRelations)
+		r.Get("/steward/habits", handler.listStewardHabits)
+		r.Patch("/steward/habits/{id}", handler.updateStewardHabit)
+		r.Get("/steward/insights", handler.listStewardInsights)
+		r.Patch("/steward/insights/{id}", handler.updateStewardInsight)
+		r.Get("/steward/lifecycle/status", handler.getStewardLifecycleStatus)
+		r.Post("/steward/lifecycle/evaluate", handler.evaluateStewardLifecycle)
+		r.Post("/steward/lifecycle/purge", handler.purgeStewardLifecycle)
+		r.Get("/steward/retention-policies", handler.listStewardRetentionPolicies)
+		r.Patch("/steward/retention-policies/{id}", handler.updateStewardRetentionPolicy)
 		r.Get("/steward/events", handler.listStewardEvents)
 		r.Post("/steward/events", handler.createStewardEvent)
 		r.Delete("/steward/events/{id}", handler.deleteStewardEvent)

@@ -22,7 +22,7 @@ func (c cli) verifyService(args []string) error {
 	fs.BoolVar(&opts.WriteProbes, "write-probes", false, "Create low-risk event/task probes after the service API is reachable")
 	fs.BoolVar(&opts.Runtime.AdvisorProbe, "advisor-probe", false, "Call the configured S4 autonomy advisor with a D0 live probe")
 	fs.BoolVar(&opts.Runtime.AdvisorProbeEachSample, "advisor-probe-each-sample", false, "When used with --advisor-probe and --watch-duration, call the S4 advisor in every watch sample")
-	fs.BoolVar(&opts.Runtime.AdvisorPrivacyProbe, "advisor-privacy-probe", false, "Verify the S4 autonomy advisor rejects a D2 privacy probe before model submission")
+	fs.BoolVar(&opts.Runtime.AdvisorPrivacyProbe, "advisor-privacy-probe", false, "Verify the S4 autonomy advisor rejects an unsupported D7 privacy probe before model submission")
 	fs.IntVar(&opts.AutonomyLimit, "autonomy-limit", 5, "Autonomy scan limit when write probes are enabled")
 	fs.StringVar(&opts.Runtime.ExpectAgentID, "expect-agent-id", "", "Fail unless the runtime reports this local steward agent id")
 	fs.StringVar(&opts.Runtime.ExpectAgentVersion, "expect-agent-version", "", "Fail unless the runtime reports this steward agent version")

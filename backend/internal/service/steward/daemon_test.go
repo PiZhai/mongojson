@@ -9,6 +9,7 @@ import (
 
 func TestDaemonOptionsFromEnvParsesIntervals(t *testing.T) {
 	t.Setenv("STEWARD_HEARTBEAT_INTERVAL", "2s")
+	t.Setenv("STEWARD_COLLECTION_INTERVAL", "30s")
 	t.Setenv("STEWARD_SYNC_INTERVAL", "5m")
 	t.Setenv("STEWARD_AUTONOMY_INTERVAL", "15m")
 	t.Setenv("STEWARD_AUTONOMY_LIMIT", "7")
@@ -16,6 +17,9 @@ func TestDaemonOptionsFromEnvParsesIntervals(t *testing.T) {
 	options := DaemonOptionsFromEnv()
 	if options.HeartbeatInterval != 2*time.Second {
 		t.Fatalf("heartbeat interval = %s, want 2s", options.HeartbeatInterval)
+	}
+	if options.CollectionInterval != 30*time.Second {
+		t.Fatalf("collection interval = %s, want 30s", options.CollectionInterval)
 	}
 	if options.SyncInterval != 5*time.Minute {
 		t.Fatalf("sync interval = %s, want 5m", options.SyncInterval)
@@ -37,16 +41,20 @@ func TestSanitizeDaemonLoopErrorBoundsAndFlattensSummary(t *testing.T) {
 
 func TestNormalizeDaemonOptionsKeepsSafeDefaults(t *testing.T) {
 	options := normalizeDaemonOptions(DaemonOptions{
-		HeartbeatInterval: -time.Second,
-		SyncInterval:      -time.Second,
-		AutonomyInterval:  -time.Second,
-		AutonomyLimit:     99,
+		HeartbeatInterval:  -time.Second,
+		CollectionInterval: -time.Second,
+		SyncInterval:       -time.Second,
+		AutonomyInterval:   -time.Second,
+		AutonomyLimit:      99,
 	})
 	if options.HeartbeatInterval != DefaultHeartbeatInterval {
 		t.Fatalf("heartbeat interval = %s, want %s", options.HeartbeatInterval, DefaultHeartbeatInterval)
 	}
 	if options.SyncInterval != 0 {
 		t.Fatalf("sync interval = %s, want disabled", options.SyncInterval)
+	}
+	if options.CollectionInterval != DefaultCollectionInterval {
+		t.Fatalf("collection interval = %s, want %s", options.CollectionInterval, DefaultCollectionInterval)
 	}
 	if options.AutonomyInterval != 0 {
 		t.Fatalf("autonomy interval = %s, want disabled", options.AutonomyInterval)

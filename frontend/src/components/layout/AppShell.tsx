@@ -49,7 +49,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     items: [
       {
         to: '/tools/steward',
-        title: 'S2 数据底座',
+        title: '私人管家',
         icon: 'steward',
       },
     ],
@@ -88,7 +88,7 @@ const pageMeta: Record<string, { title: string }> = {
     title: '在线备忘录',
   },
   '/tools/steward': {
-    title: 'S2 私人管家',
+    title: '私人管家',
   },
   '/tools/music': {
     title: '音乐播放器',
@@ -208,7 +208,11 @@ export function AppShell() {
       return false
     }
 
-    return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'
+    const stored = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
+    if (stored !== null) {
+      return stored === 'true'
+    }
+    return window.matchMedia('(max-width: 1080px)').matches
   })
 
   const meta = useMemo(() => pageMeta[location.pathname] ?? pageMeta['/tools/json'], [location.pathname])

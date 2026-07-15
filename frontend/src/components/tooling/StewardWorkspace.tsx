@@ -52,6 +52,10 @@ import {
   useStewardWorkspace,
   type TaskDraft,
 } from "./steward/useStewardWorkspace";
+import { CollectorSettings } from "./steward/CollectorSettings";
+import { ConversationWorkspace } from "./steward/ConversationWorkspace";
+import { ActivityMemoryWorkspace } from "./steward/ActivityMemoryWorkspace";
+import { AutomationPolicyWorkspace } from "./steward/AutomationPolicyWorkspace";
 
 export function StewardWorkspace() {
   const {
@@ -97,6 +101,7 @@ export function StewardWorkspace() {
     loading,
     busy,
     error,
+    refresh,
     runAction,
     submitEvent,
     submitTask,
@@ -130,7 +135,7 @@ export function StewardWorkspace() {
       <section className="steward-overview-band">
         <div className="steward-agent-card">
           <div>
-            <p className="steward-eyebrow">Local Steward · S2</p>
+            <p className="steward-eyebrow">Local Steward</p>
             <h2>
               {statusText(overview?.agent.status ?? "stopped")}
               <HelpIcon text={helpText.localSteward} />
@@ -141,10 +146,11 @@ export function StewardWorkspace() {
               {overview?.agent.version ?? "s2-data-foundation"}
             </p>
             {(overview?.agent.background_loops ?? []).length > 0 ? (
-              <small>
+              <small className="steward-loop-status">
                 {(overview?.agent.background_loops ?? [])
-                  .map((loop) =>
-                    `${loop.name}:${
+                  .map((loop) => (
+                    <span key={loop.name}>
+                      {`${loop.name}:${
                       !loop.enabled
                         ? "关闭"
                         : loop.running
@@ -152,9 +158,9 @@ export function StewardWorkspace() {
                             ? `降级(${loop.consecutive_failures})`
                             : "运行"
                           : "停止"
-                    }`,
-                  )
-                  .join(" · ")}
+                    }`}
+                    </span>
+                  ))}
               </small>
             ) : null}
           </div>
@@ -191,6 +197,12 @@ export function StewardWorkspace() {
           <Metric label="审计" value={counts.audit_logs ?? 0} />
         </div>
       </section>
+
+      <ConversationWorkspace onDataChanged={refresh} />
+
+      <ActivityMemoryWorkspace onDataChanged={refresh} />
+
+      <AutomationPolicyWorkspace onDataChanged={refresh} />
 
       <section className="steward-grid steward-grid-s2">
         <Panel help={helpText.sync} title="三端同步">
@@ -450,6 +462,28 @@ export function StewardWorkspace() {
                   受控执行
                 </button>
               </div>
+              <select
+                aria-label="最高自动权限"
+                className="steward-inline-select"
+                disabled={busy !== null || !autonomy}
+                onChange={(event) =>
+                  runAction("更新最高自动权限", () =>
+                    updateStewardAutonomySettings({
+                      max_auto_permission: event.currentTarget.value,
+                    }),
+                  )
+                }
+                title="全局自动执行权限上限"
+                value={autonomy?.settings.max_auto_permission ?? "A3"}
+              >
+                {Array.from({ length: 10 }, (_, rank) => `A${rank}`).map(
+                  (level) => (
+                    <option key={level} value={level}>
+                      最高 {level}
+                    </option>
+                  ),
+                )}
+              </select>
               <button
                 className="steward-button steward-button-secondary"
                 disabled={busy !== null}
@@ -621,29 +655,38 @@ export function StewardWorkspace() {
         <Panel help={helpText.collectors} title="采集器">
           <div className="steward-collector-list">
             {collectors.map((collector) => (
-              <label className="steward-switch-row" key={collector.id}>
-                <input
-                  checked={collector.enabled}
-                  disabled={busy !== null}
-                  onChange={(event) =>
-                    runAction("更新采集器", () =>
-                      updateStewardCollector(collector.name, {
-                        enabled: event.currentTarget.checked,
-                      }),
-                    )
-                  }
-                  type="checkbox"
-                />
-                <span>
-                  <InfoTerm
-                    help={
-                      collectorHelp[collector.name] ?? collector.scope_summary
+              <article className="steward-collector-row" key={collector.id}>
+                <label className="steward-switch-row">
+                  <input
+                    checked={collector.enabled}
+                    disabled={busy !== null}
+                    onChange={(event) =>
+                      runAction("更新采集器", () =>
+                        updateStewardCollector(collector.name, {
+                          enabled: event.currentTarget.checked,
+                        }),
+                      )
                     }
-                    label={collector.name}
+                    type="checkbox"
                   />
-                  <small>{collector.scope_summary}</small>
-                </span>
-              </label>
+                  <span>
+                    <InfoTerm
+                      help={
+                        collectorHelp[collector.name] ?? collector.scope_summary
+                      }
+                      label={collector.name}
+                    />
+                    <small>{collector.scope_summary}</small>
+                    {collector.last_error ? <small className="steward-collector-error">{collector.last_error}</small> : null}
+                  </span>
+                </label>
+                <CollectorSettings
+                  busy={busy !== null}
+                  collector={collector}
+                  key={collector.updated_at}
+                  onSave={(settings) => runAction("保存采集范围", () => updateStewardCollector(collector.name, { settings }))}
+                />
+              </article>
             ))}
           </div>
         </Panel>
@@ -666,6 +709,11 @@ export function StewardWorkspace() {
               <option value="intent">意图</option>
               <option value="memory">记忆</option>
               <option value="knowledge_item">知识</option>
+              <option value="observation">原始观察</option>
+              <option value="activity_session">活动会话</option>
+              <option value="entity">关系实体</option>
+              <option value="habit">习惯</option>
+              <option value="insight">洞察</option>
             </select>
             <button
               className="steward-button"

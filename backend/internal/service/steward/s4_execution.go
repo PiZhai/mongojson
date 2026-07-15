@@ -81,7 +81,15 @@ func (s *Service) autonomyActionExecutor(action string) (AutonomyActionExecutor,
 	if s == nil || s.actionExecutors == nil {
 		return nil, false
 	}
-	return s.actionExecutors.resolve(action)
+	executor, found := s.actionExecutors.resolve(action)
+	if found {
+		return executor, true
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	if configuredToolActionPattern.MatchString(action) {
+		return configuredToolAutonomyExecutor{service: s, action: action}, true
+	}
+	return nil, false
 }
 
 func (s *Service) autonomyActionCapabilities() []domain.StewardAutonomyActionCapability {
@@ -216,9 +224,6 @@ func executorAllowsProposal(executor AutonomyActionExecutor, proposal domain.Ste
 	maxPermission := defaultString(capability.MaxPermissionLevel, PermissionA3)
 	if permissionRank(proposal.PermissionLevel) > permissionRank(maxPermission) {
 		return fmt.Errorf("action %s allows up to %s, proposal requires %s", capability.Action, maxPermission, proposal.PermissionLevel)
-	}
-	if isHighRisk(proposal.RiskLevel, proposal.PermissionLevel) || strings.EqualFold(capability.RiskLevel, "high") || strings.EqualFold(capability.RiskLevel, "critical") {
-		return fmt.Errorf("action %s is not eligible for low-risk autonomous execution", capability.Action)
 	}
 	return nil
 }

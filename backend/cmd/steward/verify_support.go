@@ -112,8 +112,8 @@ func strictAdvisorRuntimeIssues(advisor map[string]any) []string {
 	if maxDataLevel == "" {
 		maxDataLevel = "D1"
 	}
-	if maxDataLevel != "D0" && maxDataLevel != "D1" {
-		issues = append(issues, "advisor max_data_level must be D0 or D1")
+	if len(maxDataLevel) != 2 || maxDataLevel[0] != 'D' || maxDataLevel[1] < '0' || maxDataLevel[1] > '6' {
+		issues = append(issues, "advisor max_data_level must be D0-D6")
 	}
 	return issues
 }

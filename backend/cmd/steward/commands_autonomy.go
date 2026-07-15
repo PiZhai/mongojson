@@ -123,5 +123,6 @@ autonomy commands:
   bulk-dismiss --status candidate --limit 50
 
 S4 guardrail:
-  high-risk, A4+, external-send, delete, payment, credential, system-config, and publish/commit actions stay blocked by policy.`)
+  all A0-A9 levels remain denied unless the permission matrix, autonomy ceiling, action rule,
+  simulation/rollback requirements, and a registered or configured executor all allow them.`)
 }

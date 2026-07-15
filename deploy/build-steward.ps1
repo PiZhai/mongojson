@@ -83,9 +83,33 @@ function Invoke-GoBuild {
     $env:GOOS = $GOOSValue
     $env:GOARCH = $GOARCHValue
     $ldflags = "-s -w -X mongojson/backend/internal/buildinfo.Version=$BuildVersion -X mongojson/backend/internal/buildinfo.Commit=$BuildCommit -X mongojson/backend/internal/buildinfo.BuildDate=$BuildDate"
-    go build -trimpath -ldflags $ldflags -o $OutputPath ./cmd/steward
+    go build -buildvcs=false -trimpath -ldflags $ldflags -o $OutputPath ./cmd/steward
     if ($LASTEXITCODE -ne 0) {
       throw "go build failed for $GOOSValue/$GOARCHValue with exit code $LASTEXITCODE"
+    }
+  } finally {
+    $env:CGO_ENABLED = $oldCGO
+    $env:GOOS = $oldGOOS
+    $env:GOARCH = $oldGOARCH
+  }
+}
+
+function Invoke-CompanionGoBuild {
+  param(
+    [string]$GOOSValue,
+    [string]$GOARCHValue,
+    [string]$OutputPath
+  )
+  $oldCGO = $env:CGO_ENABLED
+  $oldGOOS = $env:GOOS
+  $oldGOARCH = $env:GOARCH
+  try {
+    $env:CGO_ENABLED = "0"
+    $env:GOOS = $GOOSValue
+    $env:GOARCH = $GOARCHValue
+    go build -buildvcs=false -trimpath -ldflags "-s -w" -o $OutputPath ./cmd/steward-companion
+    if ($LASTEXITCODE -ne 0) {
+      throw "go build steward-companion failed for $GOOSValue/$GOARCHValue with exit code $LASTEXITCODE"
     }
   } finally {
     $env:CGO_ENABLED = $oldCGO
@@ -152,10 +176,10 @@ try {
     throw "go env GOVERSION failed"
   }
   if (-not $SkipTests) {
-    Write-Host "[steward] Running CLI tests"
-    go test ./cmd/steward
+    Write-Host "[steward] Running CLI and companion tests"
+    go test ./cmd/steward ./cmd/steward-companion ./internal/service/stewardcompanion
     if ($LASTEXITCODE -ne 0) {
-      throw "go test ./cmd/steward failed with exit code $LASTEXITCODE"
+      throw "steward packaging tests failed with exit code $LASTEXITCODE"
     }
   }
 
@@ -179,9 +203,12 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
     $binaryPath = Join-Path $artifactDir ("steward" + $extension)
+    $companionPath = Join-Path $artifactDir ("steward-companion" + $extension)
 
     Write-Host "[steward] Building $target -> $binaryPath"
     Invoke-GoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $binaryPath -BuildVersion $safeVersion -BuildCommit $buildCommit -BuildDate $buildDate
+    Write-Host "[steward] Building companion $target -> $companionPath"
+    Invoke-CompanionGoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $companionPath
 
     $uiRelativePath = $null
     if (-not $SkipUI) {
@@ -192,7 +219,7 @@ try {
     }
 
     $artifactFiles = @()
-    $paths = @($binaryPath)
+    $paths = @($binaryPath, $companionPath)
     if (-not $SkipUI) {
       $paths += @(Get-ChildItem -LiteralPath (Join-Path $artifactDir "ui") -Recurse -File | Select-Object -ExpandProperty FullName)
     }
@@ -205,10 +232,12 @@ try {
       }
     }
     $binaryRecord = $artifactFiles[0]
+    $companionRecord = $artifactFiles[1]
     $artifacts += [pscustomobject]@{
       target = $target
       path = $binaryRecord.path
       sha256 = $binaryRecord.sha256
+      companion_path = $companionRecord.path
       ui_dir = $uiRelativePath
       files = @($artifactFiles)
     }

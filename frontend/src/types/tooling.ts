@@ -352,11 +352,121 @@ export type StewardCollectorConfig = {
   name: string;
   enabled: boolean;
   scope_summary: string;
+  settings: Record<string, unknown>;
   last_run_at?: string | null;
   last_error?: string | null;
   created_at: string;
   updated_at: string;
   audit_id?: string | null;
+};
+
+export type StewardDataPolicy = {
+  id: string;
+  data_level: string;
+  source_pattern: string;
+  collect_mode: "deny" | "manual" | "auto";
+  model_mode: "deny" | "manual" | "auto";
+  model_content_mode: "metadata" | "summary" | "redacted" | "raw";
+  allow_local_persistence: boolean;
+  allow_sync: boolean;
+  require_encryption: boolean;
+  consent_expires_at?: string | null;
+  description: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardPermissionPolicy = {
+  id: string;
+  permission_level: string;
+  action_pattern: string;
+  execution_mode: "deny" | "manual" | "auto";
+  require_simulation: boolean;
+  require_rollback: boolean;
+  max_batch_size: number;
+  cooldown_seconds: number;
+  description: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardModelDispatch = {
+  id: string;
+  observation_id: string;
+  observation_time: string;
+  source: string;
+  data_level: string;
+  content_mode: string;
+  status: string;
+  attempts: number;
+  request_summary: string;
+  response_summary: string;
+  last_error?: string;
+  next_attempt_at?: string | null;
+  provider: string;
+  model: string;
+  audit_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+};
+
+export type StewardToolDefinition = {
+  id: string;
+  action: string;
+  name: string;
+  description: string;
+  executable: string;
+  arguments: string[];
+  working_directory: string;
+  permission_level: string;
+  risk_level: string;
+  enabled: boolean;
+  timeout_seconds: number;
+  rollback_executable: string;
+  rollback_arguments: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardConversation = {
+  id: string;
+  title: string;
+  status: string;
+  data_level: string;
+  message_count: number;
+  last_message_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardConversationSuggestion = {
+  id: string;
+  message_id: string;
+  kind: "intent" | "memory" | "task";
+  title: string;
+  summary: string;
+  content: string;
+  suggested_action: string;
+  data_level: string;
+  permission_level: string;
+  risk_level: string;
+  status: string;
+  target_id?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardConversationMessage = {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  data_level: string;
+  model?: string;
+  context_summary?: string;
+  suggestions: StewardConversationSuggestion[];
+  created_at: string;
 };
 
 export type StewardEvent = {
@@ -870,6 +980,188 @@ export type StewardAutonomyOverview = {
   proposals: StewardAutonomyProposal[];
   approvals: StewardApprovalRequest[];
   runs: StewardAutonomousRun[];
+};
+
+export type StewardObservation = {
+  id: string;
+  source: string;
+  type: string;
+  summary: string;
+  data_level: string;
+  permission_level: string;
+  device_id: string;
+  context_key: string;
+  fingerprint: string;
+  payload_encrypted: boolean;
+  has_media: boolean;
+  media_type?: string;
+  media_size_bytes?: number;
+  status: string;
+  system_generated: boolean;
+  retention_locked: boolean;
+  duplicate_count: number;
+  session_id?: string | null;
+  occurred_at: string;
+  ended_at?: string | null;
+  expires_at?: string | null;
+  created_at: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type StewardActivitySession = {
+  id: string;
+  type: string;
+  title: string;
+  summary: string;
+  source: string;
+  context_key: string;
+  device_id: string;
+  data_level: string;
+  status: string;
+  observation_count: number;
+  confidence: number;
+  value_score: number;
+  started_at: string;
+  ended_at: string;
+  timeline_id?: string | null;
+};
+
+export type StewardEntity = {
+  id: string;
+  type: string;
+  canonical_key: string;
+  display_name: string;
+  summary: string;
+  data_level: string;
+  status: string;
+  confidence: number;
+  evidence_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+};
+
+export type StewardRelationEvidence = {
+  id: string;
+  relation_id: string;
+  source_ref_id?: string | null;
+  observation_id?: string | null;
+  evidence_type: string;
+  summary: string;
+  confidence: number;
+  created_at: string;
+};
+
+export type StewardRelation = {
+  id: string;
+  source_entity_id: string;
+  target_entity_id: string;
+  source_entity?: StewardEntity;
+  target_entity?: StewardEntity;
+  relation_type: string;
+  confidence: number;
+  evidence_count: number;
+  data_level: string;
+  status: string;
+  inference_state: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  evidence: StewardRelationEvidence[];
+};
+
+export type StewardHabit = {
+  id: string;
+  type: string;
+  title: string;
+  summary: string;
+  pattern: string;
+  status: string;
+  data_level: string;
+  confidence: number;
+  evidence_count: number;
+  value_score: number;
+  user_confirmed: boolean;
+  retention_locked: boolean;
+  last_evidence_at?: string | null;
+  quarantined_at?: string | null;
+};
+
+export type StewardInsight = {
+  id: string;
+  type: string;
+  title: string;
+  summary: string;
+  suggested_action: string;
+  status: string;
+  data_level: string;
+  confidence: number;
+  evidence_count: number;
+  value_score: number;
+  user_confirmed: boolean;
+  retention_locked: boolean;
+  quarantined_at?: string | null;
+};
+
+export type StewardRetentionPolicy = {
+  id: string;
+  source_pattern: string;
+  data_kind: string;
+  data_level: string;
+  ttl_days: number;
+  quarantine_days: number;
+  auto_purge: boolean;
+  require_preview: boolean;
+  protect_user_confirmed: boolean;
+  protect_referenced: boolean;
+  deletion_tombstone_days: number;
+  description: string;
+  updated_at: string;
+};
+
+export type StewardLifecycleLayerStatus = {
+  kind: string;
+  count: number;
+  bytes: number;
+  expired_count: number;
+  quarantined_count: number;
+};
+
+export type StewardLifecycleStatus = {
+  profile: 'deep' | 'light';
+  vector_search_enabled: boolean;
+  local_encryption_ready: boolean;
+  layers: StewardLifecycleLayerStatus[];
+  retention_policies: StewardRetentionPolicy[];
+  last_runs: Record<string, string | null>;
+  next_expiring_at?: string | null;
+  updated_at: string;
+};
+
+export type StewardLifecycleAction = {
+  target_type: string;
+  target_id: string;
+  action: string;
+  reason: string;
+  value_score: number;
+  requires_preview: boolean;
+  recoverable_to?: string | null;
+};
+
+export type StewardLifecycleEvaluation = {
+  id: string;
+  dry_run: boolean;
+  evaluated_at: string;
+  actions: StewardLifecycleAction[];
+  counts: Record<string, number>;
+};
+
+export type StewardPurgeResult = {
+  audit_id: string;
+  dry_run: boolean;
+  deleted: number;
+  quarantined: number;
+  skipped: number;
+  actions: StewardLifecycleAction[];
+  completed_at: string;
 };
 
 export type StewardOverview = {

@@ -145,9 +145,10 @@ $currentSmoke = $null
 foreach ($artifact in $manifest.artifacts) {
   $target = [string]$artifact.target
   $relativePath = Normalize-ArtifactPath ([string]$artifact.path)
+  $companionRelativePath = Normalize-ArtifactPath ([string]$artifact.companion_path)
   $expectedHash = ([string]$artifact.sha256).ToLowerInvariant()
-  if ([string]::IsNullOrWhiteSpace($target) -or [string]::IsNullOrWhiteSpace($relativePath) -or [string]::IsNullOrWhiteSpace($expectedHash)) {
-    throw "Manifest artifact is missing target, path, or sha256"
+  if ([string]::IsNullOrWhiteSpace($target) -or [string]::IsNullOrWhiteSpace($relativePath) -or [string]::IsNullOrWhiteSpace($companionRelativePath) -or [string]::IsNullOrWhiteSpace($expectedHash)) {
+    throw "Manifest artifact is missing target, path, companion_path, or sha256"
   }
   if ($artifactTargets.ContainsKey($target)) {
     throw "Duplicate artifact target in manifest: $target"
@@ -197,6 +198,9 @@ foreach ($artifact in $manifest.artifacts) {
   if (-not $primaryFound) {
     throw "Primary binary $relativePath is missing from target file records"
   }
+  if (-not $artifactPaths.ContainsKey($companionRelativePath)) {
+    throw "Companion binary $companionRelativePath is missing from target file records"
+  }
 
   $artifactPath = Join-Path $distRoot $relativePath
   $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath).Hash.ToLowerInvariant()
@@ -218,6 +222,7 @@ foreach ($artifact in $manifest.artifacts) {
   $verifiedArtifacts += [pscustomobject]@{
     target = $target
     path = $relativePath
+    companion_path = $companionRelativePath
     sha256 = $actualHash
     ui_dir = $uiRelativePath
     file_count = $fileRecords.Count

@@ -26,7 +26,7 @@ func (c cli) verifyMesh(args []string) error {
 	fs.BoolVar(&opts.WriteProbes, "write-probes", false, "Create low-risk relation probes and verify cross-peer visibility")
 	fs.BoolVar(&opts.AdvisorProbe, "advisor-probe", false, "Call each node's configured S4 autonomy advisor with a D0 live probe")
 	fs.BoolVar(&opts.AdvisorProbeEachSample, "advisor-probe-each-sample", false, "When used with --advisor-probe and --watch-duration, call each node's S4 advisor in every watch sample")
-	fs.BoolVar(&opts.AdvisorPrivacyProbe, "advisor-privacy-probe", false, "Verify each node rejects a D2 advisor privacy probe before model submission")
+	fs.BoolVar(&opts.AdvisorPrivacyProbe, "advisor-privacy-probe", false, "Verify each node rejects an unsupported D7 advisor privacy probe before model submission")
 	fs.Var(&expectAgentIDs, "expect-agent-id", "Fail node unless it reports this agent id; repeat once per --node or once for all nodes")
 	fs.Var(&expectAgentVersions, "expect-agent-version", "Fail node unless it reports this agent version; repeat once per --node or once for all nodes")
 	fs.Var(&expectAgentPlatforms, "expect-agent-platform", "Fail node unless it reports this platform; repeat once per --node or once for all nodes")

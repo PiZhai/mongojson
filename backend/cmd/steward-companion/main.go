@@ -1,0 +1,167 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"mongojson/backend/internal/service/steward"
+	"mongojson/backend/internal/service/stewardcompanion"
+)
+
+func main() {
+	dataDir, err := os.UserConfigDir()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fs := flag.NewFlagSet("steward-companion", flag.ExitOnError)
+	listen := fs.String("listen", envOrDefault("STEWARD_COMPANION_ADDR", "127.0.0.1:18182"), "local companion HTTP address")
+	apiBase := fs.String("api", envOrDefault("STEWARD_API_BASE", "http://127.0.0.1:18080/api"), "local steward API base")
+	dbPath := fs.String("db", filepath.Join(dataDir, "MongojsonSteward", "companion.db"), "encrypted row buffer SQLite path")
+	flushInterval := fs.Duration("flush-interval", 10*time.Second, "buffer flush interval")
+	_ = fs.Parse(os.Args[1:])
+	if err := validateLoopbackListen(*listen); err != nil {
+		log.Fatal(err)
+	}
+	key, err := companionKey()
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	buffer, err := stewardcompanion.Open(ctx, stewardcompanion.Options{
+		Path:              *dbPath,
+		Key:               key,
+		MaxPending:        stewardcompanion.DefaultMaxPending,
+		AllowedDataLevels: companionDataLevels(),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer buffer.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		count, err := buffer.Pending(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ready", "pending": count, "capacity": stewardcompanion.DefaultMaxPending,
+			"allowed_data_levels": buffer.AllowedDataLevels(),
+		})
+	})
+	mux.HandleFunc("POST /observations", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 44<<20)
+		var input steward.CreateObservationInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, "invalid observation JSON", http.StatusBadRequest)
+			return
+		}
+		id, err := buffer.Enqueue(r.Context(), input)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, steward.ErrCredentialDataBlocked) {
+				status = http.StatusForbidden
+			} else if errors.Is(err, stewardcompanion.ErrBufferFull) {
+				status = http.StatusInsufficientStorage
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "status": "buffered"})
+	})
+
+	server := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		log.Printf("steward companion listening on %s", *listen)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("companion HTTP server failed: %v", err)
+			cancel()
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(*flushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				result, err := buffer.Flush(ctx, *apiBase, nil, 200)
+				if err != nil {
+					log.Printf("companion flush failed: %v", err)
+				} else if result.Submitted > 0 || result.Failed > 0 {
+					log.Printf("companion flush submitted=%d failed=%d pending=%d", result.Submitted, result.Failed, result.Pending)
+				}
+			}
+		}
+	}()
+	<-ctx.Done()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	_ = server.Shutdown(shutdownCtx)
+}
+
+func companionKey() ([]byte, error) {
+	value := strings.TrimSpace(os.Getenv("STEWARD_LOCAL_ENCRYPTION_KEY"))
+	if value == "" {
+		return nil, fmt.Errorf("STEWARD_LOCAL_ENCRYPTION_KEY is required")
+	}
+	key, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("STEWARD_LOCAL_ENCRYPTION_KEY must be base64-encoded 32 bytes")
+	}
+	return key, nil
+}
+
+func validateLoopbackListen(value string) error {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("invalid companion listen address: %w", err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("companion must listen on a loopback address")
+	}
+	return nil
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func companionDataLevels() []string {
+	value := strings.TrimSpace(os.Getenv("STEWARD_COMPANION_COLLECT_DATA_LEVELS"))
+	if value == "" {
+		return nil
+	}
+	return strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}

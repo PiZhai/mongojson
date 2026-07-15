@@ -67,6 +67,7 @@ const (
 type Service struct {
 	db              *database.DB
 	agentID         string
+	storageDir      string
 	advisor         AutonomyAdvisor
 	proposalScorer  AutonomyProposalScorer
 	proposalSources *autonomyProposalDiscovererRegistry
@@ -84,6 +85,12 @@ type ServiceOption func(*Service)
 func WithAgentID(agentID string) ServiceOption {
 	return func(s *Service) {
 		s.agentID = strings.TrimSpace(agentID)
+	}
+}
+
+func WithStorageDir(storageDir string) ServiceOption {
+	return func(s *Service) {
+		s.storageDir = strings.TrimSpace(storageDir)
 	}
 }
 
@@ -167,14 +174,16 @@ type UpdateTaskInput struct {
 }
 
 type UpdateCollectorInput struct {
-	Enabled      *bool   `json:"enabled"`
-	ScopeSummary *string `json:"scope_summary"`
+	Enabled      *bool          `json:"enabled"`
+	ScopeSummary *string        `json:"scope_summary"`
+	Settings     map[string]any `json:"settings"`
 }
 
 func NewService(db *database.DB, options ...ServiceOption) *Service {
 	service := &Service{
 		db:             db,
 		agentID:        envOrDefault("STEWARD_AGENT_ID", DefaultAgentID),
+		storageDir:     envOrDefault("STORAGE_DIR", "./data"),
 		advisor:        NewAutonomyAdvisorFromEnv(),
 		proposalScorer: NewRuleBasedAutonomyProposalScorer(),
 		retryPolicy:    autonomyRetryPolicyFromEnv(),
@@ -290,6 +299,8 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 		{Name: "clipboard-summary", Enabled: false, ScopeSummary: "剪贴板文本摘要，不保存疑似敏感字段原文"},
 		{Name: "watched-directory", Enabled: false, ScopeSummary: "指定目录文件新增、修改、删除元数据"},
 		{Name: "system-status", Enabled: false, ScopeSummary: "磁盘、网络和本地 Agent 状态摘要"},
+		{Name: "screenpipe-bridge", Enabled: false, ScopeSummary: "固定版本 Screenpipe 本地 API，禁用键盘内容采集"},
+		{Name: "activitywatch-bridge", Enabled: false, ScopeSummary: "ActivityWatch bucket/event/heartbeat 导入"},
 	}
 	for _, collector := range defaults {
 		if _, err := s.db.Pool.Exec(ctx, `
@@ -308,6 +319,12 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureLocalDeviceCapabilities(ctx, now); err != nil {
+		return err
+	}
+	if err := s.ensureActivityDefaults(ctx, now); err != nil {
+		return err
+	}
+	if err := s.ensureAutomationPolicyDefaults(ctx, now); err != nil {
 		return err
 	}
 
@@ -509,7 +526,7 @@ func (s *Service) StopAgent(ctx context.Context) (domain.StewardAgentStatus, err
 
 func (s *Service) ListCollectors(ctx context.Context) ([]domain.StewardCollectorConfig, error) {
 	rows, err := s.db.Pool.Query(ctx, `
-		select id, name, enabled, scope_summary, last_run_at, last_error, created_at, updated_at, audit_id
+		select id, name, enabled, scope_summary, settings, last_run_at, last_error, created_at, updated_at, audit_id
 		from steward_collector_configs
 		order by name
 	`)
@@ -526,6 +543,7 @@ func (s *Service) ListCollectors(ctx context.Context) ([]domain.StewardCollector
 			&collector.Name,
 			&collector.Enabled,
 			&collector.ScopeSummary,
+			&collector.Settings,
 			&collector.LastRunAt,
 			&collector.LastError,
 			&collector.CreatedAt,
@@ -553,6 +571,17 @@ func (s *Service) UpdateCollector(ctx context.Context, name string, input Update
 	if input.ScopeSummary != nil {
 		scopeSummary = strings.TrimSpace(*input.ScopeSummary)
 	}
+	settings := current.Settings
+	if input.Settings != nil {
+		settings, err = normalizeCollectorSettings(name, input.Settings)
+		if err != nil {
+			return domain.StewardCollectorConfig{}, err
+		}
+	}
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return domain.StewardCollectorConfig{}, fmt.Errorf("encode steward collector settings: %w", err)
+	}
 
 	auditID, err := s.recordAudit(ctx, AuditInput{
 		Actor:           "user",
@@ -563,7 +592,7 @@ func (s *Service) UpdateCollector(ctx context.Context, name string, input Update
 		PermissionLevel: PermissionA3,
 		DataLevel:       DataD2,
 		InputSummary:    current.Name,
-		OutputSummary:   fmt.Sprintf("enabled=%t scope=%s", enabled, scopeSummary),
+		OutputSummary:   fmt.Sprintf("enabled=%t scope=%s settings_configured=%t", enabled, scopeSummary, len(settings) > 0),
 		ResultStatus:    ResultOK,
 	})
 	if err != nil {
@@ -572,9 +601,9 @@ func (s *Service) UpdateCollector(ctx context.Context, name string, input Update
 
 	if _, err := s.db.Pool.Exec(ctx, `
 		update steward_collector_configs
-		set enabled = $1, scope_summary = $2, updated_at = $3, audit_id = $4
-		where name = $5
-	`, enabled, scopeSummary, now, auditID, name); err != nil {
+		set enabled = $1, scope_summary = $2, settings = $3::jsonb, updated_at = $4, audit_id = $5
+		where name = $6
+	`, enabled, scopeSummary, string(settingsJSON), now, auditID, name); err != nil {
 		return domain.StewardCollectorConfig{}, fmt.Errorf("update steward collector: %w", err)
 	}
 	if err := s.refreshEnabledCollectors(ctx); err != nil {
@@ -600,8 +629,12 @@ func (s *Service) CreateEvent(ctx context.Context, input CreateEventInput) (doma
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+	actor := "user"
+	if strings.HasPrefix(record.Source, "collector:") {
+		actor = "system"
+	}
 	auditID, err := s.recordAudit(ctx, AuditInput{
-		Actor:           "user",
+		Actor:           actor,
 		Action:          "event.create",
 		TargetType:      "event",
 		TargetID:        &record.ID,
@@ -919,6 +952,12 @@ func (s *Service) Counts(ctx context.Context) (map[string]int, error) {
 		"source_refs":       `select count(*) from steward_source_refs`,
 		"tags":              `select count(*) from steward_data_tags`,
 		"audit_logs":        `select count(*) from steward_audit_logs`,
+		"observations":      `select count(*) from steward_observations`,
+		"activity_sessions": `select count(*) from steward_activity_sessions`,
+		"entities":          `select count(*) from steward_entities where status <> 'deleted'`,
+		"relations":         `select count(*) from steward_relations where status <> 'deleted'`,
+		"habits":            `select count(*) from steward_habits where status <> 'deleted'`,
+		"insights":          `select count(*) from steward_insights where status <> 'deleted'`,
 	}
 	for key, query := range queries {
 		var count int
@@ -983,7 +1022,7 @@ func (s *Service) recordAudit(ctx context.Context, input AuditInput) (string, er
 func (s *Service) getCollector(ctx context.Context, name string) (domain.StewardCollectorConfig, error) {
 	var collector domain.StewardCollectorConfig
 	if err := s.db.Pool.QueryRow(ctx, `
-		select id, name, enabled, scope_summary, last_run_at, last_error, created_at, updated_at, audit_id
+		select id, name, enabled, scope_summary, settings, last_run_at, last_error, created_at, updated_at, audit_id
 		from steward_collector_configs
 		where name = $1
 	`, name).Scan(
@@ -991,6 +1030,7 @@ func (s *Service) getCollector(ctx context.Context, name string) (domain.Steward
 		&collector.Name,
 		&collector.Enabled,
 		&collector.ScopeSummary,
+		&collector.Settings,
 		&collector.LastRunAt,
 		&collector.LastError,
 		&collector.CreatedAt,

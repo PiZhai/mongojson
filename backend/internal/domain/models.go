@@ -83,15 +83,58 @@ type StewardBackgroundLoopStatus struct {
 }
 
 type StewardCollectorConfig struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Enabled      bool       `json:"enabled"`
-	ScopeSummary string     `json:"scope_summary"`
-	LastRunAt    *time.Time `json:"last_run_at,omitempty"`
-	LastError    *string    `json:"last_error,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	AuditID      *string    `json:"audit_id,omitempty"`
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	Enabled      bool           `json:"enabled"`
+	ScopeSummary string         `json:"scope_summary"`
+	Settings     map[string]any `json:"settings"`
+	LastRunAt    *time.Time     `json:"last_run_at,omitempty"`
+	LastError    *string        `json:"last_error,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	AuditID      *string        `json:"audit_id,omitempty"`
+}
+
+type StewardConversation struct {
+	ID            string     `json:"id"`
+	Title         string     `json:"title"`
+	Status        string     `json:"status"`
+	DataLevel     string     `json:"data_level"`
+	MessageCount  int        `json:"message_count"`
+	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type StewardConversationMessage struct {
+	ID               string                          `json:"id"`
+	ConversationID   string                          `json:"conversation_id"`
+	Role             string                          `json:"role"`
+	Content          string                          `json:"content"`
+	DataLevel        string                          `json:"data_level"`
+	Model            string                          `json:"model,omitempty"`
+	ContextSummary   string                          `json:"context_summary,omitempty"`
+	PayloadEncrypted bool                            `json:"payload_encrypted"`
+	Suggestions      []StewardConversationSuggestion `json:"suggestions"`
+	CreatedAt        time.Time                       `json:"created_at"`
+}
+
+type StewardConversationSuggestion struct {
+	ID               string    `json:"id"`
+	MessageID        string    `json:"message_id"`
+	Kind             string    `json:"kind"`
+	Title            string    `json:"title"`
+	Summary          string    `json:"summary"`
+	Content          string    `json:"content"`
+	SuggestedAction  string    `json:"suggested_action"`
+	DataLevel        string    `json:"data_level"`
+	PermissionLevel  string    `json:"permission_level"`
+	RiskLevel        string    `json:"risk_level"`
+	Status           string    `json:"status"`
+	TargetID         *string   `json:"target_id,omitempty"`
+	PayloadEncrypted bool      `json:"payload_encrypted"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type StewardEvent struct {
