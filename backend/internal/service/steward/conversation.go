@@ -181,7 +181,9 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	response := localConversationFallback(content)
 	model := "local-fallback"
 	dataPolicy, policyErr := s.ResolveDataPolicy(ctx, level, "conversation")
-	permissionPolicy, permissionErr := s.ResolvePermissionPolicy(ctx, PermissionA6, "model:conversation")
+	// Model inference itself is an A3 governed disclosure. Any tool call the
+	// model requests is evaluated separately against the tool's real A-level.
+	permissionPolicy, permissionErr := s.ResolvePermissionPolicy(ctx, PermissionA3, "model:conversation")
 	modelAllowed := policyErr == nil && permissionErr == nil && dataPolicyAllowsManualModel(dataPolicy) && permissionPolicy.ExecutionMode != PolicyModeDeny
 	if advisor, ok := s.autonomyAdvisor().(ConversationAdvisor); ok && s.autonomyAdvisor().Status().Enabled && modelAllowed {
 		modelContent := conversationModelText(content, level, dataPolicy.ModelContentMode)
@@ -205,19 +207,6 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 					if executionErr != nil {
 						return SendConversationMessageResult{}, executionErr
 					}
-					if err := s.persistExplicitConversationMemories(ctx, userMessage, content, level, response); err != nil {
-						return SendConversationMessageResult{}, err
-					}
-					if explicitConversationMemoryRequest(content) {
-						response.MemoryCandidates = nil
-					}
-					if err := s.insertConversationSuggestions(ctx, executionMessage.ID, level, response); err != nil {
-						return SendConversationMessageResult{}, err
-					}
-					executionMessage.Suggestions, err = s.listConversationSuggestions(ctx, executionMessage.ID)
-					if err != nil {
-						return SendConversationMessageResult{}, err
-					}
 					conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
 					if err != nil {
 						return SendConversationMessageResult{}, err
@@ -225,25 +214,8 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 					return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
 				}
 			}
-			if response.Intent == "task" && response.TaskAction != nil {
-				task, createErr := s.createConversationTaskAction(ctx, userMessage, level, *response.TaskAction)
-				if createErr != nil {
-					return SendConversationMessageResult{}, createErr
-				}
-				response.Reply = defaultString(response.Reply, "已创建提醒或持续任务："+task.Title)
-			}
 		} else {
 			s.recordConversationAdvisorFailure(ctx, userMessage.ID, level, advisorErr)
-			if executionMessage, handled, executionErr := s.tryConversationExecution(ctx, conversation, userMessage, content, level); handled {
-				if executionErr != nil {
-					return SendConversationMessageResult{}, executionErr
-				}
-				conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
-				if err != nil {
-					return SendConversationMessageResult{}, err
-				}
-				return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
-			}
 			response.Reply = "模型暂时不可用，消息已安全保存在本地。当前无法可靠理解新的自然语言任务，请稍后重试。"
 		}
 	} else if !modelAllowed {
@@ -254,46 +226,13 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 			cause = permissionErr
 		}
 		s.recordConversationAdvisorFailure(ctx, userMessage.ID, level, cause)
-		if executionMessage, handled, executionErr := s.tryConversationExecution(ctx, conversation, userMessage, content, level); handled {
-			if executionErr != nil {
-				return SendConversationMessageResult{}, executionErr
-			}
-			conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
-			if err != nil {
-				return SendConversationMessageResult{}, err
-			}
-			return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
-		}
 		response.Reply = "消息已保存在本地；当前模型策略未允许本次理解请求。"
-	} else if executionMessage, handled, executionErr := s.tryConversationExecution(ctx, conversation, userMessage, content, level); handled {
-		if executionErr != nil {
-			return SendConversationMessageResult{}, executionErr
-		}
-		conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
-		if err != nil {
-			return SendConversationMessageResult{}, err
-		}
-		return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
 	}
 	if response.Intent == "clarify" {
 		response.Reply = defaultString(response.Clarification, response.Reply)
 	}
-	response = mergeExplicitConversationCandidates(response, content)
-	if err := s.persistExplicitConversationMemories(ctx, userMessage, content, level, response); err != nil {
-		return SendConversationMessageResult{}, err
-	}
-	if explicitConversationMemoryRequest(content) {
-		response.MemoryCandidates = nil
-	}
 	contextSummary := conversationContextSummary(localContext)
 	assistantMessage, err := s.insertConversationMessage(ctx, conversationID, conversationRoleAssistant, response.Reply, level, model, contextSummary)
-	if err != nil {
-		return SendConversationMessageResult{}, err
-	}
-	if err := s.insertConversationSuggestions(ctx, assistantMessage.ID, level, response); err != nil {
-		return SendConversationMessageResult{}, err
-	}
-	assistantMessage.Suggestions, err = s.listConversationSuggestions(ctx, assistantMessage.ID)
 	if err != nil {
 		return SendConversationMessageResult{}, err
 	}
@@ -320,58 +259,6 @@ func (s *Service) conversationAdvisorDevices(ctx context.Context) []Conversation
 		items = append(items, ConversationAdvisorDevice{ID: device.ID, Name: device.DeviceName, Platform: device.Platform, TrustStatus: device.TrustStatus, PermissionLevel: device.PermissionLevel, Online: online})
 	}
 	return items
-}
-
-func (s *Service) createConversationTaskAction(ctx context.Context, message domain.StewardConversationMessage, level string, action ConversationTaskAction) (domain.StewardTask, error) {
-	var dueAt *time.Time
-	if action.DueAt != "" {
-		parsed, err := time.Parse(time.RFC3339, action.DueAt)
-		if err != nil {
-			return domain.StewardTask{}, fmt.Errorf("模型返回的提醒时间无效: %w", err)
-		}
-		dueAt = &parsed
-	}
-	description := strings.TrimSpace(action.Description)
-	if action.Recurrence != "" {
-		description = strings.TrimSpace(description + "\n周期：" + action.Recurrence)
-	}
-	taskType := "conversation_reminder"
-	if action.Recurrence != "" {
-		taskType = "conversation_recurring"
-	}
-	confirmed := true
-	task, err := s.CreateTask(ctx, CreateTaskInput{
-		Type:  taskType,
-		Title: defaultString(action.Title, "对话提醒"), Description: description, Priority: "normal", DueAt: dueAt,
-		Source: "conversation", DataLevel: level, PermissionLevel: PermissionA3, RiskLevel: "low", UserConfirmed: &confirmed,
-	})
-	if err != nil {
-		return domain.StewardTask{}, err
-	}
-	_, err = s.CreateSourceRef(ctx, CreateSourceRefInput{TargetType: "task", TargetID: task.ID, SourceType: "conversation_message", SourceID: message.ID, Summary: task.Title, Confidence: 1, Sensitive: isSensitiveLevel(level)})
-	return task, err
-}
-
-func (s *Service) persistExplicitConversationMemories(ctx context.Context, message domain.StewardConversationMessage, content, level string, response ConversationAdvisorResponse) error {
-	if !explicitConversationMemoryRequest(content) {
-		return nil
-	}
-	confirmed := true
-	for _, candidate := range response.MemoryCandidates {
-		memory, err := s.CreateMemory(ctx, CreateMemoryInput{Type: "conversation_preference", Title: candidate.Title, Summary: candidate.Summary, Content: defaultString(candidate.Content, candidate.Summary), Scope: "global", Source: "conversation", DataLevel: level, PermissionLevel: PermissionA3, Confidence: 1, UserConfirmed: &confirmed})
-		if err != nil {
-			return err
-		}
-		if _, err := s.CreateSourceRef(ctx, CreateSourceRefInput{TargetType: "memory", TargetID: memory.ID, SourceType: "conversation_message", SourceID: message.ID, Summary: memory.Title, Confidence: 1, Sensitive: isSensitiveLevel(level)}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func explicitConversationMemoryRequest(content string) bool {
-	normalized := strings.ToLower(content)
-	return strings.Contains(normalized, "记住") || strings.Contains(normalized, "以后都") || strings.Contains(normalized, "不要再") || strings.Contains(normalized, "remember")
 }
 
 func (s *Service) finishConversationTurn(ctx context.Context, conversation domain.StewardConversation, content, level string) (domain.StewardConversation, error) {
@@ -631,50 +518,6 @@ func conversationContextSummary(items []domain.StewardSearchResult) string {
 	return strings.Join(parts, ", ")
 }
 
-func (s *Service) insertConversationSuggestions(ctx context.Context, messageID, level string, response ConversationAdvisorResponse) error {
-	groups := []struct {
-		kind  string
-		items []ConversationAdvisorCandidate
-	}{{"intent", response.IntentCandidates}, {"memory", response.MemoryCandidates}, {"task", response.TaskCandidates}}
-	for _, group := range groups {
-		for _, candidate := range group.items {
-			title := defaultString(candidate.Title, truncateAdvisorText(defaultString(candidate.Summary, candidate.Content), 80))
-			if title == "" {
-				continue
-			}
-			now := time.Now().UTC()
-			id := uuid.NewString()
-			storedTitle, storedSummary, storedContent, storedAction := title, candidate.Summary, candidate.Content, candidate.SuggestedAction
-			encrypted := false
-			encryptedPayload := map[string]any{}
-			if dataLevelRank(level) >= dataLevelRank(DataD4) {
-				keyring, encryptionErr := localPayloadKeyringFromEnv()
-				if encryptionErr != nil {
-					return encryptionErr
-				}
-				encryptedPayload, encryptionErr = encryptPayloadEnvelope(keyring,
-					conversationSuggestionEncryptionAAD(messageID, id, group.kind),
-					map[string]any{"title": title, "summary": candidate.Summary, "content": candidate.Content, "suggested_action": candidate.SuggestedAction},
-					SyncEncryptionScopeLocalAtRest)
-				if encryptionErr != nil {
-					return encryptionErr
-				}
-				storedTitle, storedSummary, storedContent, storedAction = "[encrypted "+level+" candidate]", "", "", ""
-				encrypted = true
-			}
-			if _, err := s.db.Pool.Exec(ctx, `
-				insert into steward_conversation_suggestions (
-					id,message_id,kind,title,summary,content,suggested_action,data_level,
-					permission_level,risk_level,status,payload_encrypted,encrypted_payload,created_at,updated_at
-				) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'low','candidate',$10,$11,$12,$12)
-			`, id, messageID, group.kind, storedTitle, storedSummary, storedContent, storedAction, level, PermissionA3, encrypted, encryptedPayload, now); err != nil {
-				return fmt.Errorf("insert steward conversation suggestion: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
 func (s *Service) listConversationSuggestions(ctx context.Context, messageID string) ([]domain.StewardConversationSuggestion, error) {
 	rows, err := s.db.Pool.Query(ctx, `
 		select id, message_id, kind, title, summary, content, suggested_action, data_level, permission_level, risk_level, status, target_id, payload_encrypted, encrypted_payload, created_at, updated_at
@@ -720,41 +563,7 @@ func (s *Service) getConversationSuggestion(ctx context.Context, id string) (dom
 }
 
 func localConversationFallback(content string) ConversationAdvisorResponse {
-	return ConversationAdvisorResponse{Reply: "已记录。当前模型未启用，我可以继续在本地保存对话并生成待确认候选。"}
-}
-
-func mergeExplicitConversationCandidates(response ConversationAdvisorResponse, content string) ConversationAdvisorResponse {
-	trimmed := strings.TrimSpace(content)
-	if conversationCandidateOptOut(trimmed) {
-		response.IntentCandidates = nil
-		response.MemoryCandidates = nil
-		response.TaskCandidates = nil
-		return response
-	}
-	if containsAny(trimmed, "记住", "记下来", "以后要记得") && len(response.MemoryCandidates) == 0 {
-		response.MemoryCandidates = append(response.MemoryCandidates, ConversationAdvisorCandidate{Title: truncateAdvisorText(strings.TrimPrefix(trimmed, "记住"), 80), Summary: trimmed, Content: trimmed, SuggestedAction: "保存到记忆库"})
-	}
-	if containsAny(trimmed, "提醒我", "安排", "待办", "任务") && len(response.TaskCandidates) == 0 {
-		response.TaskCandidates = append(response.TaskCandidates, ConversationAdvisorCandidate{Title: truncateAdvisorText(trimmed, 80), Summary: trimmed, Content: trimmed, SuggestedAction: "创建本地任务"})
-	}
-	return response
-}
-
-func conversationCandidateOptOut(content string) bool {
-	return containsAny(content,
-		"不要创建任务", "不要创建记忆", "不要创建意图", "不要创建候选",
-		"不要生成任务", "不要生成记忆", "不要生成意图", "不要生成候选",
-		"无需创建任务", "无需创建记忆", "无需创建意图", "无需创建候选",
-	)
-}
-
-func containsAny(value string, needles ...string) bool {
-	for _, needle := range needles {
-		if strings.Contains(value, needle) {
-			return true
-		}
-	}
-	return false
+	return ConversationAdvisorResponse{Reply: "消息已安全保存在本地。当前模型未启用，无法可靠理解或执行新的自然语言请求。"}
 }
 
 func conversationDataLevel(value string) (string, error) {

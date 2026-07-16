@@ -46,6 +46,7 @@ type runtimeExecutionAuthorization struct {
 	ApprovalRef       string
 	ApprovalProof     privilegebroker.SignedApprovalProof
 	RequestedBy       string
+	DataLevel         string
 	ControlGeneration int64
 }
 

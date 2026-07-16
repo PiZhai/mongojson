@@ -559,6 +559,38 @@ func TestOpenAICompatibleAdvisorBlocksDataAboveMaxWithoutRequest(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleAdvisorConcludesWithNativeToolResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []struct {
+				Role             string `json:"role"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCallID       string `json:"tool_call_id"`
+				ToolCalls        []any  `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.Messages) != 4 || payload.Messages[2].Role != "assistant" || payload.Messages[2].ReasoningContent != "reasoning-token" || len(payload.Messages[2].ToolCalls) != 1 || payload.Messages[3].Role != "tool" || payload.Messages[3].ToolCallID != "call_1" {
+			t.Fatalf("unexpected native tool result messages: %+v", payload.Messages)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]any{"content": "已在桌面创建动漫文件夹。"}}}})
+	}))
+	defer server.Close()
+	advisor := openAICompatibleAutonomyAdvisor{client: server.Client(), baseURL: server.URL, model: "test-model", maxDataLevel: DataD6}
+	content, err := advisor.ConcludeToolCalls(context.Background(), ConversationToolResultInput{
+		Message: "在桌面创建动漫文件夹", DataLevel: DataD0, ReasoningContent: "reasoning-token",
+		Results: []ConversationToolResult{{ID: "call_1", ToolName: "fs.create_directory", Arguments: map[string]any{"path": "desktop/动漫"}, Output: map[string]any{"created": true}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "已在桌面创建动漫文件夹。" {
+		t.Fatalf("unexpected conclusion: %q", content)
+	}
+}
+
 func TestProbeAutonomyAdvisorReturnsSuggestion(t *testing.T) {
 	service := &Service{advisor: fakeAutonomyAdvisor{suggestion: AutonomyAdvisorSuggestion{
 		Title:           "probe title",

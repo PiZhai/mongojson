@@ -178,6 +178,8 @@ func (s *Service) registerRuntimeR2Tools() {
 	s.runtimeTools.registerIfAbsent(newRuntimeCreateTextTool(s))
 	s.runtimeTools.registerIfAbsent(newRuntimeShellExecTool(s))
 	s.runtimeTools.registerIfAbsent(newRuntimeWebFetchTool(s))
+	s.runtimeTools.registerIfAbsent(newRuntimeCreateTaskTool(s))
+	s.runtimeTools.registerIfAbsent(newRuntimeSaveMemoryTool(s))
 	if s.runtimeBrowserOpen {
 		s.runtimeTools.registerIfAbsent(newRuntimeBrowserOpenTool(s))
 	}

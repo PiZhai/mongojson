@@ -31,6 +31,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
   const [error, setError] = useState('')
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
   const messageEndRef = useRef<HTMLDivElement | null>(null)
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
   const loadConversations = async (preferredId?: string) => {
     const result = await getStewardConversations()
@@ -71,6 +72,13 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
   }, [messages, busy])
 
   useEffect(() => {
+    const composer = composerRef.current
+    if (!composer) return
+    composer.style.height = 'auto'
+    composer.style.height = `${Math.min(composer.scrollHeight, 160)}px`
+  }, [draft])
+
+  useEffect(() => {
     if (!activeId) return
     const timer = window.setInterval(() => {
       void getStewardConversationMessages(activeId)
@@ -100,6 +108,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     try {
       const result = await createStewardConversation({})
       await loadConversations(result.conversation.id)
+      window.setTimeout(() => composerRef.current?.focus(), 0)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '创建对话失败')
     } finally {
@@ -128,10 +137,11 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
       await loadConversations(conversationId)
       await onDataChanged()
     } catch (reason) {
-      setDraft(content)
+      setDraft((current) => current.trim() ? current : content)
       setError(reason instanceof Error ? reason.message : '发送消息失败')
     } finally {
       setBusy(false)
+      window.setTimeout(() => composerRef.current?.focus(), 0)
     }
   }
 
@@ -228,7 +238,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
       </aside>
 
       <div className="steward-conversation-main">
-        <div className="steward-conversation-messages" aria-live="polite">
+        <div className="steward-conversation-messages" aria-busy={busy} aria-live="polite">
           {messages.length === 0 ? (
             <div className="steward-conversation-welcome">
               <strong>私人管家</strong>
@@ -305,14 +315,19 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
               ))}
             </article>
           ))}
-          {busy ? <div className="steward-message-pending">处理中...</div> : null}
+          {busy ? (
+            <div className="steward-message-pending" role="status">
+              <span className="steward-thinking-dots" aria-hidden="true"><i /><i /><i /></span>
+              <span>管家正在思考并检查可用工具</span>
+            </div>
+          ) : null}
           <div ref={messageEndRef} />
         </div>
         {error ? <div className="steward-conversation-error" role="alert">{error}</div> : null}
         <form className="steward-conversation-composer" onSubmit={submit}>
           <textarea
             aria-label="消息"
-            disabled={busy}
+            autoFocus
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
@@ -320,12 +335,16 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
                 event.currentTarget.form?.requestSubmit()
               }
             }}
-            placeholder="给管家发送消息"
-            rows={3}
+            placeholder="告诉管家你想做什么…"
+            ref={composerRef}
+            rows={1}
             value={draft}
           />
           <div className="steward-conversation-actions">
-            <button className="steward-button" disabled={busy || !draft.trim()} type="submit">发送</button>
+            <small>Enter 发送<br />Shift + Enter 换行</small>
+            <button className="steward-button steward-send-button" disabled={busy || !draft.trim()} type="submit">
+              {busy ? '处理中' : '发送'}
+            </button>
           </div>
         </form>
       </div>

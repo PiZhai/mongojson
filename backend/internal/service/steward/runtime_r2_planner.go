@@ -42,10 +42,11 @@ type RuntimePlannerInput struct {
 }
 
 type RuntimePlanDraft struct {
-	Summary        string                    `json:"summary"`
-	Steps          []CreateAgentRunStepInput `json:"steps"`
-	Planner        string                    `json:"-"`
-	PlannerVersion string                    `json:"-"`
+	Summary          string                    `json:"summary"`
+	Steps            []CreateAgentRunStepInput `json:"steps"`
+	Planner          string                    `json:"-"`
+	PlannerVersion   string                    `json:"-"`
+	ReasoningContent string                    `json:"-"`
 }
 
 type RuntimePlanner interface {

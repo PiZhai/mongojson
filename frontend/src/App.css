@@ -596,8 +596,9 @@
 .steward-conversation-shell {
   display: grid;
   grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
-  min-height: 540px;
-  max-height: 72vh;
+  height: clamp(360px, 72dvh, 760px);
+  min-height: 0;
+  max-height: calc(100dvh - 96px);
   overflow: hidden;
   border: 1px solid var(--steward-line, var(--border));
   border-radius: 8px;
@@ -877,6 +878,7 @@
   grid-template-rows: minmax(0, 1fr) auto auto;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .steward-conversation-messages {
@@ -1008,12 +1010,15 @@
 }
 
 .steward-conversation-composer {
+  position: relative;
+  z-index: 2;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   padding: 12px;
   border-top: 1px solid var(--steward-line, var(--border));
   background: #f8fafc;
+  box-shadow: 0 -6px 16px rgba(31, 42, 68, 0.04);
 }
 
 .steward-conversation-composer textarea {
@@ -3045,7 +3050,8 @@
 
   .steward-conversation-shell {
     grid-template-columns: minmax(0, 1fr);
-    max-height: none;
+    height: min(78dvh, 720px);
+    max-height: calc(100dvh - 72px);
   }
 
   .steward-conversation-list {
@@ -3452,5 +3458,343 @@
   .watch-time-readout {
     width: 100%;
     margin-left: 0;
+  }
+}
+
+/* Conversation-first steward workspace */
+.steward-conversation-workspace {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  gap: 10px;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.steward-conversation-workspace .steward-conversation-shell {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  border-radius: 12px;
+  box-shadow: 0 10px 32px rgba(31, 42, 68, 0.08);
+}
+
+.steward-status-bar {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--steward-line, var(--border));
+  border-radius: 12px;
+  background: var(--steward-surface, #fff);
+  box-shadow: 0 6px 18px rgba(31, 42, 68, 0.05);
+}
+
+.steward-status-summary,
+.steward-status-heading,
+.steward-status-chips,
+.steward-status-chip {
+  display: flex;
+  align-items: center;
+}
+
+.steward-status-summary {
+  min-width: 0;
+  gap: 18px;
+}
+
+.steward-status-heading {
+  flex: 0 0 auto;
+  gap: 9px;
+}
+
+.steward-status-heading > div {
+  display: grid;
+  gap: 1px;
+}
+
+.steward-status-heading strong {
+  color: var(--steward-ink, var(--text-strong));
+  font-size: 14px;
+}
+
+.steward-status-heading small,
+.steward-status-chip small {
+  color: var(--steward-muted, var(--text-muted));
+  font-size: 11px;
+}
+
+.steward-status-presence,
+.steward-status-chip > span {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d97706;
+}
+
+.steward-status-presence.is-ready,
+.steward-status-chip.is-ready > span {
+  background: #059669;
+  box-shadow: 0 0 0 4px rgba(5, 150, 105, 0.1);
+}
+
+.steward-status-presence.is-danger {
+  background: #dc2626;
+  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.1);
+}
+
+.steward-status-presence.is-checking {
+  animation: steward-status-pulse 1s ease-in-out infinite;
+}
+
+.steward-status-chips {
+  min-width: 0;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.steward-status-chip {
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  white-space: nowrap;
+}
+
+.steward-status-chip > span {
+  width: 6px;
+  height: 6px;
+}
+
+.steward-status-chip strong {
+  color: #334155;
+  font-size: 11px;
+}
+
+.steward-status-check {
+  flex: 0 0 auto;
+  min-height: 44px;
+}
+
+.steward-status-error {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + 6px);
+  right: 0;
+  max-width: min(520px, 90vw);
+  padding: 9px 12px;
+  border: 1px solid #fecdd3;
+  border-radius: 8px;
+  background: #fff1f2;
+  box-shadow: 0 8px 24px rgba(190, 18, 60, 0.12);
+  color: #be123c;
+  font-size: 13px;
+}
+
+.steward-conversation-workspace .steward-conversation-list-header {
+  min-height: 60px;
+}
+
+.steward-conversation-workspace .steward-icon-button,
+.steward-conversation-workspace .steward-button {
+  min-height: 44px;
+}
+
+.steward-conversation-workspace .steward-conversation-item {
+  min-height: 54px;
+  padding: 10px 11px;
+  border-radius: 9px;
+}
+
+.steward-conversation-workspace .steward-conversation-messages {
+  gap: 14px;
+  padding: clamp(14px, 2.5vw, 30px);
+  scroll-behavior: smooth;
+}
+
+.steward-conversation-workspace .steward-message {
+  width: min(80%, 820px);
+  padding: 13px 15px;
+  border-radius: 12px 12px 12px 4px;
+}
+
+.steward-conversation-workspace .steward-message.is-user {
+  border-radius: 12px 12px 4px 12px;
+}
+
+.steward-message-pending {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 9px;
+  padding: 9px 12px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 13px;
+}
+
+.steward-thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.steward-thinking-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: steward-thinking 900ms ease-in-out infinite alternate;
+}
+
+.steward-thinking-dots i:nth-child(2) { animation-delay: 150ms; }
+.steward-thinking-dots i:nth-child(3) { animation-delay: 300ms; }
+
+.steward-conversation-workspace .steward-conversation-composer {
+  align-items: end;
+  padding: 12px 14px;
+  background: #fff;
+  box-shadow: 0 -8px 24px rgba(31, 42, 68, 0.05);
+}
+
+.steward-conversation-workspace .steward-conversation-composer textarea {
+  min-height: 52px;
+  max-height: 160px;
+  padding: 14px;
+  overflow-y: auto;
+  border-radius: 12px;
+  line-height: 1.5;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.steward-conversation-workspace .steward-conversation-composer textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
+}
+
+.steward-conversation-workspace .steward-conversation-actions {
+  gap: 8px;
+}
+
+.steward-conversation-workspace .steward-conversation-actions small {
+  color: var(--steward-muted, var(--text-muted));
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.steward-send-button {
+  min-width: 74px;
+}
+
+@keyframes steward-thinking {
+  from { opacity: 0.35; transform: translateY(1px); }
+  to { opacity: 1; transform: translateY(-1px); }
+}
+
+@keyframes steward-status-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 1080px) {
+  .steward-conversation-workspace {
+    height: calc(100dvh - 155px);
+  }
+}
+
+@media (max-width: 760px) {
+  .steward-conversation-workspace {
+    height: calc(100dvh - 150px);
+    padding: 0;
+  }
+
+  .steward-status-bar {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .steward-status-heading {
+    display: none;
+  }
+
+  .steward-status-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .steward-status-chips::-webkit-scrollbar {
+    display: none;
+  }
+
+  .steward-status-check {
+    min-width: 84px;
+  }
+
+  .steward-conversation-workspace .steward-conversation-shell {
+    grid-template-rows: auto minmax(0, 1fr);
+    height: auto;
+    max-height: none;
+  }
+
+  .steward-conversation-workspace .steward-conversation-list {
+    max-height: none;
+  }
+
+  .steward-conversation-workspace .steward-conversation-list-header {
+    min-height: 52px;
+    padding-block: 6px;
+  }
+
+  .steward-conversation-workspace .steward-conversation-list-scroll {
+    flex: 0 0 auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .steward-conversation-workspace .steward-conversation-item {
+    flex: 0 0 180px;
+    min-height: 48px;
+  }
+
+  .steward-conversation-workspace .steward-conversation-main {
+    min-height: 0;
+  }
+
+  .steward-conversation-workspace .steward-message {
+    width: 92%;
+  }
+
+  .steward-conversation-workspace .steward-conversation-composer {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 10px;
+  }
+
+  .steward-conversation-workspace .steward-conversation-actions small {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .steward-thinking-dots i,
+  .steward-status-presence.is-checking {
+    animation: none;
+  }
+
+  .steward-conversation-workspace .steward-conversation-messages {
+    scroll-behavior: auto;
   }
 }

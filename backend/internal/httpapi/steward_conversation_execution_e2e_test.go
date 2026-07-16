@@ -139,8 +139,12 @@ func (r46ModelFirstAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInpu
 func (a r46ModelFirstAdvisor) Converse(_ context.Context, input steward.ConversationAdvisorInput) (steward.ConversationAdvisorResponse, error) {
 	if strings.Contains(input.Message, "提醒") {
 		return steward.ConversationAdvisorResponse{
-			Intent: "task", Confidence: 0.99, Reply: "已创建提醒。",
-			TaskAction: &steward.ConversationTaskAction{Title: "检查模型优先链路", Description: "验证对话创建提醒", DueAt: "2030-01-02T09:00:00+08:00"},
+			Intent: "execution", Confidence: 0.99, Reply: "创建提醒。",
+			ExecutionPlan: &steward.RuntimePlanDraft{Summary: "创建检查模型优先链路提醒", Steps: []steward.CreateAgentRunStepInput{{
+				Key: "create_task", Title: "创建提醒", ToolName: "steward.create_task", Arguments: map[string]any{
+					"title": "检查模型优先链路", "description": "验证对话创建提醒", "due_at": "2030-01-02T09:00:00+08:00",
+				},
+			}}},
 		}, nil
 	}
 	if strings.Contains(input.Message, "记得什么") {
@@ -208,6 +212,12 @@ func TestStewardR46ModelFirstConversationRoutesExecutionMemoryAndReminder(t *tes
 		t.Fatalf("memory query did not use retrieved context: message=%+v err=%v", memoryReply.Message, err)
 	}
 	if _, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "提醒我检查模型优先链路"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.service.RunAgentRuntimeCycle(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.service.RunConversationExecutionRefreshCycle(ctx, 5); err != nil {
 		t.Fatal(err)
 	}
 	tasks, err := node.service.Search(ctx, steward.SearchInput{Query: "检查模型优先链路", EntityType: "task", Limit: 10})

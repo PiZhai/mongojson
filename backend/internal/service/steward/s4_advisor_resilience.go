@@ -115,6 +115,29 @@ func (a *resilientAutonomyAdvisor) Converse(ctx context.Context, input Conversat
 	return response, nil
 }
 
+func (a *resilientAutonomyAdvisor) ConcludeToolCalls(ctx context.Context, input ConversationToolResultInput) (string, error) {
+	if a == nil || a.base == nil {
+		return "", fmt.Errorf("autonomy advisor disabled: disabled")
+	}
+	advisor, ok := a.base.(ConversationToolResultAdvisor)
+	if !ok {
+		return "", fmt.Errorf("configured advisor does not support tool result conclusions")
+	}
+	if err := a.checkCircuit(); err != nil {
+		return "", err
+	}
+	response, err := advisor.ConcludeToolCalls(ctx, input)
+	if err != nil {
+		if errors.Is(err, ErrAdvisorDataLevelDenied) {
+			return "", err
+		}
+		a.recordFailure(err)
+		return "", err
+	}
+	a.recordSuccess()
+	return response, nil
+}
+
 func (a *resilientAutonomyAdvisor) AnalyzeObservation(ctx context.Context, input ObservationModelInput) (ObservationModelOutput, error) {
 	if a == nil || a.base == nil {
 		return ObservationModelOutput{}, fmt.Errorf("autonomy advisor disabled: disabled")

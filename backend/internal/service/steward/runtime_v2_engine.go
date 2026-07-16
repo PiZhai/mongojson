@@ -200,7 +200,7 @@ func (s *Service) executeAgentRun(ctx context.Context, runID string) error {
 		toolCtx = withRuntimeExecutionAuthorization(toolCtx, runtimeExecutionAuthorization{
 			RunID: ready.RunID, PlanHash: run.PlanHash, ApprovalRef: approvalRef,
 			ApprovalProof: approvalProof,
-			RequestedBy:   run.RequestedBy, ControlGeneration: invocation.ControlGeneration,
+			RequestedBy:   run.RequestedBy, DataLevel: run.DataLevel, ControlGeneration: invocation.ControlGeneration,
 		})
 		result, executeErr := executeRuntimeTool(toolCtx, tool, ready.Arguments)
 		if executeErr == nil && toolCtx.Err() != nil {

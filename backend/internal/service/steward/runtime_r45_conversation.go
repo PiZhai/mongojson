@@ -39,33 +39,6 @@ type conversationExecutionTarget struct {
 	Remote   bool
 }
 
-func conversationExecutionCue(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return false
-	}
-	prefixes := []string{
-		"列出目录", "查看目录", "读取文件", "查看文件", "创建文件", "创建一个文件", "把", "将",
-		"运行命令", "执行命令", "获取网页", "读取网页", "打开网页", "用浏览器打开",
-		"执行高权限能力", "运行高权限能力", "执行系统能力", "帮我", "请帮我",
-		"list directory", "list files", "read file", "show file", "create file", "run command",
-		"execute command", "fetch url", "fetch page", "open url", "open website", "please ",
-	}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(value, prefix) {
-			return true
-		}
-	}
-	if strings.HasPrefix(value, "在") || strings.HasPrefix(value, "请在") {
-		for _, verb := range []string{"列出", "查看", "读取", "创建", "运行", "执行", "获取", "打开"} {
-			if strings.Contains(value, verb) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func conversationControlCommand(value string) string {
 	value = strings.ToLower(strings.TrimSpace(strings.Trim(value, "。.!！?？")))
 	switch value {
@@ -80,18 +53,6 @@ func conversationControlCommand(value string) string {
 	default:
 		return ""
 	}
-}
-
-func (s *Service) tryConversationExecution(ctx context.Context, conversation domain.StewardConversation, userMessage domain.StewardConversationMessage, content, level string) (domain.StewardConversationMessage, bool, error) {
-	if command := conversationControlCommand(content); command != "" {
-		message, err := s.applyConversationExecutionCommand(ctx, conversation, userMessage, command, level)
-		return message, true, err
-	}
-	if !conversationExecutionCue(content) || s == nil || !s.runtimeR2 {
-		return domain.StewardConversationMessage{}, false, nil
-	}
-	message, _, err := s.createConversationExecution(ctx, conversation, userMessage, content, level, "")
-	return message, true, err
 }
 
 func (s *Service) createConversationExecution(ctx context.Context, conversation domain.StewardConversation, userMessage domain.StewardConversationMessage, instruction, level, targetOverride string) (domain.StewardConversationMessage, domain.StewardConversationExecution, error) {
@@ -116,8 +77,8 @@ func (s *Service) createConversationExecutionFromModel(ctx context.Context, conv
 	if err != nil {
 		return s.createConversationExecutionQuestion(ctx, conversation, userMessage, instruction, level, err.Error())
 	}
-	plan.Planner = "conversation-model"
-	plan.PlannerVersion = "4.6.0"
+	plan.Planner = defaultString(plan.Planner, "conversation-model")
+	plan.PlannerVersion = defaultString(plan.PlannerVersion, "4.6.0")
 	return s.createConversationExecutionFromPlan(ctx, conversation, userMessage, instruction, level, target, plan)
 }
 
@@ -155,6 +116,9 @@ func (s *Service) createConversationExecutionFromPlan(ctx context.Context, conve
 		TargetDeviceID: target.ID, TargetDeviceName: target.Name, PermissionLevel: permission, RiskLevel: risk,
 		RequiresConfirmation: requiresConfirmation, Capability: capability, Evidence: map[string]any{},
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if plan.ReasoningContent != "" {
+		execution.ModelState = map[string]any{"reasoning_content": plan.ReasoningContent}
 	}
 	if requiresConfirmation {
 		execution.ConfirmationReason = conversationConfirmationReason(permission, risk, target.Remote, capability)
@@ -440,19 +404,35 @@ func containsString(values []string, target string) bool {
 
 func (s *Service) insertConversationExecution(ctx context.Context, item domain.StewardConversationExecution) error {
 	evidence, _ := json.Marshal(item.Evidence)
+	storedModelState := map[string]any{}
+	if len(item.ModelState) > 0 {
+		keyring, err := localPayloadKeyringFromEnv()
+		if err != nil {
+			return fmt.Errorf("encrypt conversation model state: %w", err)
+		}
+		storedModelState, err = encryptPayloadEnvelope(keyring, conversationModelStateAAD(item.ID), item.ModelState, SyncEncryptionScopeLocalAtRest)
+		if err != nil {
+			return fmt.Errorf("encrypt conversation model state: %w", err)
+		}
+	}
+	modelState, _ := json.Marshal(storedModelState)
 	_, err := s.db.Pool.Exec(ctx, `
 		insert into steward_conversation_executions (
 			id, conversation_id, message_id, request_message_id, instruction, summary, kind, status,
 			run_id, orchestration_id, target_device_id, target_device_name, permission_level, risk_level,
 			plan_hash, requires_confirmation, confirmation_reason, question, capability, approval_subject,
-			control_generation, evidence, failure_summary, created_at, updated_at, confirmed_at, completed_at
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,nullif($9,'')::uuid,nullif($10,'')::uuid,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23,$24,$25,$26,$27)
+			control_generation, evidence, model_state, failure_summary, created_at, updated_at, confirmed_at, completed_at
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,nullif($9,'')::uuid,nullif($10,'')::uuid,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24,$25,$26,$27,$28)
 	`, item.ID, item.ConversationID, item.MessageID, item.RequestMessageID, item.Instruction, item.Summary,
 		item.Kind, item.Status, item.RunID, item.OrchestrationID, item.TargetDeviceID, item.TargetDeviceName,
 		item.PermissionLevel, item.RiskLevel, item.PlanHash, item.RequiresConfirmation, item.ConfirmationReason,
-		item.Question, item.Capability, item.ApprovalSubject, item.ControlGeneration, string(evidence), item.FailureSummary,
+		item.Question, item.Capability, item.ApprovalSubject, item.ControlGeneration, string(evidence), string(modelState), item.FailureSummary,
 		item.CreatedAt, item.UpdatedAt, item.ConfirmedAt, item.CompletedAt)
 	return err
+}
+
+func conversationModelStateAAD(executionID string) string {
+	return "conversation-execution-model-state:" + executionID
 }
 
 func (s *Service) listConversationExecutions(ctx context.Context, messageID string) ([]domain.StewardConversationExecution, error) {
@@ -461,7 +441,7 @@ func (s *Service) listConversationExecutions(ctx context.Context, messageID stri
 		       instruction, summary, kind, status, coalesce(run_id::text,''), coalesce(orchestration_id::text,''),
 		       target_device_id, target_device_name, permission_level, risk_level, plan_hash,
 		       requires_confirmation, confirmation_reason, question, capability, approval_subject,
-		       control_generation, evidence, failure_summary, created_at, updated_at, confirmed_at, completed_at
+		       control_generation, evidence, model_state, failure_summary, created_at, updated_at, confirmed_at, completed_at
 		from steward_conversation_executions where message_id=$1 order by created_at
 	`, messageID)
 	if err != nil {
@@ -471,16 +451,28 @@ func (s *Service) listConversationExecutions(ctx context.Context, messageID stri
 	items := []domain.StewardConversationExecution{}
 	for rows.Next() {
 		var item domain.StewardConversationExecution
-		var evidence []byte
+		var evidence, modelState []byte
 		if err := rows.Scan(&item.ID, &item.ConversationID, &item.MessageID, &item.RequestMessageID,
 			&item.Instruction, &item.Summary, &item.Kind, &item.Status, &item.RunID, &item.OrchestrationID,
 			&item.TargetDeviceID, &item.TargetDeviceName, &item.PermissionLevel, &item.RiskLevel, &item.PlanHash,
 			&item.RequiresConfirmation, &item.ConfirmationReason, &item.Question, &item.Capability, &item.ApprovalSubject,
-			&item.ControlGeneration, &evidence, &item.FailureSummary, &item.CreatedAt, &item.UpdatedAt,
+			&item.ControlGeneration, &evidence, &modelState, &item.FailureSummary, &item.CreatedAt, &item.UpdatedAt,
 			&item.ConfirmedAt, &item.CompletedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(evidence, &item.Evidence)
+		var storedState map[string]any
+		_ = json.Unmarshal(modelState, &storedState)
+		if len(storedState) > 0 {
+			keyring, keyErr := localPayloadKeyringFromEnv()
+			if keyErr != nil {
+				return nil, fmt.Errorf("decrypt conversation model state: %w", keyErr)
+			}
+			item.ModelState, keyErr = decryptPayloadEnvelope(keyring, conversationModelStateAAD(item.ID), storedState, "conversation model state")
+			if keyErr != nil {
+				return nil, keyErr
+			}
+		}
 		item, _ = s.refreshConversationExecution(ctx, item)
 		items = append(items, item)
 	}
@@ -524,6 +516,7 @@ func (s *Service) refreshConversationExecution(ctx context.Context, item domain.
 	previousStatus := item.Status
 	status, failure := item.Status, item.FailureSummary
 	evidence := map[string]any{}
+	toolResults := []ConversationToolResult{}
 	var completed *time.Time
 	if item.Kind == conversationExecutionRun && item.RunID != "" {
 		run, err := s.GetAgentRun(ctx, item.RunID)
@@ -533,6 +526,7 @@ func (s *Service) refreshConversationExecution(ctx context.Context, item domain.
 		status = conversationExecutionStatus(run.Status)
 		failure, completed = run.FailureSummary, run.CompletedAt
 		evidence = s.conversationRunEvidence(ctx, run.ID)
+		toolResults = conversationRunToolResults(run)
 	} else if item.Kind == conversationExecutionOrchestration && item.OrchestrationID != "" {
 		orchestration, err := s.GetOrchestration(ctx, item.OrchestrationID)
 		if err != nil {
@@ -545,6 +539,7 @@ func (s *Service) refreshConversationExecution(ctx context.Context, item domain.
 			"redacted_count": orchestration.Evidence.RedactedCount, "data_levels": orchestration.Evidence.DataLevels,
 			"manifest_sha256": orchestration.Evidence.ManifestSHA256,
 		}
+		toolResults = s.conversationOrchestrationToolResults(ctx, orchestration)
 	}
 	encoded, _ := json.Marshal(evidence)
 	now := time.Now().UTC()
@@ -559,7 +554,93 @@ func (s *Service) refreshConversationExecution(ctx context.Context, item domain.
 	if status == RuntimeRunSucceeded && previousStatus != RuntimeRunSucceeded {
 		_ = s.recordConversationExecutionMemory(ctx, item)
 	}
+	if runtimeRunTerminal(status) && status != previousStatus {
+		_ = s.recordConversationExecutionResultMessage(ctx, item, toolResults)
+	}
 	return item, nil
+}
+
+func (s *Service) conversationOrchestrationToolResults(ctx context.Context, orchestration domain.StewardOrchestration) []ConversationToolResult {
+	results := []ConversationToolResult{}
+	for _, node := range orchestration.Nodes {
+		if node.RuntimeRunID != "" {
+			if run, err := s.GetAgentRun(ctx, node.RuntimeRunID); err == nil {
+				results = append(results, conversationRunToolResults(run)...)
+			}
+			continue
+		}
+		if node.RemoteDispatch != nil {
+			for index, step := range node.Steps {
+				result := ConversationToolResult{
+					ID: fmt.Sprintf("remote_%s_%d", node.ID, index+1), ToolName: step.ToolName, Arguments: step.Arguments,
+					Output: node.RemoteDispatch.ResultPayload, Error: node.RemoteDispatch.LastError,
+				}
+				results = append(results, result)
+			}
+		}
+	}
+	return results
+}
+
+func conversationRunToolResults(run domain.StewardAgentRun) []ConversationToolResult {
+	results := make([]ConversationToolResult, 0, len(run.Steps))
+	for index, step := range run.Steps {
+		result := ConversationToolResult{
+			ID: fmt.Sprintf("call_%d", index+1), ToolName: step.ToolName, Arguments: step.Arguments,
+		}
+		if count := len(step.Invocations); count > 0 {
+			invocation := step.Invocations[count-1]
+			result.ID = defaultString(invocation.ID, result.ID)
+			result.Output = invocation.Output
+			result.Error = invocation.ErrorSummary
+		} else if step.LastError != "" {
+			result.Error = step.LastError
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+func (s *Service) recordConversationExecutionResultMessage(ctx context.Context, item domain.StewardConversationExecution, results []ConversationToolResult) error {
+	marker := "execution-result:" + item.ID
+	var exists bool
+	if err := s.db.Pool.QueryRow(ctx, `select exists(select 1 from steward_conversation_messages where conversation_id=$1 and context_summary=$2)`, item.ConversationID, marker).Scan(&exists); err != nil || exists {
+		return err
+	}
+	level := DataD0
+	_ = s.db.Pool.QueryRow(ctx, `select data_level from steward_conversation_messages where id=$1`, item.RequestMessageID).Scan(&level)
+	text := "执行失败：" + defaultString(item.FailureSummary, "工具未能完成请求。")
+	if item.Status == RuntimeRunSucceeded {
+		text = "已完成：" + item.Summary
+	}
+	model := "execution-result-r4.7"
+	if advisor, ok := s.autonomyAdvisor().(ConversationToolResultAdvisor); ok && s.autonomyAdvisor().Status().Enabled && len(results) > 0 {
+		dataPolicy, policyErr := s.ResolveDataPolicy(ctx, level, "conversation")
+		permissionPolicy, permissionErr := s.ResolvePermissionPolicy(ctx, PermissionA3, "model:conversation")
+		if policyErr == nil && permissionErr == nil && dataPolicyAllowsManualModel(dataPolicy) && permissionPolicy.ExecutionMode != PolicyModeDeny {
+			modelResults := make([]ConversationToolResult, 0, len(results))
+			for _, result := range results {
+				encoded, _ := json.Marshal(result.Output)
+				if dataPolicy.ModelContentMode != ModelContentRaw {
+					result.Output = map[string]any{"governed_summary": conversationModelText(string(encoded), level, dataPolicy.ModelContentMode)}
+				}
+				result.Error = truncateAdvisorText(result.Error, 1000)
+				modelResults = append(modelResults, result)
+			}
+			reasoningContent, _ := item.ModelState["reasoning_content"].(string)
+			if conclusion, concludeErr := advisor.ConcludeToolCalls(ctx, ConversationToolResultInput{
+				Message: conversationModelText(item.Instruction, level, dataPolicy.ModelContentMode), DataLevel: level,
+				ReasoningContent: reasoningContent, Results: modelResults,
+			}); concludeErr == nil {
+				text = conclusion
+				model = defaultString(s.autonomyAdvisor().Status().Model, s.autonomyAdvisor().Status().Provider)
+			} else {
+				s.recordConversationAdvisorFailure(ctx, item.RequestMessageID, level, fmt.Errorf("tool result conclusion: %w", concludeErr))
+			}
+		}
+	}
+	_, err := s.insertConversationMessage(ctx, item.ConversationID, conversationRoleAssistant, text, level, model, marker)
+	return err
 }
 
 func (s *Service) recordConversationExecutionMemory(ctx context.Context, item domain.StewardConversationExecution) error {

@@ -146,6 +146,7 @@ type StewardConversationExecution struct {
 	ApprovalSubject      string         `json:"approval_subject,omitempty"`
 	ControlGeneration    int64          `json:"control_generation,omitempty"`
 	Evidence             map[string]any `json:"evidence"`
+	ModelState           map[string]any `json:"-"`
 	FailureSummary       string         `json:"failure_summary,omitempty"`
 	CreatedAt            time.Time      `json:"created_at"`
 	UpdatedAt            time.Time      `json:"updated_at"`

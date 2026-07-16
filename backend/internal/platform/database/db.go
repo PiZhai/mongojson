@@ -1246,6 +1246,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 				or (kind='orchestration' and orchestration_id is not null and run_id is null)
 				or (kind='question' and run_id is null and orchestration_id is null))
 		);`,
+		`alter table steward_conversation_executions add column if not exists model_state jsonb not null default '{}'::jsonb;`,
 		`alter table steward_events
 			add column if not exists valid_from timestamptz,
 			add column if not exists valid_to timestamptz,
