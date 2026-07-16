@@ -19,8 +19,10 @@ import type {
   StewardDataPolicy,
   StewardPermissionPolicy,
   StewardModelDispatch,
+  StewardModelSettings,
   StewardToolDefinition,
   StewardConversation,
+  StewardConversationExecution,
   StewardConversationMessage,
   StewardConversationSuggestion,
   StewardDataTag,
@@ -336,7 +338,7 @@ export async function getStewardConversationMessages(id: string, limit = 100) {
 
 export async function sendStewardConversationMessage(
   id: string,
-  payload: { content: string; data_level: string; context_limit?: number },
+  payload: { content: string; data_level?: string; context_limit?: number },
 ) {
   return request<{ conversation: StewardConversation; message: StewardConversationMessage }>(
     `${API_BASE}/steward/conversations/${encodeURIComponent(id)}/messages`,
@@ -355,6 +357,22 @@ export async function decideStewardConversationSuggestion(id: string, decision: 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision }),
+    },
+  )
+}
+
+export async function decideStewardConversationExecution(
+  id: string,
+  decision: 'confirm' | 'pause' | 'cancel',
+  reason = '',
+  approvalProof?: StewardSignedApprovalProof,
+) {
+  return request<{ execution: StewardConversationExecution }>(
+    `${API_BASE}/steward/conversation-executions/${encodeURIComponent(id)}/decision`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, reason, approval_proof: approvalProof }),
     },
   )
 }
@@ -927,6 +945,36 @@ export async function rejectStewardApprovalRequest(id: string, decisionReason = 
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ decision_reason: decisionReason }),
+  })
+}
+
+export async function getStewardModelSettings() {
+  return request<{ settings: StewardModelSettings }>(`${API_BASE}/steward/model-settings`)
+}
+
+export async function updateStewardModelSettings(payload: {
+  provider?: string
+  base_url?: string
+  model?: string
+  api_key?: string
+  allow_no_api_key?: boolean
+  max_data_level?: string
+  timeout_seconds?: number
+}) {
+  return request<{ settings: StewardModelSettings }>(`${API_BASE}/steward/model-settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function probeStewardModelConnection() {
+  return request<{
+    probe: { ok: boolean; error?: string; duration_ms: number; status: StewardModelSettings['advisor'] }
+  }>(`${API_BASE}/steward/autonomy/advisor/probe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data_level: 'D0' }),
   })
 }
 

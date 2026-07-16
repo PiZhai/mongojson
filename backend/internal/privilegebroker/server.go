@@ -1,6 +1,7 @@
 package privilegebroker
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -25,6 +26,7 @@ import (
 var hexDigestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type ServerConfig struct {
+	DeviceID       string
 	ListenAddress  string
 	PolicyPath     string
 	StatePath      string
@@ -38,6 +40,7 @@ type ServerConfig struct {
 }
 
 type Server struct {
+	deviceID    string
 	policy      *LoadedPolicy
 	clientKey   []byte
 	controlKey  []byte
@@ -113,7 +116,8 @@ func NewServer(config ServerConfig) (*Server, error) {
 	}
 	publicKey := config.SigningKey.Public().(ed25519.PublicKey)
 	server := &Server{
-		policy: policy, clientKey: append([]byte(nil), config.ClientKey...), controlKey: append([]byte(nil), config.ControlKey...),
+		deviceID: strings.TrimSpace(config.DeviceID),
+		policy:   policy, clientKey: append([]byte(nil), config.ClientKey...), controlKey: append([]byte(nil), config.ControlKey...),
 		privateKey: append(ed25519.PrivateKey(nil), config.SigningKey...),
 		publicKey:  append(ed25519.PublicKey(nil), publicKey...), keyID: publicKeyID(publicKey),
 		instanceID: instanceID, grantTTL: grantTTL, requestSkew: requestSkew,
@@ -188,6 +192,14 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	}
 	if request.Method == http.MethodPost && request.URL.Path == "/v1/execute" {
 		s.handleAuthenticated(response, request, s.handleExecute)
+		return
+	}
+	if request.Method == http.MethodPost && request.URL.Path == "/v1/delegations" {
+		s.handleAuthenticated(response, request, s.handleDelegation)
+		return
+	}
+	if request.Method == http.MethodPost && request.URL.Path == "/v1/delegated-execute" {
+		s.handleAuthenticated(response, request, s.handleDelegatedExecute)
 		return
 	}
 	if request.Method == http.MethodPost && request.URL.Path == "/v1/control/stop" {
@@ -458,6 +470,10 @@ func (s *Server) consumeCapabilityToken(tokenID string, expiresAt time.Time) boo
 }
 
 func (s *Server) executeCapability(parent context.Context, capability Capability, claims CapabilityTokenClaims) (ExecuteResponse, error) {
+	return s.executeCapabilityWithCredentialRefs(parent, capability, claims, nil)
+}
+
+func (s *Server) executeCapabilityWithCredentialRefs(parent context.Context, capability Capability, claims CapabilityTokenClaims, credentialRefs []string) (ExecuteResponse, error) {
 	actualDigest, err := hashFile(capability.Executable)
 	if err != nil || actualDigest != capability.ExecutableSHA256 {
 		return ExecuteResponse{}, errExecutableChanged
@@ -481,6 +497,19 @@ func (s *Server) executeCapability(parent context.Context, capability Capability
 	command.Env = brokerEnvironment()
 	command.Stdout = stdout
 	command.Stderr = stderr
+	if len(credentialRefs) > 0 {
+		credentials, err := s.readCredentials(credentialRefs)
+		if err != nil {
+			return ExecuteResponse{}, err
+		}
+		credentialPayload, err := json.Marshal(struct {
+			Credentials map[string]string `json:"credentials"`
+		}{Credentials: credentials})
+		if err != nil {
+			return ExecuteResponse{}, err
+		}
+		command.Stdin = bytes.NewReader(credentialPayload)
+	}
 	startedAt := s.now()
 	if err := s.audit.Append(AuditRecord{
 		Type: "execute.started", Subject: claims.Subject, Capability: capability.Name,
@@ -518,6 +547,8 @@ func (s *Server) executeCapability(parent context.Context, capability Capability
 		StdoutBytes: stdout.total, StderrBytes: stderr.total,
 		StdoutTruncated: stdout.truncated, StderrTruncated: stderr.truncated,
 		StartedAt: startedAt, FinishedAt: finishedAt, ErrorCode: errorCode,
+		DelegationID: claims.DelegationID, OriginBrokerKeyID: claims.OriginBrokerKeyID,
+		CredentialRefs: append([]string(nil), claims.CredentialRefs...),
 	}
 	outcome := "succeeded"
 	if runErr != nil {
@@ -541,6 +572,12 @@ func (s *Server) executeCapability(parent context.Context, capability Capability
 	response := ExecuteResponse{
 		Stdout: stdout.String(), Stderr: stderr.String(),
 		Receipt: SignedExecutionReceipt{Payload: receiptPayload, KeyID: s.keyID, Signature: signature},
+	}
+	if len(credentialRefs) > 0 {
+		// Credential-bound capabilities are deliberately opaque. Only signed
+		// digests, sizes and the receipt leave the Broker trust boundary.
+		response.Stdout = ""
+		response.Stderr = ""
 	}
 	if auditErr != nil {
 		return response, fmt.Errorf("persist execute.finished audit: %w", auditErr)
@@ -669,7 +706,7 @@ func (s *Server) signedStatus() (Status, error) {
 	status := Status{
 		Version: APIVersion, InstanceID: s.instanceID, Stopped: state.Stopped,
 		Generation: state.Generation, PolicyDigest: s.policy.Digest,
-		Capabilities: s.policy.PublicCapabilities(), ApprovalAuthorities: s.policy.PublicApprovalAuthorities(), ActiveExecutions: active,
+		Capabilities: s.policy.PublicCapabilities(), ApprovalAuthorities: s.policy.PublicApprovalAuthorities(), BrokerPeers: s.policy.PublicBrokerPeers(), ActiveExecutions: active,
 		PublicKey: base64.StdEncoding.EncodeToString(s.publicKey), KeyID: s.keyID, IssuedAt: s.now(),
 	}
 	unsigned := status

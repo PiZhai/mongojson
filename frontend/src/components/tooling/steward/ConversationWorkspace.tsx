@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   createStewardConversation,
+  decideStewardConversationExecution,
   decideStewardConversationSuggestion,
+  getStewardExecutionControl,
   getStewardConversationMessages,
   getStewardConversations,
   sendStewardConversationMessage,
 } from '../../../lib/api/client'
 import type {
   StewardConversation,
+  StewardConversationExecution,
   StewardConversationMessage,
   StewardConversationSuggestion,
 } from '../../../types/tooling'
 import { formatDate } from './model'
+import { authorityMatchesOrigin, issueWebAuthnApprovalProof } from './webauthnApproval'
+import { ModelSettingsDialog } from './ModelSettingsDialog'
 
 type Props = {
   onDataChanged: () => Promise<void>
@@ -22,9 +27,9 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
   const [activeId, setActiveId] = useState('')
   const [messages, setMessages] = useState<StewardConversationMessage[]>([])
   const [draft, setDraft] = useState('')
-  const [dataLevel, setDataLevel] = useState('D0')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
   const messageEndRef = useRef<HTMLDivElement | null>(null)
 
   const loadConversations = async (preferredId?: string) => {
@@ -65,6 +70,16 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     messageEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [messages, busy])
 
+  useEffect(() => {
+    if (!activeId) return
+    const timer = window.setInterval(() => {
+      void getStewardConversationMessages(activeId)
+        .then((result) => setMessages(result.messages))
+        .catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [activeId])
+
   const selectConversation = async (id: string) => {
     setActiveId(id)
     setBusy(true)
@@ -83,7 +98,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     setBusy(true)
     setError('')
     try {
-      const result = await createStewardConversation({ data_level: dataLevel })
+      const result = await createStewardConversation({})
       await loadConversations(result.conversation.id)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '创建对话失败')
@@ -101,14 +116,13 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     try {
       let conversationId = activeId
       if (!conversationId) {
-        const created = await createStewardConversation({ data_level: dataLevel })
+        const created = await createStewardConversation({})
         conversationId = created.conversation.id
         setActiveId(conversationId)
       }
       setDraft('')
       await sendStewardConversationMessage(conversationId, {
         content,
-        data_level: dataLevel,
         context_limit: 10,
       })
       await loadConversations(conversationId)
@@ -138,14 +152,64 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     }
   }
 
+  const decideExecution = async (execution: StewardConversationExecution, decision: 'confirm' | 'pause' | 'cancel') => {
+    setBusy(true)
+    setError('')
+    try {
+      let proof
+      const reason = decision === 'confirm' ? '在管家对话中确认执行' : `在管家对话中${decision === 'pause' ? '暂停' : '取消'}`
+      if (decision === 'confirm' && execution.capability) {
+        const { control } = await getStewardExecutionControl()
+        const origin = window.location.origin
+        const authority = control.broker.approval_authorities.find((item) => authorityMatchesOrigin(item, origin))
+        if (!authority) throw new Error('没有匹配当前站点的 WebAuthn 审批身份，请先在执行控制面完成注册和 Broker policy 配置。')
+        proof = await issueWebAuthnApprovalProof({
+          authority,
+          subject: execution.approval_subject || `runtime:${execution.run_id}`,
+          planHash: execution.plan_hash,
+          capability: execution.capability,
+          controlGeneration: execution.control_generation ?? control.generation,
+          grantedBy: 'conversation-user',
+          reason,
+          origin,
+        })
+      }
+      await decideStewardConversationExecution(execution.id, decision, reason, proof)
+      if (activeId) {
+        const result = await getStewardConversationMessages(activeId)
+        setMessages(result.messages)
+      }
+      await onDataChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '处理执行计划失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const sendControlCommand = async (command: '继续' | '换到另一台电脑') => {
+    if (!activeId) return
+    setBusy(true)
+    setError('')
+    try {
+      await sendStewardConversationMessage(activeId, { content: command, context_limit: 10 })
+      await loadConversations(activeId)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '控制任务失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <section className="steward-conversation-shell" aria-label="管家对话">
       <aside className="steward-conversation-list">
         <div className="steward-conversation-list-header">
           <strong>对话</strong>
-          <button className="steward-icon-button steward-button-secondary" disabled={busy} onClick={createConversation} type="button">
-            新建
-          </button>
+          <div className="steward-conversation-header-actions">
+            <button className="steward-icon-button steward-button-secondary" disabled={busy} onClick={() => setModelSettingsOpen(true)} type="button">模型</button>
+            <button className="steward-icon-button steward-button-secondary" disabled={busy} onClick={createConversation} type="button">新建</button>
+          </div>
         </div>
         <div className="steward-conversation-list-scroll">
           {conversations.map((item) => (
@@ -175,7 +239,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
             <article className={`steward-message is-${message.role}`} key={message.id}>
               <div className="steward-message-meta">
                 <strong>{message.role === 'user' ? '你' : '管家'}</strong>
-                <span>{message.data_level} · {formatDate(message.created_at)}</span>
+                <span>{formatDate(message.created_at)}</span>
               </div>
               <p>{message.content}</p>
               {message.suggestions.map((suggestion) => (
@@ -191,6 +255,52 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
                       <button className="steward-icon-button steward-button-secondary" disabled={busy} onClick={() => decide(suggestion, 'dismissed')} type="button">忽略</button>
                     </div>
                   ) : <small>{suggestion.status === 'accepted' ? '已采纳' : '已忽略'}</small>}
+                </div>
+              ))}
+              {(message.executions ?? []).map((execution) => (
+                <div className={`steward-execution-card is-${execution.status}`} key={execution.id}>
+                  <div className="steward-execution-card-header">
+                    <div>
+                      <small>{execution.kind === 'orchestration' ? '多 Agent 计划' : execution.kind === 'run' ? '执行计划' : '需要补充信息'}</small>
+                      <strong>{execution.summary}</strong>
+                    </div>
+                    <span>{executionStatusLabel(execution.status)}</span>
+                  </div>
+                  {execution.question ? <p>{execution.question}</p> : null}
+                  {execution.kind !== 'question' ? (
+                    <>
+                      <div className="steward-execution-meta">
+                        <span>{execution.target_device_name || execution.target_device_id}</span>
+                        <span>{execution.risk_level === 'low' ? '低影响' : '需要确认'}</span>
+                      </div>
+                      {execution.confirmation_reason ? <small className="steward-execution-reason">{execution.confirmation_reason}</small> : null}
+                      {execution.failure_summary ? <p className="steward-execution-failure">{execution.failure_summary}</p> : null}
+                      {execution.evidence?.artifact_count !== undefined && ['succeeded', 'failed', 'blocked', 'cancelled'].includes(execution.status) ? (
+                        <div className="steward-execution-evidence">
+                          <span>{execution.evidence.artifact_count} 份证据</span>
+                          <span>{execution.evidence.redacted_count ?? 0} 份已脱敏</span>
+                          {execution.evidence.manifest_sha256 ? <code title={execution.evidence.manifest_sha256}>{execution.evidence.manifest_sha256.slice(0, 12)}</code> : null}
+                        </div>
+                      ) : null}
+                      <div className="steward-row-actions steward-execution-actions">
+                        {execution.status === 'awaiting_confirmation' ? (
+                          <button className="steward-button" disabled={busy} onClick={() => void decideExecution(execution, 'confirm')} type="button">确认执行</button>
+                        ) : null}
+                        {['queued', 'running'].includes(execution.status) ? (
+                          <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void decideExecution(execution, 'pause')} type="button">暂停</button>
+                        ) : null}
+                        {execution.status === 'paused' ? (
+                          <button className="steward-button" disabled={busy} onClick={() => void sendControlCommand('继续')} type="button">继续</button>
+                        ) : null}
+                        {['awaiting_confirmation', 'queued', 'running', 'paused', 'blocked'].includes(execution.status) ? (
+                          <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void decideExecution(execution, 'cancel')} type="button">取消</button>
+                        ) : null}
+                        {['awaiting_confirmation', 'paused'].includes(execution.status) ? (
+                          <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void sendControlCommand('换到另一台电脑')} type="button">换设备</button>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               ))}
             </article>
@@ -215,14 +325,26 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
             value={draft}
           />
           <div className="steward-conversation-actions">
-            <select aria-label="数据级别" onChange={(event) => setDataLevel(event.target.value)} value={dataLevel}>
-              <option value="D0">D0 手动输入</option>
-              <option value="D1">D1 公开资料</option>
-            </select>
             <button className="steward-button" disabled={busy || !draft.trim()} type="submit">发送</button>
           </div>
         </form>
       </div>
+      <ModelSettingsDialog open={modelSettingsOpen} onClose={() => setModelSettingsOpen(false)} />
     </section>
   )
+}
+
+function executionStatusLabel(status: StewardConversationExecution['status']) {
+  const labels: Record<StewardConversationExecution['status'], string> = {
+    needs_input: '等待补充',
+    awaiting_confirmation: '等待确认',
+    queued: '排队中',
+    running: '执行中',
+    paused: '已暂停',
+    succeeded: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+    blocked: '已阻断',
+  }
+  return labels[status]
 }

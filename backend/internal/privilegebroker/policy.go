@@ -17,13 +17,35 @@ import (
 )
 
 var capabilityNamePattern = regexp.MustCompile(`^[a-z][a-z0-9._:-]{1,79}$`)
+var credentialIDPattern = regexp.MustCompile(`^[a-z][a-z0-9._:-]{1,79}$`)
 var webAuthnRPIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
 var capabilityPathSecurityValidator = validateCapabilityPathSecurity
+var credentialPathSecurityValidator = validateCredentialPathSecurity
 
 type Policy struct {
 	Version             int                 `json:"version"`
 	ApprovalAuthorities []ApprovalAuthority `json:"approval_authorities"`
 	Capabilities        []Capability        `json:"capabilities"`
+	BrokerPeers         []BrokerPeer        `json:"broker_peers,omitempty"`
+	Credentials         []BrokerCredential  `json:"credentials,omitempty"`
+}
+
+type BrokerPeer struct {
+	DeviceID            string   `json:"device_id"`
+	Name                string   `json:"name"`
+	PublicKey           string   `json:"public_key"`
+	AllowedCapabilities []string `json:"allowed_capabilities"`
+	AllowedCredentials  []string `json:"allowed_credentials,omitempty"`
+	Enabled             bool     `json:"enabled"`
+
+	keyID string
+}
+
+type BrokerCredential struct {
+	ID       string `json:"id"`
+	Path     string `json:"path"`
+	MaxBytes int    `json:"max_bytes,omitempty"`
+	Enabled  bool   `json:"enabled"`
 }
 
 type ApprovalAuthority struct {
@@ -50,6 +72,7 @@ type Capability struct {
 	TimeoutSeconds   int      `json:"timeout_seconds"`
 	MaxOutputBytes   int      `json:"max_output_bytes"`
 	Enabled          bool     `json:"enabled"`
+	CredentialIDs    []string `json:"credential_ids,omitempty"`
 
 	digest string
 }
@@ -59,6 +82,8 @@ type LoadedPolicy struct {
 	Digest       string
 	capabilities map[string]Capability
 	authorities  map[string]PublicApprovalAuthority
+	peers        map[string]BrokerPeer
+	credentials  map[string]BrokerCredential
 }
 
 func LoadPolicy(path string) (*LoadedPolicy, error) {
@@ -80,8 +105,8 @@ func LoadPolicy(path string) (*LoadedPolicy, error) {
 }
 
 func ValidatePolicy(policy Policy) (*LoadedPolicy, error) {
-	if policy.Version != 2 {
-		return nil, fmt.Errorf("R3.1 broker policy version must be 2")
+	if policy.Version != 2 && policy.Version != 3 {
+		return nil, fmt.Errorf("broker policy version must be 2 or 3")
 	}
 	if len(policy.Capabilities) == 0 || len(policy.Capabilities) > 128 {
 		return nil, fmt.Errorf("broker policy must define between 1 and 128 capabilities")
@@ -89,7 +114,7 @@ func ValidatePolicy(policy Policy) (*LoadedPolicy, error) {
 	if len(policy.ApprovalAuthorities) == 0 || len(policy.ApprovalAuthorities) > 16 {
 		return nil, fmt.Errorf("R3.1 broker policy must define between 1 and 16 approval authorities")
 	}
-	loaded := &LoadedPolicy{Policy: policy, capabilities: map[string]Capability{}, authorities: map[string]PublicApprovalAuthority{}}
+	loaded := &LoadedPolicy{Policy: policy, capabilities: map[string]Capability{}, authorities: map[string]PublicApprovalAuthority{}, peers: map[string]BrokerPeer{}, credentials: map[string]BrokerCredential{}}
 	for index := range loaded.Policy.ApprovalAuthorities {
 		authority := loaded.Policy.ApprovalAuthorities[index]
 		authority.Name = strings.TrimSpace(authority.Name)
@@ -143,6 +168,77 @@ func ValidatePolicy(policy Policy) (*LoadedPolicy, error) {
 	if len(loaded.authorities) == 0 {
 		return nil, fmt.Errorf("R3.2 broker policy must enable at least one approval authority")
 	}
+	if policy.Version == 2 && (len(policy.BrokerPeers) > 0 || len(policy.Credentials) > 0) {
+		return nil, fmt.Errorf("Broker federation and credential proxy require policy version 3")
+	}
+	if len(policy.BrokerPeers) > 64 || len(policy.Credentials) > 64 {
+		return nil, fmt.Errorf("broker policy supports at most 64 peers and 64 credentials")
+	}
+	for index := range loaded.Policy.Credentials {
+		credential := loaded.Policy.Credentials[index]
+		credential.ID = strings.ToLower(strings.TrimSpace(credential.ID))
+		if !credentialIDPattern.MatchString(credential.ID) {
+			return nil, fmt.Errorf("credential %d has an invalid id", index)
+		}
+		credential.Path = filepath.Clean(strings.TrimSpace(credential.Path))
+		if !filepath.IsAbs(credential.Path) {
+			return nil, fmt.Errorf("credential %q path must be absolute", credential.ID)
+		}
+		resolved, err := filepath.EvalSymlinks(credential.Path)
+		if err != nil {
+			return nil, fmt.Errorf("credential %q path: %w", credential.ID, err)
+		}
+		credential.Path = filepath.Clean(resolved)
+		info, err := os.Stat(credential.Path)
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("credential %q path is unavailable or not a regular file", credential.ID)
+		}
+		if credential.MaxBytes == 0 {
+			credential.MaxBytes = 16 << 10
+		}
+		if credential.MaxBytes < 1 || credential.MaxBytes > 64<<10 || info.Size() > int64(credential.MaxBytes) {
+			return nil, fmt.Errorf("credential %q exceeds its protected size limit", credential.ID)
+		}
+		if err := credentialPathSecurityValidator(credential.Path); err != nil {
+			return nil, fmt.Errorf("credential %q: %w", credential.ID, err)
+		}
+		loaded.Policy.Credentials[index] = credential
+		if credential.Enabled {
+			if _, exists := loaded.credentials[credential.ID]; exists {
+				return nil, fmt.Errorf("duplicate credential %q", credential.ID)
+			}
+			loaded.credentials[credential.ID] = credential
+		}
+	}
+	for index := range loaded.Policy.BrokerPeers {
+		peer := loaded.Policy.BrokerPeers[index]
+		peer.DeviceID = strings.TrimSpace(peer.DeviceID)
+		peer.Name = strings.TrimSpace(peer.Name)
+		if peer.DeviceID == "" || len(peer.DeviceID) > 200 || peer.Name == "" || len([]rune(peer.Name)) > 120 {
+			return nil, fmt.Errorf("broker peer %d has invalid identity metadata", index)
+		}
+		key, err := decodePublicKey(peer.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("broker peer %q public key: %w", peer.DeviceID, err)
+		}
+		peer.PublicKey = base64.StdEncoding.EncodeToString(key)
+		peer.keyID = publicKeyID(key)
+		peer.AllowedCapabilities, err = normalizePolicyNames(peer.AllowedCapabilities, capabilityNamePattern, "capability")
+		if err != nil || len(peer.AllowedCapabilities) == 0 {
+			return nil, fmt.Errorf("broker peer %q must allow at least one valid capability: %v", peer.DeviceID, err)
+		}
+		peer.AllowedCredentials, err = normalizePolicyNames(peer.AllowedCredentials, credentialIDPattern, "credential")
+		if err != nil {
+			return nil, fmt.Errorf("broker peer %q: %w", peer.DeviceID, err)
+		}
+		loaded.Policy.BrokerPeers[index] = peer
+		if peer.Enabled {
+			if _, exists := loaded.peers[peer.DeviceID]; exists {
+				return nil, fmt.Errorf("duplicate enabled broker peer %q", peer.DeviceID)
+			}
+			loaded.peers[peer.DeviceID] = peer
+		}
+	}
 	for index := range loaded.Policy.Capabilities {
 		capability, err := normalizeCapability(loaded.Policy.Capabilities[index])
 		if err != nil {
@@ -152,6 +248,11 @@ func ValidatePolicy(policy Policy) (*LoadedPolicy, error) {
 			return nil, fmt.Errorf("duplicate broker capability %q", capability.Name)
 		}
 		loaded.Policy.Capabilities[index] = capability
+		for _, credentialID := range capability.CredentialIDs {
+			if _, ok := loaded.credentials[credentialID]; !ok {
+				return nil, fmt.Errorf("capability %q references unavailable credential %q", capability.Name, credentialID)
+			}
+		}
 		if capability.Enabled {
 			loaded.capabilities[capability.Name] = capability
 		}
@@ -223,6 +324,11 @@ func normalizeCapability(input Capability) (Capability, error) {
 	out.PermissionLevel = strings.ToUpper(strings.TrimSpace(out.PermissionLevel))
 	out.RiskLevel = strings.ToLower(strings.TrimSpace(out.RiskLevel))
 	out.ExecutableSHA256 = strings.ToLower(strings.TrimSpace(out.ExecutableSHA256))
+	var err error
+	out.CredentialIDs, err = normalizePolicyNames(out.CredentialIDs, credentialIDPattern, "credential")
+	if err != nil {
+		return out, err
+	}
 	if !capabilityNamePattern.MatchString(out.Name) {
 		return out, fmt.Errorf("name must be a stable lowercase capability identifier")
 	}
@@ -331,7 +437,45 @@ func (c Capability) Public() PublicCapability {
 		RiskLevel: c.RiskLevel, ExecutableName: filepath.Base(c.Executable),
 		ArgumentCount: len(c.Arguments), TimeoutSeconds: c.TimeoutSeconds,
 		MaxOutputBytes: c.MaxOutputBytes, CapabilityDigest: c.digest,
+		CredentialIDs: append([]string(nil), c.CredentialIDs...),
 	}
+}
+
+func normalizePolicyNames(values []string, pattern *regexp.Regexp, label string) ([]string, error) {
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if !pattern.MatchString(value) {
+			return nil, fmt.Errorf("invalid %s %q", label, value)
+		}
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func (p *LoadedPolicy) BrokerPeer(deviceID string) (BrokerPeer, bool) {
+	peer, ok := p.peers[strings.TrimSpace(deviceID)]
+	return peer, ok
+}
+
+func (p *LoadedPolicy) PublicBrokerPeers() []PublicBrokerPeer {
+	items := make([]PublicBrokerPeer, 0, len(p.peers))
+	for _, peer := range p.peers {
+		items = append(items, PublicBrokerPeer{DeviceID: peer.DeviceID, Name: peer.Name, PublicKey: peer.PublicKey, KeyID: peer.keyID,
+			AllowedCapabilities: append([]string(nil), peer.AllowedCapabilities...), AllowedCredentials: append([]string(nil), peer.AllowedCredentials...)})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].DeviceID < items[j].DeviceID })
+	return items
+}
+
+func (p *LoadedPolicy) Credential(id string) (BrokerCredential, bool) {
+	credential, ok := p.credentials[strings.ToLower(strings.TrimSpace(id))]
+	return credential, ok
 }
 
 func hashFile(path string) (string, error) {

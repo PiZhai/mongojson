@@ -156,8 +156,29 @@ func (d *Daemon) Start(parent context.Context) {
 		return err
 	}) || started
 	started = d.startLoop(ctx, "runtime-v2", runtimeInterval, func(ctx context.Context) error {
-		_, err := d.service.RunAgentRuntimeCycle(ctx, d.options.RuntimeLimit)
-		return err
+		var conversationBeforeErr, refreshBeforeErr, beforeErr, remoteBeforeErr, runtimeErr, conversationAfterErr, refreshAfterErr, remoteAfterErr, afterErr error
+		if d.service.orchestrationR4 {
+			_, conversationBeforeErr = d.service.RunConversationExecutionCycle(ctx, d.options.RuntimeLimit)
+		}
+		_, refreshBeforeErr = d.service.RunConversationExecutionRefreshCycle(ctx, d.options.RuntimeLimit)
+		if d.service.orchestrationR4 {
+			_, beforeErr = d.service.RunOrchestrationCycle(ctx, d.options.RuntimeLimit)
+		}
+		if d.service.orchestrationRemote {
+			_, remoteBeforeErr = d.service.RunRemoteExecutionCycle(ctx, d.options.RuntimeLimit)
+		}
+		_, runtimeErr = d.service.RunAgentRuntimeCycle(ctx, d.options.RuntimeLimit)
+		if d.service.orchestrationR4 {
+			_, conversationAfterErr = d.service.RunConversationExecutionCycle(ctx, d.options.RuntimeLimit)
+		}
+		_, refreshAfterErr = d.service.RunConversationExecutionRefreshCycle(ctx, d.options.RuntimeLimit)
+		if d.service.orchestrationRemote {
+			_, remoteAfterErr = d.service.RunRemoteExecutionCycle(ctx, d.options.RuntimeLimit)
+		}
+		if d.service.orchestrationR4 {
+			_, afterErr = d.service.RunOrchestrationCycle(ctx, d.options.RuntimeLimit)
+		}
+		return errors.Join(conversationBeforeErr, refreshBeforeErr, beforeErr, remoteBeforeErr, runtimeErr, conversationAfterErr, refreshAfterErr, remoteAfterErr, afterErr)
 	}) || started
 
 	if !started {

@@ -12,6 +12,7 @@ import (
 
 	"mongojson/backend/internal/config"
 	"mongojson/backend/internal/domain"
+	"mongojson/backend/internal/privilegebroker"
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
@@ -81,6 +82,8 @@ type StewardStore interface {
 	ListSyncConflicts(context.Context, string, int) ([]domain.StewardSyncConflict, error)
 	ResolveSyncConflict(context.Context, string, steward.ResolveSyncConflictInput) (domain.StewardSyncConflict, error)
 	GetAutonomyOverview(context.Context) (domain.StewardAutonomyOverview, error)
+	GetModelSettings(context.Context) (steward.StewardModelSettings, error)
+	UpdateModelSettings(context.Context, steward.UpdateStewardModelSettingsInput) (steward.StewardModelSettings, error)
 	ProbeAutonomyAdvisor(context.Context, steward.ProbeAutonomyAdvisorInput) (steward.ProbeAutonomyAdvisorResult, error)
 	GetAutonomySettings(context.Context) (domain.StewardAutonomySettings, error)
 	UpdateAutonomySettings(context.Context, steward.UpdateAutonomySettingsInput) (domain.StewardAutonomySettings, error)
@@ -108,6 +111,10 @@ type StewardPeerStore interface {
 	PrepareOutboundSyncChanges(*http.Request, []domain.StewardSyncChange) ([]domain.StewardSyncChange, error)
 	VerifySyncRequest(*http.Request, []byte) error
 	ImportSyncChanges(context.Context, steward.ImportSyncChangesInput) (steward.ImportSyncChangesResult, error)
+	AcceptRemoteExecution(context.Context, steward.RemoteExecutionDispatchEnvelope, string) (steward.RemoteExecutionStatusEnvelope, error)
+	GetRemoteExecutionStatus(context.Context, string, string) (steward.RemoteExecutionStatusEnvelope, error)
+	CancelRemoteExecution(context.Context, string, string) (steward.RemoteExecutionStatusEnvelope, error)
+	RemoteBrokerStatus(context.Context) (privilegebroker.Status, error)
 }
 
 type StewardConversationStore interface {
@@ -116,6 +123,7 @@ type StewardConversationStore interface {
 	ListConversationMessages(context.Context, string, int) ([]domain.StewardConversationMessage, error)
 	SendConversationMessage(context.Context, string, steward.SendConversationMessageInput) (steward.SendConversationMessageResult, error)
 	DecideConversationSuggestion(context.Context, string, steward.DecideConversationSuggestionInput) (domain.StewardConversationSuggestion, error)
+	DecideConversationExecution(context.Context, string, steward.DecideConversationExecutionInput) (domain.StewardConversationExecution, error)
 }
 
 type StewardActivityStore interface {
@@ -162,6 +170,18 @@ type StewardRuntimeStore interface {
 	GetRuntimeExecutionControl(context.Context) (domain.StewardRuntimeExecutionControl, error)
 	PauseRuntimeExecution(context.Context, steward.SetRuntimeExecutionControlInput) (domain.StewardRuntimeExecutionControl, error)
 	ResumeRuntimeExecution(context.Context, steward.SetRuntimeExecutionControlInput) (domain.StewardRuntimeExecutionControl, error)
+}
+
+type StewardOrchestrationStore interface {
+	ListOrchestrationAgents(context.Context) ([]domain.StewardOrchestrationAgent, error)
+	UpsertOrchestrationAgent(context.Context, steward.UpsertOrchestrationAgentInput) (domain.StewardOrchestrationAgent, error)
+	ListOrchestrations(context.Context, string, int) ([]domain.StewardOrchestration, error)
+	CreateOrchestration(context.Context, steward.CreateOrchestrationInput) (domain.StewardOrchestration, error)
+	GetOrchestration(context.Context, string) (domain.StewardOrchestration, error)
+	StartOrchestration(context.Context, string) (domain.StewardOrchestration, error)
+	CancelOrchestration(context.Context, string) (domain.StewardOrchestration, error)
+	PreviewRemotePrivilegeNode(context.Context, string, string) (steward.RemotePrivilegePreview, error)
+	ApproveRemotePrivilegeNode(context.Context, string, string, steward.ApproveRemotePrivilegeInput) (domain.StewardOrchestration, error)
 }
 
 type Dependencies struct {
@@ -236,11 +256,23 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/steward/runs/{id}/cancel", handler.cancelStewardAgentRun)
 		r.Post("/steward/runs/{id}/resume", handler.resumeStewardAgentRun)
 		r.Post("/steward/runs/{id}/approve", handler.approveStewardAgentRun)
+		r.Get("/steward/orchestration/agents", handler.listStewardOrchestrationAgents)
+		r.Put("/steward/orchestration/agents", handler.upsertStewardOrchestrationAgent)
+		r.Get("/steward/orchestrations", handler.listStewardOrchestrations)
+		r.Post("/steward/orchestrations", handler.createStewardOrchestration)
+		r.Get("/steward/orchestrations/{id}", handler.getStewardOrchestration)
+		r.Post("/steward/orchestrations/{id}/start", handler.startStewardOrchestration)
+		r.Post("/steward/orchestrations/{id}/cancel", handler.cancelStewardOrchestration)
+		r.Post("/steward/orchestrations/{id}/nodes/{nodeID}/remote-privilege/preview", handler.previewStewardRemotePrivilege)
+		r.Post("/steward/orchestrations/{id}/nodes/{nodeID}/remote-privilege/approve", handler.approveStewardRemotePrivilege)
 		r.Get("/steward/conversations", handler.listStewardConversations)
 		r.Post("/steward/conversations", handler.createStewardConversation)
 		r.Get("/steward/conversations/{id}/messages", handler.listStewardConversationMessages)
 		r.Post("/steward/conversations/{id}/messages", handler.sendStewardConversationMessage)
 		r.Post("/steward/conversation-suggestions/{id}/decision", handler.decideStewardConversationSuggestion)
+		r.Post("/steward/conversation-executions/{id}/decision", handler.decideStewardConversationExecution)
+		r.Get("/steward/model-settings", handler.getStewardModelSettings)
+		r.Patch("/steward/model-settings", handler.updateStewardModelSettings)
 		r.Get("/steward/activity/observations", handler.listStewardObservations)
 		r.Post("/steward/activity/observations", handler.createStewardObservation)
 		r.Get("/steward/activity/sessions", handler.listStewardActivitySessions)
@@ -342,6 +374,10 @@ func RegisterPeerRoutes(router chi.Router, deps PeerDependencies) {
 		r.Post("/sync/changes/import", handler.importStewardSyncChanges)
 		r.Get("/sync/probe", handler.probeLocalStewardSyncEntity)
 		r.Post("/pairing/challenge", handler.signStewardPairingChallenge)
+		r.Post("/remote-execution/dispatches", handler.acceptStewardRemoteExecution)
+		r.Get("/remote-execution/dispatches/{id}", handler.getStewardRemoteExecutionStatus)
+		r.Post("/remote-execution/dispatches/{id}/cancel", handler.cancelStewardRemoteExecution)
+		r.Get("/broker-federation/status", handler.getStewardRemoteBrokerStatus)
 	})
 }
 

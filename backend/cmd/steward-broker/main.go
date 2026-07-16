@@ -207,6 +207,7 @@ func brokerServiceInstall(args []string) error {
 	privateKey := envOrDefault("STEWARD_BROKER_SIGNING_PRIVATE_KEY", "")
 	grantTTL := envOrDefault("STEWARD_BROKER_GRANT_TTL", "30s")
 	requestSkew := envOrDefault("STEWARD_BROKER_REQUEST_SKEW", "30s")
+	deviceID := envOrDefault("STEWARD_BROKER_DEVICE_ID", "")
 	fs := flag.NewFlagSet("steward-broker service install", flag.ContinueOnError)
 	fs.StringVar(&name, "name", name, "service name")
 	fs.StringVar(&scope, "scope", scope, "service scope; system is required for privilege separation")
@@ -224,6 +225,7 @@ func brokerServiceInstall(args []string) error {
 	fs.StringVar(&privateKey, "signing-private-key", privateKey, "base64 Ed25519 broker private key")
 	fs.StringVar(&grantTTL, "grant-ttl", grantTTL, "short capability-token TTL")
 	fs.StringVar(&requestSkew, "request-skew", requestSkew, "request signature clock-skew window")
+	fs.StringVar(&deviceID, "device-id", deviceID, "stable Steward device id used for Broker federation")
 	dryRun := fs.Bool("dry-run", false, "render service changes without applying")
 	start := fs.Bool("start", false, "start the broker after installation")
 	if err := fs.Parse(args); err != nil {
@@ -268,6 +270,7 @@ func brokerServiceInstall(args []string) error {
 			"STEWARD_BROKER_LISTEN": listen, "STEWARD_BROKER_POLICY": servicePolicyPath,
 			"STEWARD_BROKER_STATE": statePath, "STEWARD_BROKER_AUDIT": auditPath,
 			"STEWARD_BROKER_CHECKPOINT": checkpointPath,
+			"STEWARD_BROKER_DEVICE_ID":  deviceID,
 			"STEWARD_BROKER_DATA_DIR":   dataDir, "STEWARD_BROKER_CLIENT_KEY": clientKey,
 			"STEWARD_BROKER_CONTROL_KEY":         controlKey,
 			"STEWARD_BROKER_SIGNING_PRIVATE_KEY": privateKey,
@@ -296,7 +299,7 @@ func brokerServiceInstall(args []string) error {
 			return fmt.Errorf("request skew: %w", err)
 		}
 		config := privilegebroker.ServerConfig{
-			ListenAddress: listen, PolicyPath: servicePolicyPath, StatePath: statePath,
+			DeviceID: deviceID, ListenAddress: listen, PolicyPath: servicePolicyPath, StatePath: statePath,
 			AuditPath: auditPath, CheckpointPath: checkpointPath,
 			ClientKey: clientKeyBytes, ControlKey: controlKeyBytes,
 			SigningKey: ed25519.PrivateKey(privateKeyBytes), GrantTTL: grantDuration, RequestSkew: skewDuration,

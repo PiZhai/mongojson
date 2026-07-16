@@ -39,6 +39,25 @@ func validateCapabilityPathSecurity(executable, workingDirectory string) error {
 	return nil
 }
 
+func validateCredentialPathSecurity(path string) error {
+	trustedRoots := []string{os.Getenv("STEWARD_BROKER_DATA_DIR"), os.Getenv("ProgramData"), os.Getenv("ProgramFiles"), os.Getenv("WINDIR")}
+	root, ok := containedTrustedRoot(path, trustedRoots)
+	if !ok {
+		return fmt.Errorf("credential path %q must be under ProgramData or Program Files", path)
+	}
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		if err := validateProtectedWindowsPathComponent(current); err != nil {
+			return err
+		}
+		if strings.EqualFold(current, root) {
+			return nil
+		}
+		if filepath.Dir(current) == current {
+			return fmt.Errorf("credential path %q escaped its trusted root", path)
+		}
+	}
+}
+
 func containedTrustedRoot(path string, roots []string) (string, bool) {
 	path = filepath.Clean(path)
 	for _, candidate := range roots {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -745,6 +746,147 @@ func runtimeRunTerminalStatus(status string) bool {
 	}
 }
 
+func (h *Handler) listStewardOrchestrationAgents(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardOrchestrationService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListOrchestrationAgents(r.Context())
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardOrchestrationAgent{"agents": items})
+}
+
+func (h *Handler) upsertStewardOrchestrationAgent(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardOrchestrationService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpsertOrchestrationAgentInput
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentRunBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid orchestration agent JSON body: "+err.Error())
+		return
+	}
+	item, err := service.UpsertOrchestrationAgent(r.Context(), body)
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardOrchestrationAgent{"agent": item})
+}
+
+func (h *Handler) listStewardOrchestrations(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardOrchestrationService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListOrchestrations(r.Context(), r.URL.Query().Get("status"), queryLimit(r, 40))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardOrchestration{"orchestrations": items})
+}
+
+func (h *Handler) createStewardOrchestration(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardOrchestrationService(w)
+	if !ok {
+		return
+	}
+	var body steward.CreateOrchestrationInput
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentRunBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid orchestration JSON body: "+err.Error())
+		return
+	}
+	item, err := service.CreateOrchestration(r.Context(), body)
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.StewardOrchestration{"orchestration": item})
+}
+
+func (h *Handler) getStewardOrchestration(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardOrchestrationService(w)
+	if !ok {
+		return
+	}
+	item, err := service.GetOrchestration(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardOrchestration{"orchestration": item})
+}
+
+func (h *Handler) startStewardOrchestration(w http.ResponseWriter, r *http.Request) {
+	h.transitionStewardOrchestration(w, r, "start")
+}
+
+func (h *Handler) cancelStewardOrchestration(w http.ResponseWriter, r *http.Request) {
+	h.transitionStewardOrchestration(w, r, "cancel")
+}
+
+func (h *Handler) previewStewardRemotePrivilege(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardOrchestrationService(w)
+	if !ok {
+		return
+	}
+	preview, err := service.PreviewRemotePrivilegeNode(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "nodeID"))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]steward.RemotePrivilegePreview{"preview": preview})
+}
+
+func (h *Handler) approveStewardRemotePrivilege(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardOrchestrationService(w)
+	if !ok {
+		return
+	}
+	var body steward.ApproveRemotePrivilegeInput
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentRunBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid remote privilege approval body: "+err.Error())
+		return
+	}
+	item, err := service.ApproveRemotePrivilegeNode(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "nodeID"), body)
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardOrchestration{"orchestration": item})
+}
+
+func (h *Handler) transitionStewardOrchestration(w http.ResponseWriter, r *http.Request, action string) {
+	service, ok := h.requireStewardOrchestrationService(w)
+	if !ok {
+		return
+	}
+	var item domain.StewardOrchestration
+	var err error
+	if action == "start" {
+		item, err = service.StartOrchestration(r.Context(), chi.URLParam(r, "id"))
+	} else {
+		item, err = service.CancelOrchestration(r.Context(), chi.URLParam(r, "id"))
+	}
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardOrchestration{"orchestration": item})
+}
+
 func mustJSON(value any) string {
 	payload, _ := json.Marshal(value)
 	return string(payload)
@@ -755,7 +897,9 @@ func respondStewardRuntimeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, steward.ErrRuntimeV2Disabled), errors.Is(err, steward.ErrRuntimeR2Disabled):
 		status = http.StatusServiceUnavailable
-	case errors.Is(err, steward.ErrAgentRunNotFound):
+	case errors.Is(err, steward.ErrOrchestrationDisabled):
+		status = http.StatusServiceUnavailable
+	case errors.Is(err, steward.ErrAgentRunNotFound), errors.Is(err, steward.ErrOrchestrationNotFound), errors.Is(err, steward.ErrOrchestrationAgentNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, steward.ErrRuntimePolicyDenied),
 		errors.Is(err, steward.ErrRuntimePathDenied),
@@ -764,11 +908,13 @@ func respondStewardRuntimeError(w http.ResponseWriter, err error) {
 		status = http.StatusForbidden
 	case errors.Is(err, steward.ErrRuntimePlannerUnsupported), errors.Is(err, steward.ErrRuntimePlannerToolUnavailable):
 		status = http.StatusUnprocessableEntity
-	case errors.Is(err, steward.ErrAgentRunInvalid), errors.Is(err, steward.ErrRuntimeToolInput):
+	case errors.Is(err, steward.ErrAgentRunInvalid), errors.Is(err, steward.ErrRuntimeToolInput), errors.Is(err, steward.ErrOrchestrationInvalid):
 		status = http.StatusBadRequest
 	case errors.Is(err, steward.ErrAgentRunConflict),
 		errors.Is(err, steward.ErrAgentRunInvalidTransition),
-		errors.Is(err, steward.ErrAgentRunPlanHashMismatch):
+		errors.Is(err, steward.ErrAgentRunPlanHashMismatch),
+		errors.Is(err, steward.ErrOrchestrationConflict),
+		errors.Is(err, steward.ErrOrchestrationInvalidTransition):
 		status = http.StatusConflict
 	}
 	httpError(w, status, err.Error())
@@ -852,6 +998,24 @@ func (h *Handler) decideStewardConversationSuggestion(w http.ResponseWriter, r *
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.StewardConversationSuggestion{"suggestion": item})
+}
+
+func (h *Handler) decideStewardConversationExecution(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	var body steward.DecideConversationExecutionInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.DecideConversationExecution(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardConversationExecution{"execution": item})
 }
 
 func (h *Handler) listStewardEvents(w http.ResponseWriter, r *http.Request) {
@@ -1646,6 +1810,84 @@ func (h *Handler) importStewardSyncChanges(w http.ResponseWriter, r *http.Reques
 	respondJSON(w, http.StatusCreated, map[string]steward.ImportSyncChangesResult{"result": result})
 }
 
+func (h *Handler) acceptStewardRemoteExecution(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardPeerService(w)
+	if !ok {
+		return
+	}
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := service.VerifySyncRequest(r, bodyBytes); err != nil {
+		httpError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	var body steward.RemoteExecutionDispatchEnvelope
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid remote execution envelope")
+		return
+	}
+	result, err := service.AcceptRemoteExecution(r.Context(), body, strings.TrimSpace(r.Header.Get(steward.SyncHeaderDeviceID)))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusAccepted, result)
+}
+
+func (h *Handler) getStewardRemoteExecutionStatus(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardPeerService(w)
+	if !ok {
+		return
+	}
+	if err := service.VerifySyncRequest(r, nil); err != nil {
+		httpError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	result, err := service.GetRemoteExecutionStatus(r.Context(), chi.URLParam(r, "id"), strings.TrimSpace(r.Header.Get(steward.SyncHeaderDeviceID)))
+	if err != nil {
+		httpError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) cancelStewardRemoteExecution(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardPeerService(w)
+	if !ok {
+		return
+	}
+	if err := service.VerifySyncRequest(r, nil); err != nil {
+		httpError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	result, err := service.CancelRemoteExecution(r.Context(), chi.URLParam(r, "id"), strings.TrimSpace(r.Header.Get(steward.SyncHeaderDeviceID)))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) getStewardRemoteBrokerStatus(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardPeerService(w)
+	if !ok {
+		return
+	}
+	if err := service.VerifySyncRequest(r, nil); err != nil {
+		httpError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	status, err := service.RemoteBrokerStatus(r.Context())
+	if err != nil {
+		httpError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, status)
+}
+
 func (h *Handler) listStewardSyncConflicts(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.requireStewardService(w)
 	if !ok {
@@ -1688,6 +1930,58 @@ func (h *Handler) getStewardAutonomy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.StewardAutonomyOverview{"autonomy": overview})
+}
+
+func (h *Handler) getStewardModelSettings(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardService(w)
+	if !ok {
+		return
+	}
+	settings, err := service.GetModelSettings(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]steward.StewardModelSettings{"settings": settings})
+}
+
+func (h *Handler) updateStewardModelSettings(w http.ResponseWriter, r *http.Request) {
+	if !trustedLocalSettingsOrigin(r.Header.Get("Origin")) {
+		httpError(w, http.StatusForbidden, "model settings may only be changed from the local management UI")
+		return
+	}
+	service, ok := h.requireStewardService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpdateStewardModelSettingsInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	settings, err := service.UpdateModelSettings(r.Context(), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]steward.StewardModelSettings{"settings": settings})
+}
+
+func trustedLocalSettingsOrigin(origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (h *Handler) probeStewardAutonomyAdvisor(w http.ResponseWriter, r *http.Request) {
@@ -2232,6 +2526,15 @@ func (h *Handler) requireStewardRuntimeService(w http.ResponseWriter) (StewardRu
 	service, ok := h.deps.StewardService.(StewardRuntimeStore)
 	if !ok || service == nil {
 		httpError(w, http.StatusServiceUnavailable, "steward runtime v2 service is not configured")
+		return nil, false
+	}
+	return service, true
+}
+
+func (h *Handler) requireStewardOrchestrationService(w http.ResponseWriter) (StewardOrchestrationStore, bool) {
+	service, ok := h.deps.StewardService.(StewardOrchestrationStore)
+	if !ok || service == nil {
+		httpError(w, http.StatusServiceUnavailable, "steward R4.0 orchestration service is not configured")
 		return nil, false
 	}
 	return service, true

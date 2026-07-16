@@ -65,33 +65,48 @@ const (
 )
 
 type Service struct {
-	db                      *database.DB
-	agentID                 string
-	storageDir              string
-	advisor                 AutonomyAdvisor
-	proposalScorer          AutonomyProposalScorer
-	proposalSources         *autonomyProposalDiscovererRegistry
-	actionExecutors         *autonomyActionExecutorRegistry
-	retryPolicy             autonomyRetryPolicy
-	syncEntities            *syncEntityAdapterRegistry
-	peerDiscovery           PeerDiscoveryCatalog
-	runtimeV2               bool
-	runtimeR2               bool
-	runtimeR3               bool
-	runtimeTools            *runtimeToolRegistry
-	runtimePolicy           RuntimePolicyEngine
-	runtimePlanner          RuntimePlanner
-	runtimeAllowedRoots     []string
-	runtimeExecutables      map[string]string
-	runtimeWebAllowedHosts  map[string]bool
-	runtimeBrowserOpen      bool
-	runtimeWorkerID         string
-	runtimeLeaseTTL         time.Duration
-	runtimeEvidenceMaxBytes int
-	runtimeCancelMu         sync.Mutex
-	runtimeCancels          map[string]context.CancelFunc
-	privilegeBroker         PrivilegeBrokerClient
-	privilegeBrokerError    error
+	db                         *database.DB
+	agentID                    string
+	storageDir                 string
+	advisor                    AutonomyAdvisor
+	proposalScorer             AutonomyProposalScorer
+	proposalSources            *autonomyProposalDiscovererRegistry
+	actionExecutors            *autonomyActionExecutorRegistry
+	retryPolicy                autonomyRetryPolicy
+	syncEntities               *syncEntityAdapterRegistry
+	peerDiscovery              PeerDiscoveryCatalog
+	runtimeV2                  bool
+	runtimeR2                  bool
+	runtimeR3                  bool
+	orchestrationR4            bool
+	orchestrationWorkers       bool
+	orchestrationRemote        bool
+	runtimeTools               *runtimeToolRegistry
+	runtimePolicy              RuntimePolicyEngine
+	runtimePlanner             RuntimePlanner
+	runtimeAllowedRoots        []string
+	runtimeExecutables         map[string]string
+	runtimeWebAllowedHosts     map[string]bool
+	runtimeBrowserOpen         bool
+	runtimeWorkerID            string
+	runtimeLeaseTTL            time.Duration
+	runtimeEvidenceMaxBytes    int
+	runtimeCancelMu            sync.Mutex
+	runtimeCancels             map[string]context.CancelFunc
+	privilegeBroker            PrivilegeBrokerClient
+	privilegeBrokerError       error
+	orchestrationSigningKey    []byte
+	orchestrationVerifyKey     []byte
+	orchestrationKeyError      error
+	orchestrationDelegationTTL time.Duration
+	orchestrationMessageLease  time.Duration
+	remoteExecutionLease       time.Duration
+	remoteExecutionTools       map[string]bool
+	deviceSigningKey           []byte
+	remoteBrokerCancelMu       sync.Mutex
+	remoteBrokerCancels        map[string]context.CancelFunc
+	conversationMemoryMu       sync.Mutex
+	modelSettingsMu            sync.RWMutex
 
 	advisorAuditMu           sync.Mutex
 	lastAdvisorFallbackAudit time.Time
@@ -178,6 +193,65 @@ func WithRuntimeR3Enabled(enabled bool) ServiceOption {
 	}
 }
 
+func WithOrchestrationR4Enabled(enabled bool) ServiceOption {
+	return func(s *Service) {
+		s.orchestrationR4 = enabled
+	}
+}
+
+func WithOrchestrationWorkersEnabled(enabled bool) ServiceOption {
+	return func(s *Service) {
+		s.orchestrationWorkers = enabled
+	}
+}
+
+func WithOrchestrationMessageLease(ttl time.Duration) ServiceOption {
+	return func(s *Service) {
+		if ttl > 0 {
+			s.orchestrationMessageLease = ttl
+		}
+	}
+}
+
+func WithRemoteExecutionEnabled(enabled bool) ServiceOption {
+	return func(s *Service) { s.orchestrationRemote = enabled }
+}
+
+func WithRemoteExecutionLease(ttl time.Duration) ServiceOption {
+	return func(s *Service) {
+		if ttl > 0 {
+			s.remoteExecutionLease = ttl
+		}
+	}
+}
+
+func WithDeviceSigningKey(privateKey []byte) ServiceOption {
+	return func(s *Service) { s.deviceSigningKey = append([]byte(nil), privateKey...) }
+}
+
+func WithOrchestrationSigningKey(key []byte) ServiceOption {
+	return func(s *Service) {
+		s.orchestrationSigningKey, s.orchestrationVerifyKey = deriveOrchestrationKeys(key)
+		s.orchestrationKeyError = nil
+	}
+}
+
+func WithOrchestrationVerifyKey(key []byte) ServiceOption {
+	return func(s *Service) {
+		s.orchestrationSigningKey = nil
+		s.orchestrationVerifyKey = append([]byte(nil), key...)
+		s.orchestrationKeyError = nil
+	}
+}
+
+func WithOrchestrationDelegationTTL(ttl time.Duration) ServiceOption {
+	return func(s *Service) {
+		if ttl > 0 {
+			s.orchestrationDelegationTTL = ttl
+		}
+	}
+}
+
 func WithPrivilegeBrokerClient(client PrivilegeBrokerClient) ServiceOption {
 	return func(s *Service) {
 		s.privilegeBroker = client
@@ -225,6 +299,14 @@ func WithRuntimeLeaseTTL(ttl time.Duration) ServiceOption {
 	return func(s *Service) {
 		if ttl > 0 {
 			s.runtimeLeaseTTL = ttl
+		}
+	}
+}
+
+func WithRuntimeWorkerID(workerID string) ServiceOption {
+	return func(s *Service) {
+		if value := strings.TrimSpace(workerID); value != "" {
+			s.runtimeWorkerID = value
 		}
 	}
 }
@@ -286,22 +368,31 @@ type UpdateCollectorInput struct {
 
 func NewService(db *database.DB, options ...ServiceOption) *Service {
 	service := &Service{
-		db:                      db,
-		agentID:                 envOrDefault("STEWARD_AGENT_ID", DefaultAgentID),
-		storageDir:              envOrDefault("STORAGE_DIR", "./data"),
-		advisor:                 NewAutonomyAdvisorFromEnv(),
-		proposalScorer:          NewRuleBasedAutonomyProposalScorer(),
-		retryPolicy:             autonomyRetryPolicyFromEnv(),
-		peerDiscovery:           disabledPeerDiscovery{},
-		runtimeV2:               boolEnv("STEWARD_RUNTIME_V2", false),
-		runtimeR2:               boolEnv("STEWARD_RUNTIME_R2", false),
-		runtimeR3:               boolEnv("STEWARD_RUNTIME_R3", false),
-		runtimeBrowserOpen:      boolEnv("STEWARD_RUNTIME_BROWSER_OPEN_ENABLED", false),
-		runtimeTools:            newRuntimeToolRegistry(newRuntimeEchoTool()),
-		runtimeWorkerID:         uuid.NewString(),
-		runtimeLeaseTTL:         durationEnv("STEWARD_RUNTIME_LEASE_TTL", 10*time.Second),
-		runtimeEvidenceMaxBytes: intEnv("STEWARD_RUNTIME_EVIDENCE_MAX_BYTES", 64<<10),
-		runtimeCancels:          map[string]context.CancelFunc{},
+		db:                         db,
+		agentID:                    envOrDefault("STEWARD_AGENT_ID", DefaultAgentID),
+		storageDir:                 envOrDefault("STORAGE_DIR", "./data"),
+		advisor:                    NewAutonomyAdvisorFromEnv(),
+		proposalScorer:             NewRuleBasedAutonomyProposalScorer(),
+		retryPolicy:                autonomyRetryPolicyFromEnv(),
+		peerDiscovery:              disabledPeerDiscovery{},
+		runtimeV2:                  boolEnv("STEWARD_RUNTIME_V2", false),
+		runtimeR2:                  boolEnv("STEWARD_RUNTIME_R2", false),
+		runtimeR3:                  boolEnv("STEWARD_RUNTIME_R3", false),
+		orchestrationR4:            boolEnv("STEWARD_ORCHESTRATION_R4", false),
+		orchestrationWorkers:       boolEnv("STEWARD_ORCHESTRATION_WORKERS", false),
+		orchestrationRemote:        boolEnv("STEWARD_ORCHESTRATION_REMOTE", false),
+		runtimeBrowserOpen:         boolEnv("STEWARD_RUNTIME_BROWSER_OPEN_ENABLED", false),
+		runtimeTools:               newRuntimeToolRegistry(newRuntimeEchoTool()),
+		runtimeWorkerID:            uuid.NewString(),
+		runtimeLeaseTTL:            durationEnv("STEWARD_RUNTIME_LEASE_TTL", 10*time.Second),
+		runtimeEvidenceMaxBytes:    intEnv("STEWARD_RUNTIME_EVIDENCE_MAX_BYTES", 64<<10),
+		runtimeCancels:             map[string]context.CancelFunc{},
+		remoteBrokerCancels:        map[string]context.CancelFunc{},
+		orchestrationDelegationTTL: durationEnv("STEWARD_ORCHESTRATION_DELEGATION_TTL", 15*time.Minute),
+		orchestrationMessageLease:  durationEnv("STEWARD_ORCHESTRATION_MESSAGE_LEASE", 15*time.Second),
+		remoteExecutionLease:       durationEnv("STEWARD_REMOTE_EXECUTION_LEASE", 30*time.Second),
+		remoteExecutionTools:       runtimeHostSet(defaultRemoteExecutionTools()),
+		deviceSigningKey:           append([]byte(nil), syncDevicePrivateKeyFromEnv()...),
 	}
 	service.actionExecutors = newAutonomyActionExecutorRegistry(
 		newLocalTaskAutonomyExecutor(service, AutonomyActionCreateLocalTask, "创建本地低风险任务", "autonomous"),
@@ -395,6 +486,19 @@ func NewService(db *database.DB, options ...ServiceOption) *Service {
 		}
 		service.runtimeTools.registerIfAbsent(newRuntimePrivilegeBrokerTool(service))
 	}
+	if service.orchestrationWorkers {
+		service.orchestrationR4 = true
+	}
+	if service.orchestrationRemote {
+		service.orchestrationR4 = true
+		service.runtimeV2 = true
+	}
+	if service.orchestrationR4 {
+		service.runtimeV2 = true
+		if len(service.orchestrationVerifyKey) == 0 {
+			service.orchestrationSigningKey, service.orchestrationVerifyKey, service.orchestrationKeyError = orchestrationKeysFromEnv()
+		}
+	}
 	return service
 }
 
@@ -413,15 +517,37 @@ func (s *Service) agentIDValue() string {
 }
 
 func (s *Service) autonomyAdvisor() AutonomyAdvisor {
-	if s == nil || s.advisor == nil {
+	if s == nil {
 		return DisabledAutonomyAdvisor("disabled")
 	}
-	return s.advisor
+	s.modelSettingsMu.RLock()
+	advisor := s.advisor
+	s.modelSettingsMu.RUnlock()
+	if advisor == nil {
+		return DisabledAutonomyAdvisor("disabled")
+	}
+	return advisor
+}
+
+func (s *Service) runtimePlannerValue() RuntimePlanner {
+	if s == nil {
+		return chainedRuntimePlanner{local: localRuntimePlanner{}}
+	}
+	s.modelSettingsMu.RLock()
+	planner := s.runtimePlanner
+	s.modelSettingsMu.RUnlock()
+	if planner == nil {
+		return chainedRuntimePlanner{local: localRuntimePlanner{}}
+	}
+	return planner
 }
 
 func (s *Service) EnsureDefaults(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return nil
+	}
+	if err := s.reloadPersistedModelSettings(ctx); err != nil {
+		return fmt.Errorf("load model settings: %w", err)
 	}
 
 	hostname, err := os.Hostname()

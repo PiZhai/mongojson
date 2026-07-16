@@ -68,9 +68,10 @@ func (s *Service) claimQueuedAgentRun(ctx context.Context, excludedRunIDs []stri
 			where id = 'global' and paused
 		  )
 		  and (cardinality($2::text[]) = 0 or id::text <> all($2::text[]))
+		  and (not $3 or orchestration_id is null)
 		order by updated_at, created_at
 		for update skip locked limit 1
-	`, RuntimeRunQueued, excludedRunIDs).Scan(&runID)
+	`, RuntimeRunQueued, excludedRunIDs, s.orchestrationWorkers).Scan(&runID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -78,6 +79,15 @@ func (s *Service) claimQueuedAgentRun(ctx context.Context, excludedRunIDs []stri
 		return "", false, fmt.Errorf("claim queued agent run: %w", err)
 	}
 	now := time.Now().UTC()
+	if err := s.verifyRuntimeOrchestrationDelegationTx(ctx, tx, runID, now); err != nil {
+		if blockErr := s.blockInvalidDelegatedRunTx(ctx, tx, runID, err, now); blockErr != nil {
+			return "", false, blockErr
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return "", false, err
+		}
+		return runID, true, nil
+	}
 	if _, err := tx.Exec(ctx, `
 		update steward_agent_runs
 		set status = $2, started_at = coalesce(started_at, $3), updated_at = $3

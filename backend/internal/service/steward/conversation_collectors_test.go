@@ -20,6 +20,23 @@ func TestParseConversationAdvisorResponseNormalizesCandidates(t *testing.T) {
 	}
 }
 
+func TestParseConversationAdvisorResponseAcceptsUnifiedExecutionIntent(t *testing.T) {
+	response, err := parseConversationAdvisorResponse(`{
+		"intent":"execution","confidence":0.98,"reply":"开始执行","target_device":"local-s1",
+		"execution_plan":{"summary":"创建目录","steps":[{"key":"mkdir","title":"创建目录","tool_name":"fs.create_directory","arguments":{"path":"desktop/动漫"}}]},
+		"task_action":null,"intent_candidates":[],"memory_candidates":[],"task_candidates":[]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Intent != "execution" || response.ExecutionPlan == nil || len(response.ExecutionPlan.Steps) != 1 {
+		t.Fatalf("unexpected unified response: %+v", response)
+	}
+	if response.ExecutionPlan.Planner != "conversation-model" || response.ExecutionPlan.Steps[0].ToolName != "fs.create_directory" {
+		t.Fatalf("execution plan was not normalized: %+v", response.ExecutionPlan)
+	}
+}
+
 func TestHighSensitivityConversationPayloadRoundTripsEncrypted(t *testing.T) {
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY_ID", "test-local")

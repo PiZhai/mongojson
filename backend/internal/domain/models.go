@@ -116,7 +116,41 @@ type StewardConversationMessage struct {
 	ContextSummary   string                          `json:"context_summary,omitempty"`
 	PayloadEncrypted bool                            `json:"payload_encrypted"`
 	Suggestions      []StewardConversationSuggestion `json:"suggestions"`
+	Executions       []StewardConversationExecution  `json:"executions"`
 	CreatedAt        time.Time                       `json:"created_at"`
+}
+
+// StewardConversationExecution is the durable R4.5 bridge between one
+// conversational request and exactly one Runtime V2 run or R4 orchestration.
+// The linked executor remains the source of truth for live status and evidence.
+type StewardConversationExecution struct {
+	ID                   string         `json:"id"`
+	ConversationID       string         `json:"conversation_id"`
+	MessageID            string         `json:"message_id"`
+	RequestMessageID     string         `json:"request_message_id"`
+	Instruction          string         `json:"instruction"`
+	Summary              string         `json:"summary"`
+	Kind                 string         `json:"kind"`
+	Status               string         `json:"status"`
+	RunID                string         `json:"run_id,omitempty"`
+	OrchestrationID      string         `json:"orchestration_id,omitempty"`
+	TargetDeviceID       string         `json:"target_device_id"`
+	TargetDeviceName     string         `json:"target_device_name"`
+	PermissionLevel      string         `json:"permission_level"`
+	RiskLevel            string         `json:"risk_level"`
+	PlanHash             string         `json:"plan_hash"`
+	RequiresConfirmation bool           `json:"requires_confirmation"`
+	ConfirmationReason   string         `json:"confirmation_reason,omitempty"`
+	Question             string         `json:"question,omitempty"`
+	Capability           string         `json:"capability,omitempty"`
+	ApprovalSubject      string         `json:"approval_subject,omitempty"`
+	ControlGeneration    int64          `json:"control_generation,omitempty"`
+	Evidence             map[string]any `json:"evidence"`
+	FailureSummary       string         `json:"failure_summary,omitempty"`
+	CreatedAt            time.Time      `json:"created_at"`
+	UpdatedAt            time.Time      `json:"updated_at"`
+	ConfirmedAt          *time.Time     `json:"confirmed_at,omitempty"`
+	CompletedAt          *time.Time     `json:"completed_at,omitempty"`
 }
 
 type StewardConversationSuggestion struct {
@@ -336,6 +370,8 @@ type StewardDevice struct {
 	PermissionLevel  string     `json:"permission_level"`
 	PublicKey        string     `json:"public_key"`
 	APIBaseURL       string     `json:"api_base_url"`
+	BrokerPublicKey  string     `json:"broker_public_key,omitempty"`
+	BrokerKeyID      string     `json:"broker_key_id,omitempty"`
 	LastSyncSequence int64      `json:"last_sync_sequence"`
 	LastSentSequence int64      `json:"last_sent_sequence"`
 	LastSeenAt       *time.Time `json:"last_seen_at,omitempty"`

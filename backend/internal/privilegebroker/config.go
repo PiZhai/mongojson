@@ -64,6 +64,7 @@ func ServerConfigFromEnv() (ServerConfig, error) {
 	}
 	dataDir := defaultEnv("STEWARD_BROKER_DATA_DIR", filepath.Join(".", "data", "privilege-broker"))
 	return ServerConfig{
+		DeviceID:       defaultEnv("STEWARD_BROKER_DEVICE_ID", ""),
 		ListenAddress:  defaultEnv("STEWARD_BROKER_LISTEN", "127.0.0.1:18100"),
 		PolicyPath:     defaultEnv("STEWARD_BROKER_POLICY", filepath.Join(dataDir, "policy.json")),
 		StatePath:      defaultEnv("STEWARD_BROKER_STATE", filepath.Join(dataDir, "state.json")),

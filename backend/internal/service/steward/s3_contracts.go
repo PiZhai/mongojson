@@ -37,6 +37,8 @@ type RegisterDeviceInput struct {
 	PermissionLevel string `json:"permission_level"`
 	PublicKey       string `json:"public_key"`
 	APIBaseURL      string `json:"api_base_url"`
+	BrokerPublicKey string `json:"broker_public_key,omitempty"`
+	BrokerKeyID     string `json:"broker_key_id,omitempty"`
 }
 
 type UpdateDevicePermissionInput struct {

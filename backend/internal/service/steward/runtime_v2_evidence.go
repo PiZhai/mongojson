@@ -35,7 +35,29 @@ type governedRuntimePayload struct {
 }
 
 func (s *Service) storeRuntimeEvidence(ctx context.Context, tx pgx.Tx, evidenceID, runID, stepID, kind, summary, dataLevel string, payload map[string]any) (governedRuntimePayload, error) {
-	governed, err := s.governRuntimePayload(evidenceID, runID, stepID, dataLevel, payload)
+	limit := s.runtimeEvidenceMaxBytes
+	var agentLimit int64
+	var used int64
+	if err := tx.QueryRow(ctx, `
+		select coalesce((
+			select agent.max_evidence_bytes from steward_agent_runs run
+			join steward_orchestration_nodes node on node.id=run.orchestration_node_id
+			join steward_orchestration_agents agent on agent.id=node.agent_id
+			where run.id=$1
+		),0), coalesce((select sum(size_bytes) from steward_evidence_artifacts where run_id=$1),0)
+	`, runID).Scan(&agentLimit, &used); err != nil {
+		return governedRuntimePayload{}, fmt.Errorf("load Agent evidence quota: %w", err)
+	}
+	if agentLimit > 0 {
+		remaining := agentLimit - used
+		if remaining < 1 {
+			remaining = 1
+		}
+		if limit <= 0 || int64(limit) > remaining {
+			limit = int(remaining)
+		}
+	}
+	governed, err := s.governRuntimePayloadWithLimit(evidenceID, runID, stepID, dataLevel, payload, limit)
 	if err != nil {
 		return governedRuntimePayload{}, err
 	}
@@ -57,6 +79,10 @@ func (s *Service) storeRuntimeEvidence(ctx context.Context, tx pgx.Tx, evidenceI
 }
 
 func (s *Service) governRuntimePayload(evidenceID, runID, stepID, dataLevel string, payload map[string]any) (governedRuntimePayload, error) {
+	return s.governRuntimePayloadWithLimit(evidenceID, runID, stepID, dataLevel, payload, s.runtimeEvidenceMaxBytes)
+}
+
+func (s *Service) governRuntimePayloadWithLimit(evidenceID, runID, stepID, dataLevel string, payload map[string]any, limit int) (governedRuntimePayload, error) {
 	redactedPayload, redacted := redactRuntimePayloadMap(payload)
 	plain, err := json.Marshal(redactedPayload)
 	if err != nil {
@@ -71,7 +97,6 @@ func (s *Service) governRuntimePayload(evidenceID, runID, stepID, dataLevel stri
 		ContentType: "application/json",
 	}
 	result.Preview = runtimePayloadPreview(redactedPayload, result.DataLevel)
-	limit := s.runtimeEvidenceMaxBytes
 	if limit <= 0 {
 		limit = 64 << 10
 	}

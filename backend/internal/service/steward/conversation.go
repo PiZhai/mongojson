@@ -125,6 +125,10 @@ func (s *Service) ListConversationMessages(ctx context.Context, conversationID s
 		if err != nil {
 			return nil, err
 		}
+		item.Executions, err = s.listConversationExecutions(ctx, item.ID)
+		if err != nil {
+			return nil, err
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -152,6 +156,20 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	if err != nil {
 		return SendConversationMessageResult{}, err
 	}
+	if command := conversationControlCommand(content); command != "" {
+		executionMessage, executionErr := s.applyConversationExecutionCommand(ctx, conversation, userMessage, command, level)
+		if executionErr != nil {
+			return SendConversationMessageResult{}, executionErr
+		}
+		if (conversation.MessageCount == 0 || conversation.Title == "新对话") && dataLevelRank(level) < dataLevelRank(DataD4) {
+			_, _ = s.db.Pool.Exec(ctx, `update steward_conversations set title = $1, updated_at = $2 where id = $3`, truncateAdvisorText(content, 48), time.Now().UTC(), conversationID)
+		}
+		conversation, err = s.getConversation(ctx, conversationID)
+		if err != nil {
+			return SendConversationMessageResult{}, err
+		}
+		return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
+	}
 	contextLimit := input.ContextLimit
 	if contextLimit <= 0 || contextLimit > 20 {
 		contextLimit = 10
@@ -168,16 +186,65 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	if advisor, ok := s.autonomyAdvisor().(ConversationAdvisor); ok && s.autonomyAdvisor().Status().Enabled && modelAllowed {
 		modelContent := conversationModelText(content, level, dataPolicy.ModelContentMode)
 		modelHistory := conversationModelHistory(history, dataPolicy.ModelContentMode)
+		devices := s.conversationAdvisorDevices(ctx)
 		advisorResponse, advisorErr := advisor.Converse(ctx, ConversationAdvisorInput{
 			Message: modelContent, DataLevel: level, History: modelHistory, Context: localContext,
+			Tools: s.runtimeTools.specs(), Devices: devices, KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(),
 		})
 		if advisorErr == nil {
 			response = advisorResponse
 			model = defaultString(s.autonomyAdvisor().Status().Model, s.autonomyAdvisor().Status().Provider)
 			s.recordConversationAdvisorDisclosure(ctx, userMessage.ID, level, dataPolicy.ModelContentMode, modelContent, model)
+			if response.Intent == "execution" {
+				if response.ExecutionPlan == nil {
+					response.Intent = "clarify"
+					response.Clarification = defaultString(response.Clarification, "我已经理解这是一个执行请求，但还缺少可验证的执行步骤。请补充你期望的最终结果。")
+					response.Reply = response.Clarification
+				} else {
+					executionMessage, _, executionErr := s.createConversationExecutionFromModel(ctx, conversation, userMessage, content, level, response.TargetDevice, *response.ExecutionPlan)
+					if executionErr != nil {
+						return SendConversationMessageResult{}, executionErr
+					}
+					if err := s.persistExplicitConversationMemories(ctx, userMessage, content, level, response); err != nil {
+						return SendConversationMessageResult{}, err
+					}
+					if explicitConversationMemoryRequest(content) {
+						response.MemoryCandidates = nil
+					}
+					if err := s.insertConversationSuggestions(ctx, executionMessage.ID, level, response); err != nil {
+						return SendConversationMessageResult{}, err
+					}
+					executionMessage.Suggestions, err = s.listConversationSuggestions(ctx, executionMessage.ID)
+					if err != nil {
+						return SendConversationMessageResult{}, err
+					}
+					conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
+					if err != nil {
+						return SendConversationMessageResult{}, err
+					}
+					return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
+				}
+			}
+			if response.Intent == "task" && response.TaskAction != nil {
+				task, createErr := s.createConversationTaskAction(ctx, userMessage, level, *response.TaskAction)
+				if createErr != nil {
+					return SendConversationMessageResult{}, createErr
+				}
+				response.Reply = defaultString(response.Reply, "已创建提醒或持续任务："+task.Title)
+			}
 		} else {
 			s.recordConversationAdvisorFailure(ctx, userMessage.ID, level, advisorErr)
-			response.Reply = "模型暂时不可用，消息已安全保存在本地。你仍可继续记录信息，明确写“记住”或“提醒我”会生成待确认候选。"
+			if executionMessage, handled, executionErr := s.tryConversationExecution(ctx, conversation, userMessage, content, level); handled {
+				if executionErr != nil {
+					return SendConversationMessageResult{}, executionErr
+				}
+				conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
+				if err != nil {
+					return SendConversationMessageResult{}, err
+				}
+				return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
+			}
+			response.Reply = "模型暂时不可用，消息已安全保存在本地。当前无法可靠理解新的自然语言任务，请稍后重试。"
 		}
 	} else if !modelAllowed {
 		cause := ErrDataPolicyDenied
@@ -187,9 +254,37 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 			cause = permissionErr
 		}
 		s.recordConversationAdvisorFailure(ctx, userMessage.ID, level, cause)
-		response.Reply = "消息已保存在本地；当前数据等级或 A6 模型外发策略未允许本次请求。"
+		if executionMessage, handled, executionErr := s.tryConversationExecution(ctx, conversation, userMessage, content, level); handled {
+			if executionErr != nil {
+				return SendConversationMessageResult{}, executionErr
+			}
+			conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
+			if err != nil {
+				return SendConversationMessageResult{}, err
+			}
+			return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
+		}
+		response.Reply = "消息已保存在本地；当前模型策略未允许本次理解请求。"
+	} else if executionMessage, handled, executionErr := s.tryConversationExecution(ctx, conversation, userMessage, content, level); handled {
+		if executionErr != nil {
+			return SendConversationMessageResult{}, executionErr
+		}
+		conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
+		if err != nil {
+			return SendConversationMessageResult{}, err
+		}
+		return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
+	}
+	if response.Intent == "clarify" {
+		response.Reply = defaultString(response.Clarification, response.Reply)
 	}
 	response = mergeExplicitConversationCandidates(response, content)
+	if err := s.persistExplicitConversationMemories(ctx, userMessage, content, level, response); err != nil {
+		return SendConversationMessageResult{}, err
+	}
+	if explicitConversationMemoryRequest(content) {
+		response.MemoryCandidates = nil
+	}
 	contextSummary := conversationContextSummary(localContext)
 	assistantMessage, err := s.insertConversationMessage(ctx, conversationID, conversationRoleAssistant, response.Reply, level, model, contextSummary)
 	if err != nil {
@@ -202,14 +297,88 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	if err != nil {
 		return SendConversationMessageResult{}, err
 	}
-	if (conversation.MessageCount == 0 || conversation.Title == "新对话") && dataLevelRank(level) < dataLevelRank(DataD4) {
-		_, _ = s.db.Pool.Exec(ctx, `update steward_conversations set title = $1, updated_at = $2 where id = $3`, truncateAdvisorText(content, 48), time.Now().UTC(), conversationID)
-	}
-	conversation, err = s.getConversation(ctx, conversationID)
+	conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
 	if err != nil {
 		return SendConversationMessageResult{}, err
 	}
 	return SendConversationMessageResult{Conversation: conversation, Message: assistantMessage}, nil
+}
+
+func (s *Service) conversationAdvisorDevices(ctx context.Context) []ConversationAdvisorDevice {
+	items := []ConversationAdvisorDevice{{ID: s.agentIDValue(), Name: "本机", Platform: "local", TrustStatus: "trusted", PermissionLevel: PermissionA9, Online: true}}
+	devices, err := s.ListDevices(ctx)
+	if err != nil {
+		return items
+	}
+	seen := map[string]bool{s.agentIDValue(): true}
+	for _, device := range devices {
+		if seen[device.ID] || device.RevokedAt != nil {
+			continue
+		}
+		seen[device.ID] = true
+		online := device.LastSeenAt != nil && time.Since(*device.LastSeenAt) < 2*time.Minute
+		items = append(items, ConversationAdvisorDevice{ID: device.ID, Name: device.DeviceName, Platform: device.Platform, TrustStatus: device.TrustStatus, PermissionLevel: device.PermissionLevel, Online: online})
+	}
+	return items
+}
+
+func (s *Service) createConversationTaskAction(ctx context.Context, message domain.StewardConversationMessage, level string, action ConversationTaskAction) (domain.StewardTask, error) {
+	var dueAt *time.Time
+	if action.DueAt != "" {
+		parsed, err := time.Parse(time.RFC3339, action.DueAt)
+		if err != nil {
+			return domain.StewardTask{}, fmt.Errorf("模型返回的提醒时间无效: %w", err)
+		}
+		dueAt = &parsed
+	}
+	description := strings.TrimSpace(action.Description)
+	if action.Recurrence != "" {
+		description = strings.TrimSpace(description + "\n周期：" + action.Recurrence)
+	}
+	taskType := "conversation_reminder"
+	if action.Recurrence != "" {
+		taskType = "conversation_recurring"
+	}
+	confirmed := true
+	task, err := s.CreateTask(ctx, CreateTaskInput{
+		Type:  taskType,
+		Title: defaultString(action.Title, "对话提醒"), Description: description, Priority: "normal", DueAt: dueAt,
+		Source: "conversation", DataLevel: level, PermissionLevel: PermissionA3, RiskLevel: "low", UserConfirmed: &confirmed,
+	})
+	if err != nil {
+		return domain.StewardTask{}, err
+	}
+	_, err = s.CreateSourceRef(ctx, CreateSourceRefInput{TargetType: "task", TargetID: task.ID, SourceType: "conversation_message", SourceID: message.ID, Summary: task.Title, Confidence: 1, Sensitive: isSensitiveLevel(level)})
+	return task, err
+}
+
+func (s *Service) persistExplicitConversationMemories(ctx context.Context, message domain.StewardConversationMessage, content, level string, response ConversationAdvisorResponse) error {
+	if !explicitConversationMemoryRequest(content) {
+		return nil
+	}
+	confirmed := true
+	for _, candidate := range response.MemoryCandidates {
+		memory, err := s.CreateMemory(ctx, CreateMemoryInput{Type: "conversation_preference", Title: candidate.Title, Summary: candidate.Summary, Content: defaultString(candidate.Content, candidate.Summary), Scope: "global", Source: "conversation", DataLevel: level, PermissionLevel: PermissionA3, Confidence: 1, UserConfirmed: &confirmed})
+		if err != nil {
+			return err
+		}
+		if _, err := s.CreateSourceRef(ctx, CreateSourceRefInput{TargetType: "memory", TargetID: memory.ID, SourceType: "conversation_message", SourceID: message.ID, Summary: memory.Title, Confidence: 1, Sensitive: isSensitiveLevel(level)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func explicitConversationMemoryRequest(content string) bool {
+	normalized := strings.ToLower(content)
+	return strings.Contains(normalized, "记住") || strings.Contains(normalized, "以后都") || strings.Contains(normalized, "不要再") || strings.Contains(normalized, "remember")
+}
+
+func (s *Service) finishConversationTurn(ctx context.Context, conversation domain.StewardConversation, content, level string) (domain.StewardConversation, error) {
+	if (conversation.MessageCount == 0 || conversation.Title == "新对话") && dataLevelRank(level) < dataLevelRank(DataD4) {
+		_, _ = s.db.Pool.Exec(ctx, `update steward_conversations set title = $1, updated_at = $2 where id = $3`, truncateAdvisorText(content, 48), time.Now().UTC(), conversation.ID)
+	}
+	return s.getConversation(ctx, conversation.ID)
 }
 
 func (s *Service) DecideConversationSuggestion(ctx context.Context, id string, input DecideConversationSuggestionInput) (domain.StewardConversationSuggestion, error) {
@@ -276,7 +445,7 @@ func (s *Service) getConversation(ctx context.Context, id string) (domain.Stewar
 
 func (s *Service) insertConversationMessage(ctx context.Context, conversationID, role, content, level, model, contextSummary string) (domain.StewardConversationMessage, error) {
 	now := time.Now().UTC()
-	item := domain.StewardConversationMessage{ID: uuid.NewString(), ConversationID: conversationID, Role: role, Content: content, DataLevel: level, Model: model, ContextSummary: contextSummary, Suggestions: []domain.StewardConversationSuggestion{}, CreatedAt: now}
+	item := domain.StewardConversationMessage{ID: uuid.NewString(), ConversationID: conversationID, Role: role, Content: content, DataLevel: level, Model: model, ContextSummary: contextSummary, Suggestions: []domain.StewardConversationSuggestion{}, Executions: []domain.StewardConversationExecution{}, CreatedAt: now}
 	userConfirmed := role == conversationRoleUser
 	syncable := false
 	auditID, err := s.recordAudit(ctx, AuditInput{Actor: role, Action: "conversation.message." + role, TargetType: "conversation", TargetID: &conversationID, Source: "conversation", PermissionLevel: PermissionA3, DataLevel: level, InputSummary: fmt.Sprintf("%s message, %d characters", role, len([]rune(content))), OutputSummary: "conversation message stored locally", UserConfirmed: &userConfirmed, Syncable: &syncable, ResultStatus: ResultOK})

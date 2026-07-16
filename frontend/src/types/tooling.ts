@@ -707,7 +707,44 @@ export type StewardConversationMessage = {
   model?: string;
   context_summary?: string;
   suggestions: StewardConversationSuggestion[];
+  executions: StewardConversationExecution[];
   created_at: string;
+};
+
+export type StewardConversationExecution = {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  request_message_id: string;
+  instruction: string;
+  summary: string;
+  kind: "run" | "orchestration" | "question";
+  status: "needs_input" | "awaiting_confirmation" | "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "blocked";
+  run_id?: string;
+  orchestration_id?: string;
+  target_device_id: string;
+  target_device_name: string;
+  permission_level: string;
+  risk_level: string;
+  plan_hash: string;
+  requires_confirmation: boolean;
+  confirmation_reason?: string;
+  question?: string;
+  capability?: string;
+  approval_subject?: string;
+  control_generation?: number;
+  evidence: {
+    child_run_count?: number;
+    artifact_count?: number;
+    redacted_count?: number;
+    data_levels?: string[];
+    manifest_sha256?: string;
+  };
+  failure_summary?: string;
+  created_at: string;
+  updated_at: string;
+  confirmed_at?: string;
+  completed_at?: string;
 };
 
 export type StewardEvent = {
@@ -1231,6 +1268,21 @@ export type StewardAutonomyOverview = {
   proposals: StewardAutonomyProposal[];
   approvals: StewardApprovalRequest[];
   runs: StewardAutonomousRun[];
+};
+
+export type StewardModelSettings = {
+  provider: 'disabled' | 'openai-compatible' | string;
+  base_url: string;
+  model: string;
+  api_key_configured: boolean;
+  api_key_mask?: string;
+  allow_no_api_key: boolean;
+  max_data_level: string;
+  timeout_seconds: number;
+  source: 'database' | 'environment' | 'default' | string;
+  advisor: StewardAutonomyAdvisorStatus;
+  planner: StewardRuntimePlannerStatus;
+  updated_at?: string | null;
 };
 
 export type StewardObservation = {

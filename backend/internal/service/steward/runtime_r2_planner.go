@@ -60,8 +60,10 @@ func (localRuntimePlanner) Status() domain.StewardRuntimePlannerStatus {
 }
 
 var (
-	createFilePattern = regexp.MustCompile(`(?is)^(?:创建(?:一个)?(?:新)?文件|create(?: a)?(?: new)? file)\s+(.+?)\s+(?:内容(?:为|是)?|with content)\s+(.+)$`)
-	writeFilePattern  = regexp.MustCompile(`(?is)^(?:把|将)\s*(.+?)\s*(?:写入|保存到)\s*(?:新文件\s*)?(.+)$`)
+	createFilePattern      = regexp.MustCompile(`(?is)^(?:创建(?:一个)?(?:新)?文件|create(?: a)?(?: new)? file)\s+(.+?)\s+(?:内容(?:为|是)?|with content)\s+(.+)$`)
+	writeFilePattern       = regexp.MustCompile(`(?is)^(?:把|将)\s*(.+?)\s*(?:写入|保存到)\s*(?:新文件\s*)?(.+)$`)
+	createDirectoryPattern = regexp.MustCompile(`(?is)^(?:在\s*)?(.+?)(?:创建|新建)(?:一个)?(?:名为|叫)?\s*[：:]?\s*(.+?)(?:的)?文件夹$`)
+	createDirectoryColon   = regexp.MustCompile(`(?is)^(?:在\s*)?(.+?)(?:创建|新建)(?:一个)?文件夹\s*[：:]\s*(.+)$`)
 )
 
 func (localRuntimePlanner) Plan(_ context.Context, input RuntimePlannerInput) (RuntimePlanDraft, error) {
@@ -76,6 +78,22 @@ func (localRuntimePlanner) Plan(_ context.Context, input RuntimePlannerInput) (R
 	if value, ok := trimRuntimeInstructionPrefix(instruction, "读取文件", "查看文件", "read file", "show file"); ok {
 		path := trimRuntimeQuoted(value)
 		return availableRuntimePlan(input, "读取文本文件 "+path, "read", "fs.read_text", map[string]any{"path": path})
+	}
+	if match := createDirectoryColon.FindStringSubmatch(instruction); len(match) == 3 {
+		base := trimRuntimeQuoted(match[1])
+		name := trimRuntimeQuoted(match[2])
+		path := strings.TrimSpace(base) + string(os.PathSeparator) + strings.TrimSpace(name)
+		return availableRuntimePlan(input, "创建文件夹 "+path, "create-directory", "fs.create_directory", map[string]any{"path": path})
+	}
+	if match := createDirectoryPattern.FindStringSubmatch(instruction); len(match) == 3 {
+		base := trimRuntimeQuoted(match[1])
+		name := trimRuntimeQuoted(match[2])
+		path := strings.TrimSpace(base) + string(os.PathSeparator) + strings.TrimSpace(name)
+		return availableRuntimePlan(input, "创建文件夹 "+path, "create-directory", "fs.create_directory", map[string]any{"path": path})
+	}
+	if value, ok := trimRuntimeInstructionPrefix(instruction, "创建文件夹", "新建文件夹", "create directory", "create folder"); ok {
+		path := trimRuntimeQuoted(value)
+		return availableRuntimePlan(input, "创建文件夹 "+path, "create-directory", "fs.create_directory", map[string]any{"path": path})
 	}
 	if match := createFilePattern.FindStringSubmatch(instruction); len(match) == 3 {
 		path := trimRuntimeQuoted(match[1])
@@ -393,19 +411,17 @@ func (s *Service) GetRuntimePlannerStatus() domain.StewardRuntimePlannerStatus {
 	if s == nil || !s.runtimeR2 {
 		return domain.StewardRuntimePlannerStatus{Enabled: false, Provider: "disabled", Reason: "STEWARD_RUNTIME_R2 is disabled", Version: "2.0.0"}
 	}
-	if s.runtimePlanner == nil {
-		return domain.StewardRuntimePlannerStatus{Enabled: false, Provider: "disabled", Reason: "planner is not configured", Version: "2.0.0"}
-	}
-	return s.runtimePlanner.Status()
+	return s.runtimePlannerValue().Status()
 }
 
 func (s *Service) PlanAgentRun(ctx context.Context, input PlanAgentRunInput) (domain.StewardAgentRun, error) {
 	if err := s.runtimeEnabled(); err != nil {
 		return domain.StewardAgentRun{}, err
 	}
-	if !s.runtimeR2 || s.runtimePlanner == nil {
+	if !s.runtimeR2 {
 		return domain.StewardAgentRun{}, ErrRuntimeR2Disabled
 	}
+	planner := s.runtimePlannerValue()
 	instruction := strings.TrimSpace(input.Instruction)
 	if instruction == "" || len([]rune(instruction)) > 8000 {
 		return domain.StewardAgentRun{}, fmt.Errorf("%w: instruction is required and must not exceed 8000 characters", ErrAgentRunInvalid)
@@ -414,7 +430,7 @@ func (s *Service) PlanAgentRun(ctx context.Context, input PlanAgentRunInput) (do
 	if !validRuntimeDataLevel(dataLevel) {
 		return domain.StewardAgentRun{}, fmt.Errorf("%w: invalid data_level", ErrAgentRunInvalid)
 	}
-	plan, err := s.runtimePlanner.Plan(ctx, RuntimePlannerInput{Instruction: instruction, DataLevel: dataLevel, Tools: s.runtimeTools.specs()})
+	plan, err := planner.Plan(ctx, RuntimePlannerInput{Instruction: instruction, DataLevel: dataLevel, Tools: s.runtimeTools.specs()})
 	if err != nil {
 		return domain.StewardAgentRun{}, err
 	}
@@ -437,7 +453,7 @@ func (s *Service) PlanAgentRun(ctx context.Context, input PlanAgentRunInput) (do
 	if input.AutoStart != nil {
 		autoStart = *input.AutoStart
 	}
-	status := s.runtimePlanner.Status()
+	status := planner.Status()
 	plannerName := defaultString(strings.TrimSpace(plan.Planner), status.Provider)
 	plannerVersion := defaultString(strings.TrimSpace(plan.PlannerVersion), status.Version)
 	planSummary := truncateAdvisorText(strings.TrimSpace(plan.Summary), 1000)

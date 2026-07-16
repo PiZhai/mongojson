@@ -201,7 +201,7 @@ func requiredAbsolutePath(path, label string) (string, error) {
 }
 
 func (l *auditLog) recordConsumedApprovalProof(record AuditRecord) {
-	if record.Type != "grant.issued" || record.Details == nil {
+	if (record.Type != "grant.issued" && record.Type != "delegation.issued") || record.Details == nil {
 		return
 	}
 	proofID, _ := record.Details["approval_proof_id"].(string)

@@ -5,4 +5,5 @@ package privilegebroker
 // call validateCapabilityPathSecurity directly when exercising that policy.
 func init() {
 	capabilityPathSecurityValidator = func(string, string) error { return nil }
+	credentialPathSecurityValidator = func(string) error { return nil }
 }

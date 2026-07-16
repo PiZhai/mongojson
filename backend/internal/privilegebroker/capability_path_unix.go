@@ -29,3 +29,7 @@ func validateCapabilityPathSecurity(executable, workingDirectory string) error {
 	}
 	return nil
 }
+
+func validateCredentialPathSecurity(path string) error {
+	return validateCapabilityPathSecurity(path, filepath.Dir(path))
+}

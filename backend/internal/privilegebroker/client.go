@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -162,7 +163,7 @@ func (c *Client) Grant(ctx context.Context, authorization Authorization) (GrantR
 	if err != nil {
 		return response, err
 	}
-	if response.KeyID != c.keyID || claims != response.Claims ||
+	if response.KeyID != c.keyID || !reflect.DeepEqual(claims, response.Claims) ||
 		claims.Capability != request.Capability || claims.Subject != request.Subject ||
 		claims.PlanHash != request.PlanHash || claims.ApprovalRef != request.ApprovalRef ||
 		claims.ApprovalProofID != request.ApprovalProof.Claims.ProofID || claims.ApprovalKeyID != request.ApprovalProof.KeyID ||
@@ -201,6 +202,51 @@ func (c *Client) ExecuteCapability(ctx context.Context, authorization Authorizat
 		return ExecuteResponse{}, err
 	}
 	return c.Execute(ctx, grant)
+}
+
+func (c *Client) IssueDelegation(ctx context.Context, request BrokerDelegationRequest) (SignedBrokerDelegation, error) {
+	var response SignedBrokerDelegation
+	if err := c.do(ctx, http.MethodPost, "/v1/delegations", request, &response); err != nil {
+		return response, err
+	}
+	if response.KeyID != c.keyID || response.Claims.OriginBrokerKeyID != c.keyID ||
+		response.Claims.TargetDeviceID != strings.TrimSpace(request.TargetDeviceID) ||
+		response.Claims.TargetBrokerKeyID != request.TargetStatus.KeyID ||
+		response.Claims.Capability != strings.ToLower(strings.TrimSpace(request.Capability)) ||
+		response.Claims.Subject != strings.TrimSpace(request.Subject) || response.Claims.PlanHash != strings.ToLower(strings.TrimSpace(request.PlanHash)) ||
+		response.Claims.ApprovalRef != strings.TrimSpace(request.ApprovalRef) {
+		return response, fmt.Errorf("broker delegation response does not match request bindings")
+	}
+	if err := verifyValue(c.publicKey, response.Claims, response.Signature); err != nil {
+		return response, fmt.Errorf("verify broker delegation: %w", err)
+	}
+	if !response.Claims.ExpiresAt.After(c.now()) {
+		return response, fmt.Errorf("broker returned an expired delegation")
+	}
+	return response, nil
+}
+
+func (c *Client) ExecuteDelegation(ctx context.Context, delegation SignedBrokerDelegation, originStatus Status) (ExecuteResponse, error) {
+	var response ExecuteResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/delegated-execute", DelegatedExecuteRequest{Delegation: delegation, OriginStatus: originStatus}, &response); err != nil {
+		return response, err
+	}
+	claims := delegation.Claims
+	tokenClaims := CapabilityTokenClaims{
+		TokenID: claims.DelegationID, BrokerInstanceID: claims.TargetBrokerInstanceID,
+		Capability: claims.Capability, CapabilityDigest: claims.CapabilityDigest,
+		Subject: claims.Subject, PlanHash: claims.PlanHash, ApprovalRef: claims.ApprovalRef,
+		ApprovalProofID: claims.ApprovalProofID, ApprovalKeyID: claims.ApprovalKeyID,
+		ApprovalExpiresAt: claims.ApprovalExpiresAt, ControlGeneration: claims.TargetControlGeneration,
+		DelegationID: claims.DelegationID, OriginBrokerKeyID: claims.OriginBrokerKeyID, CredentialRefs: claims.CredentialRefs,
+	}
+	if err := c.verifyReceipt(response.Receipt, tokenClaims); err != nil {
+		return response, err
+	}
+	if !response.Receipt.Payload.Succeeded || !response.Receipt.Payload.AuditPersisted {
+		return response, &ExecutionError{Response: response}
+	}
+	return response, nil
 }
 
 func (c *Client) SetControl(ctx context.Context, stopped bool, request ControlRequest) (Status, error) {
@@ -243,6 +289,25 @@ func (c *Client) verifyStatus(status Status) error {
 	return nil
 }
 
+func VerifyStatus(encodedPublicKey string, status Status, now time.Time) error {
+	publicKey, err := decodePublicKey(encodedPublicKey)
+	if err != nil {
+		return err
+	}
+	if status.Version != APIVersion || status.KeyID != publicKeyID(publicKey) || status.PublicKey != base64.StdEncoding.EncodeToString(publicKey) {
+		return fmt.Errorf("broker identity does not match the pinned public key")
+	}
+	unsigned := status
+	unsigned.Signature = ""
+	if err := verifyValue(publicKey, unsigned, status.Signature); err != nil {
+		return err
+	}
+	if status.IssuedAt.Before(now.Add(-time.Minute)) || status.IssuedAt.After(now.Add(time.Minute)) {
+		return fmt.Errorf("broker status signature is stale")
+	}
+	return nil
+}
+
 func (c *Client) verifyReceipt(receipt SignedExecutionReceipt, claims CapabilityTokenClaims) error {
 	if receipt.KeyID != c.keyID {
 		return fmt.Errorf("broker receipt key id does not match pinned key")
@@ -258,6 +323,47 @@ func (c *Client) verifyReceipt(receipt SignedExecutionReceipt, claims Capability
 		payload.ApprovalKeyID != claims.ApprovalKeyID || !payload.ApprovalExpiresAt.Equal(claims.ApprovalExpiresAt) ||
 		payload.ControlGeneration != claims.ControlGeneration {
 		return fmt.Errorf("broker receipt does not match capability token bindings")
+	}
+	if payload.DelegationID != claims.DelegationID || payload.OriginBrokerKeyID != claims.OriginBrokerKeyID ||
+		!stringSlicesEqual(payload.CredentialRefs, claims.CredentialRefs) {
+		return fmt.Errorf("broker receipt does not match delegation bindings")
+	}
+	return nil
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func VerifyDelegatedReceipt(encodedTargetPublicKey string, delegation SignedBrokerDelegation, receipt SignedExecutionReceipt) error {
+	publicKey, err := decodePublicKey(encodedTargetPublicKey)
+	if err != nil {
+		return err
+	}
+	claims := delegation.Claims
+	if receipt.KeyID != claims.TargetBrokerKeyID || receipt.KeyID != publicKeyID(publicKey) {
+		return fmt.Errorf("delegated receipt target Broker identity mismatch")
+	}
+	if err := verifyValue(publicKey, receipt.Payload, receipt.Signature); err != nil {
+		return err
+	}
+	payload := receipt.Payload
+	if payload.ExecutionID != claims.DelegationID || payload.BrokerInstanceID != claims.TargetBrokerInstanceID ||
+		payload.Capability != claims.Capability || payload.CapabilityDigest != claims.CapabilityDigest ||
+		payload.Subject != claims.Subject || payload.PlanHash != claims.PlanHash || payload.ApprovalRef != claims.ApprovalRef ||
+		payload.ApprovalProofID != claims.ApprovalProofID || payload.ApprovalKeyID != claims.ApprovalKeyID ||
+		!payload.ApprovalExpiresAt.Equal(claims.ApprovalExpiresAt) || !payload.AuditPersisted ||
+		payload.ControlGeneration != claims.TargetControlGeneration || payload.DelegationID != claims.DelegationID ||
+		payload.OriginBrokerKeyID != claims.OriginBrokerKeyID || !stringSlicesEqual(payload.CredentialRefs, claims.CredentialRefs) {
+		return fmt.Errorf("delegated receipt does not match Broker delegation bindings")
 	}
 	return nil
 }

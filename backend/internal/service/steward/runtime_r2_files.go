@@ -19,6 +19,7 @@ const runtimeMaxTextBytes = 1 << 20
 
 type runtimeListDirectoryTool struct{ service *Service }
 type runtimeReadTextTool struct{ service *Service }
+type runtimeCreateDirectoryTool struct{ service *Service }
 type runtimeCreateTextTool struct{ service *Service }
 
 func newRuntimeListDirectoryTool(service *Service) RuntimeTool {
@@ -26,6 +27,9 @@ func newRuntimeListDirectoryTool(service *Service) RuntimeTool {
 }
 func newRuntimeReadTextTool(service *Service) RuntimeTool {
 	return runtimeReadTextTool{service: service}
+}
+func newRuntimeCreateDirectoryTool(service *Service) RuntimeTool {
+	return runtimeCreateDirectoryTool{service: service}
 }
 func newRuntimeCreateTextTool(service *Service) RuntimeTool {
 	return runtimeCreateTextTool{service: service}
@@ -188,6 +192,82 @@ func (t runtimeReadTextTool) Verify(_ context.Context, _ map[string]any, output 
 	return runtimeOutputMatchesExpected(output, expected)
 }
 
+func (runtimeCreateDirectoryTool) Spec() domain.StewardToolSpec {
+	return domain.StewardToolSpec{
+		Name: "fs.create_directory", Version: "2.1.0", Description: "Create one local directory, including missing parents, under an allowlisted root. Known-folder aliases such as desktop and downloads are accepted.",
+		InputSchema:     map[string]any{"type": "object", "required": []string{"path"}, "properties": map[string]any{"path": map[string]any{"type": "string"}}},
+		OutputSchema:    map[string]any{"type": "object", "required": []string{"path", "created", "reconciled"}},
+		PermissionLevel: PermissionA2, RiskLevel: "low", SideEffect: RuntimeSideEffectWrite,
+		ApprovalMode: RuntimeApprovalAlways, IdempotencyMode: RuntimeIdempotencyInherent,
+		Deterministic: true, SupportsCancel: true, DefaultTimeoutSec: 15,
+	}
+}
+
+func (t runtimeCreateDirectoryTool) Validate(input map[string]any) error {
+	if err := runtimeRejectUnknownFields(input, "path"); err != nil {
+		return err
+	}
+	path, err := runtimeRequiredString(input, "path")
+	if err != nil {
+		return err
+	}
+	resolved, err := t.service.resolveRuntimePath(path, false)
+	if err != nil {
+		return err
+	}
+	if info, statErr := os.Stat(resolved); statErr == nil && !info.IsDir() {
+		return fmt.Errorf("existing path is not a directory")
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
+	return nil
+}
+
+func (t runtimeCreateDirectoryTool) Execute(ctx context.Context, input map[string]any) (RuntimeToolResult, error) {
+	if err := t.Validate(input); err != nil {
+		return RuntimeToolResult{}, err
+	}
+	path, _ := runtimeRequiredString(input, "path")
+	resolved, err := t.service.resolveRuntimePath(path, false)
+	if err != nil {
+		return RuntimeToolResult{}, err
+	}
+	if info, statErr := os.Stat(resolved); statErr == nil && info.IsDir() {
+		output := map[string]any{"path": resolved, "created": false, "reconciled": true}
+		return RuntimeToolResult{Output: output, Evidence: []RuntimeEvidence{{Kind: "directory_reconciled", Summary: "directory already existed", Payload: output}}}, nil
+	}
+	select {
+	case <-ctx.Done():
+		return RuntimeToolResult{}, ctx.Err()
+	default:
+	}
+	if err := os.MkdirAll(resolved, 0o700); err != nil {
+		return RuntimeToolResult{}, err
+	}
+	resolved, err = t.service.resolveRuntimePath(path, true)
+	if err != nil {
+		return RuntimeToolResult{}, err
+	}
+	output := map[string]any{"path": resolved, "created": true, "reconciled": false}
+	return RuntimeToolResult{Output: output, Evidence: []RuntimeEvidence{{Kind: "directory_created", Summary: "created directory and verified its final path", Payload: output}}}, nil
+}
+
+func (t runtimeCreateDirectoryTool) Verify(_ context.Context, input map[string]any, output map[string]any, expected map[string]any) error {
+	path, _ := runtimeRequiredString(input, "path")
+	resolved, err := t.service.resolveRuntimePath(path, true)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("created directory is not present")
+	}
+	if output["path"] != resolved {
+		return fmt.Errorf("directory output path does not match verified path")
+	}
+	return runtimeOutputMatchesExpected(output, expected)
+}
+
 func (runtimeCreateTextTool) Spec() domain.StewardToolSpec {
 	return domain.StewardToolSpec{
 		Name: "fs.create_text", Version: "2.0.0", Description: "Atomically create a new text file under an allowlisted root; existing different content is never overwritten.",
@@ -333,7 +413,7 @@ func (s *Service) resolveRuntimePath(rawPath string, mustExist bool) (string, er
 	if s == nil || len(s.runtimeAllowedRoots) == 0 {
 		return "", fmt.Errorf("%w: no allowed roots are configured", ErrRuntimePathDenied)
 	}
-	absolute, err := filepath.Abs(strings.TrimSpace(rawPath))
+	absolute, err := filepath.Abs(expandRuntimeKnownFolder(rawPath))
 	if err != nil {
 		return "", err
 	}

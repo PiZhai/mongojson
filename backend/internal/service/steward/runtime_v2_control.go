@@ -168,6 +168,14 @@ func (s *Service) setRuntimeExecutionPaused(ctx context.Context, paused bool, in
 		// work. Local contexts are cancelled immediately; the S4 write barrier
 		// then waits until any in-flight autonomous action has left its read gate.
 		s.cancelRuntimeContexts()
+		if s.orchestrationRemote {
+			_, _ = s.db.Pool.Exec(ctx, `
+				update steward_remote_dispatches set cancel_requested=true,
+				       last_error='origin device emergency stop requested remote cancellation',
+				       available_at=now(), updated_at=now()
+				where status in ('pending','sent','accepted','running')
+			`)
+		}
 		policyGate, gateErr := acquireAutonomyPolicyWriteGate(ctx, s.db.Pool)
 		if gateErr != nil {
 			return domain.StewardRuntimeExecutionControl{}, gateErr

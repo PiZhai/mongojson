@@ -21,6 +21,21 @@ type PrivilegeBrokerClient interface {
 	SetControl(context.Context, bool, privilegebroker.ControlRequest) (privilegebroker.Status, error)
 }
 
+type PrivilegeBrokerFederationClient interface {
+	IssueDelegation(context.Context, privilegebroker.BrokerDelegationRequest) (privilegebroker.SignedBrokerDelegation, error)
+	ExecuteDelegation(context.Context, privilegebroker.SignedBrokerDelegation, privilegebroker.Status) (privilegebroker.ExecuteResponse, error)
+}
+
+func (s *Service) RemoteBrokerStatus(ctx context.Context) (privilegebroker.Status, error) {
+	if s == nil || !s.runtimeR3 || s.privilegeBroker == nil {
+		return privilegebroker.Status{}, fmt.Errorf("local privilege broker is not configured")
+	}
+	if s.privilegeBrokerError != nil {
+		return privilegebroker.Status{}, s.privilegeBrokerError
+	}
+	return s.privilegeBroker.Status(ctx)
+}
+
 func newPrivilegeBrokerClientFromEnv() (PrivilegeBrokerClient, error) {
 	return privilegebroker.NewClientFromEnv()
 }

@@ -45,7 +45,7 @@ func (s *Service) ensureS3Defaults(ctx context.Context, hostname string, platfor
 func (s *Service) ListDevices(ctx context.Context) ([]domain.StewardDevice, error) {
 	rows, err := s.db.Pool.Query(ctx, `
 		select id, device_name, platform, role, trust_status, sync_enabled, permission_level,
-		       public_key, api_base_url, last_sync_sequence, last_sent_sequence, last_seen_at, last_sync_at, last_sync_error,
+		       public_key, api_base_url, broker_public_key, broker_key_id, last_sync_sequence, last_sent_sequence, last_seen_at, last_sync_at, last_sync_error,
 		       revoked_at, created_at, updated_at
 		from steward_devices
 		order by case when id = $1 then 0 else 1 end, updated_at desc
@@ -84,12 +84,23 @@ func (s *Service) RegisterDevice(ctx context.Context, input RegisterDeviceInput)
 		}
 		publicKey = normalizedPublicKey
 	}
+	brokerPublicKey := strings.TrimSpace(input.BrokerPublicKey)
+	if brokerPublicKey != "" {
+		normalizedBrokerKey, err := normalizeSyncPublicKey(brokerPublicKey)
+		if err != nil {
+			return domain.StewardDevice{}, fmt.Errorf("invalid broker public key: %w", err)
+		}
+		brokerPublicKey = normalizedBrokerKey
+		if strings.TrimSpace(input.BrokerKeyID) == "" {
+			return domain.StewardDevice{}, fmt.Errorf("broker_key_id is required with broker_public_key")
+		}
+	}
 	if _, err := s.db.Pool.Exec(ctx, `
 		insert into steward_devices (
 			id, device_name, platform, role, trust_status, sync_enabled, permission_level, public_key, api_base_url,
-			last_seen_at, created_at, updated_at
+			broker_public_key, broker_key_id, last_seen_at, created_at, updated_at
 		)
-		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$10)
+		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$12)
 		on conflict (id) do update
 		set device_name = excluded.device_name,
 		    platform = excluded.platform,
@@ -98,12 +109,14 @@ func (s *Service) RegisterDevice(ctx context.Context, input RegisterDeviceInput)
 		    permission_level = excluded.permission_level,
 		    public_key = case when excluded.public_key <> '' then excluded.public_key else steward_devices.public_key end,
 		    api_base_url = case when excluded.api_base_url <> '' then excluded.api_base_url else steward_devices.api_base_url end,
-		    trust_status = case when steward_devices.trust_status = $11 then steward_devices.trust_status else excluded.trust_status end,
+		    broker_public_key = case when excluded.broker_public_key <> '' then excluded.broker_public_key else steward_devices.broker_public_key end,
+		    broker_key_id = case when excluded.broker_key_id <> '' then excluded.broker_key_id else steward_devices.broker_key_id end,
+		    trust_status = case when steward_devices.trust_status = $13 then steward_devices.trust_status else excluded.trust_status end,
 		    last_seen_at = excluded.last_seen_at,
 		    updated_at = excluded.updated_at
 	`, id, input.DeviceName, input.Platform,
 		role, DeviceTrusted, syncEnabled, permission, publicKey,
-		input.APIBaseURL, now, DeviceRevoked); err != nil {
+		input.APIBaseURL, brokerPublicKey, strings.TrimSpace(input.BrokerKeyID), now, DeviceRevoked); err != nil {
 		return domain.StewardDevice{}, fmt.Errorf("register steward device: %w", err)
 	}
 	if err := s.ensureDefaultDevicePermissions(ctx, id, now); err != nil {
@@ -427,7 +440,7 @@ func (s *Service) updateDeviceSyncProgress(ctx context.Context, id string, lastS
 func (s *Service) getDevice(ctx context.Context, id string) (domain.StewardDevice, error) {
 	row := s.db.Pool.QueryRow(ctx, `
 		select id, device_name, platform, role, trust_status, sync_enabled, permission_level,
-		       public_key, api_base_url, last_sync_sequence, last_sent_sequence, last_seen_at, last_sync_at, last_sync_error,
+		       public_key, api_base_url, broker_public_key, broker_key_id, last_sync_sequence, last_sent_sequence, last_seen_at, last_sync_at, last_sync_error,
 		       revoked_at, created_at, updated_at
 		from steward_devices
 		where id = $1
@@ -443,7 +456,7 @@ func scanDevice(row scanner) (domain.StewardDevice, error) {
 	var device domain.StewardDevice
 	err := row.Scan(&device.ID, &device.DeviceName, &device.Platform, &device.Role,
 		&device.TrustStatus, &device.SyncEnabled, &device.PermissionLevel, &device.PublicKey,
-		&device.APIBaseURL, &device.LastSyncSequence, &device.LastSentSequence, &device.LastSeenAt, &device.LastSyncAt,
+		&device.APIBaseURL, &device.BrokerPublicKey, &device.BrokerKeyID, &device.LastSyncSequence, &device.LastSentSequence, &device.LastSeenAt, &device.LastSyncAt,
 		&device.LastSyncError, &device.RevokedAt, &device.CreatedAt, &device.UpdatedAt)
 	return device, err
 }

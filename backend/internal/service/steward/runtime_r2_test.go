@@ -36,6 +36,13 @@ func TestLocalRuntimePlannerCompilesSupportedChineseInstructions(t *testing.T) {
 	if commandPlan.Steps[0].Arguments["command"] != `C:\Program Files\Go\bin\go.exe` {
 		t.Fatalf("quoted Windows executable path was not preserved: %+v", commandPlan)
 	}
+	directoryPlan, err := planner.Plan(context.Background(), RuntimePlannerInput{Instruction: "在桌面创建文件夹：动漫"})
+	if err != nil {
+		t.Fatalf("compile directory instruction: %v", err)
+	}
+	if directoryPlan.Steps[0].ToolName != "fs.create_directory" || directoryPlan.Steps[0].Arguments["path"] != "桌面"+string(os.PathSeparator)+"动漫" {
+		t.Fatalf("unexpected directory plan: %+v", directoryPlan)
+	}
 }
 
 func TestLocalRuntimePlannerRejectsDisabledTool(t *testing.T) {
@@ -202,6 +209,43 @@ func TestRuntimeCreateTextIsCreateOnlyAndReconcilesMatchingContent(t *testing.T)
 	_, err = tool.Execute(context.Background(), map[string]any{"path": path, "content": "different"})
 	if err == nil || !strings.Contains(err.Error(), "never overwrites") {
 		t.Fatalf("different existing content error = %v", err)
+	}
+}
+
+func TestRuntimeCreateDirectoryToolCreatesAndReconciles(t *testing.T) {
+	root := t.TempDir()
+	service := NewService(nil, WithRuntimeR2Enabled(true), WithRuntimeAllowedRoots(root))
+	tool := newRuntimeCreateDirectoryTool(service)
+	target := filepath.Join(root, "nested", "动漫")
+	input := map[string]any{"path": target}
+
+	first, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Output["created"] != true || first.Output["reconciled"] != false {
+		t.Fatalf("unexpected first directory result: %+v", first.Output)
+	}
+	if err := tool.Verify(context.Background(), input, first.Output, nil); err != nil {
+		t.Fatal(err)
+	}
+	second, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Output["created"] != false || second.Output["reconciled"] != true {
+		t.Fatalf("unexpected reconciled directory result: %+v", second.Output)
+	}
+}
+
+func TestExpandRuntimeKnownFolderDesktopAlias(t *testing.T) {
+	desktop := runtimeKnownFolders()["desktop"]
+	if desktop == "" {
+		t.Skip("current user has no discoverable desktop folder")
+	}
+	want := filepath.Join(desktop, "动漫")
+	if got := expandRuntimeKnownFolder("桌面/动漫"); got != want {
+		t.Fatalf("desktop alias resolved to %q, want %q", got, want)
 	}
 }
 

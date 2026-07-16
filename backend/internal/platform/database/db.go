@@ -462,6 +462,8 @@ func (db *DB) Migrate(ctx context.Context) error {
 		);`,
 		`alter table steward_devices
 			add column if not exists api_base_url text not null default '',
+			add column if not exists broker_public_key text not null default '',
+			add column if not exists broker_key_id text not null default '',
 			add column if not exists last_sync_sequence bigint not null default 0,
 			add column if not exists last_sent_sequence bigint not null default 0,
 			add column if not exists last_sync_at timestamptz,
@@ -522,6 +524,17 @@ func (db *DB) Migrate(ctx context.Context) error {
 			paused boolean not null default false,
 			mode text not null default 'suggest_only',
 			max_auto_permission text not null default 'A3',
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists steward_model_settings (
+			id text primary key,
+			provider text not null default 'disabled',
+			base_url text not null default '',
+			model text not null default '',
+			api_key_encrypted jsonb not null default '{}'::jsonb,
+			allow_no_api_key boolean not null default false,
+			max_data_level text not null default 'D1',
+			timeout_seconds integer not null default 30,
 			updated_at timestamptz not null default now()
 		);`,
 		`create table if not exists steward_autonomy_rules (
@@ -989,6 +1002,250 @@ func (db *DB) Migrate(ctx context.Context) error {
 		`alter table steward_runtime_control_events
 			add constraint steward_runtime_control_events_action_check
 			check (action in ('paused','stopped','resumed'));`,
+		`create table if not exists steward_orchestration_agents (
+			id text primary key,
+			name text not null,
+			role text not null,
+			description text not null default '',
+			permission_ceiling text not null default 'A0',
+			data_level_ceiling text not null default 'D0',
+			tool_allowlist jsonb not null default '[]'::jsonb,
+			max_concurrency integer not null default 1,
+			enabled boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			check (max_concurrency between 1 and 16)
+		);`,
+		`alter table steward_orchestration_agents
+			add column if not exists max_runtime_seconds integer not null default 900,
+			add column if not exists max_attempts integer not null default 20,
+			add column if not exists max_evidence_bytes integer not null default 262144;`,
+		`create table if not exists steward_orchestrations (
+			id uuid primary key,
+			goal text not null,
+			status text not null default 'draft',
+			plan_hash text not null,
+			idempotency_key text,
+			requested_by text not null default 'local-user',
+			permission_ceiling text not null default 'A0',
+			data_level text not null default 'D0',
+			failure_policy text not null default 'fail_fast',
+			max_parallel integer not null default 1,
+			max_children integer not null default 16,
+			control_generation bigint not null default 0,
+			failure_summary text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			started_at timestamptz,
+			completed_at timestamptz,
+			deadline_at timestamptz,
+			check (status in ('draft','queued','running','succeeded','failed','cancelled','blocked')),
+			check (failure_policy in ('fail_fast')),
+			check (max_parallel between 1 and 16),
+			check (max_children between 1 and 100)
+		);`,
+		`alter table steward_orchestrations drop constraint if exists steward_orchestrations_status_check;`,
+		`alter table steward_orchestrations add constraint steward_orchestrations_status_check
+			check (status in ('draft','queued','running','compensating','succeeded','failed','compensated','compensation_failed','cancelled','blocked'));`,
+		`alter table steward_orchestrations drop constraint if exists steward_orchestrations_failure_policy_check;`,
+		`alter table steward_orchestrations add constraint steward_orchestrations_failure_policy_check
+			check (failure_policy in ('fail_fast','compensate'));`,
+		`create table if not exists steward_orchestration_nodes (
+			id uuid primary key,
+			orchestration_id uuid not null references steward_orchestrations(id) on delete cascade,
+			node_key text not null,
+			position integer not null,
+			agent_id text not null references steward_orchestration_agents(id),
+			goal text not null,
+			status text not null default 'pending',
+			depends_on jsonb not null default '[]'::jsonb,
+			permission_ceiling text not null default 'A0',
+			data_level text not null default 'D0',
+			steps jsonb not null default '[]'::jsonb,
+			runtime_run_id uuid references steward_agent_runs(id) on delete set null,
+			delegation_id uuid,
+			failure_summary text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			started_at timestamptz,
+			completed_at timestamptz,
+			unique (orchestration_id, node_key),
+			unique (orchestration_id, position),
+			check (status in ('pending','dispatched','running','succeeded','failed','cancelled','blocked'))
+		);`,
+		`alter table steward_orchestration_nodes
+			add column if not exists kind text not null default 'forward',
+			add column if not exists compensation_of_id uuid references steward_orchestration_nodes(id) on delete set null,
+			add column if not exists compensation_steps jsonb not null default '[]'::jsonb,
+			add column if not exists target_device text not null default 'local',
+			add column if not exists selected_device_id text references steward_devices(id) on delete set null,
+			add column if not exists remote_privilege_capability text not null default '',
+			add column if not exists remote_credential_refs jsonb not null default '[]'::jsonb,
+			add column if not exists remote_privilege_plan_hash text not null default '',
+			add column if not exists remote_broker_delegation jsonb not null default '{}'::jsonb,
+			add column if not exists remote_broker_delegation_id text not null default '',
+			add column if not exists remote_broker_delegation_expires_at timestamptz;`,
+		`alter table steward_orchestration_nodes drop constraint if exists steward_orchestration_nodes_kind_check;`,
+		`alter table steward_orchestration_nodes add constraint steward_orchestration_nodes_kind_check
+			check (kind in ('forward','compensation'));`,
+		`create table if not exists steward_delegation_claims (
+			id uuid primary key,
+			orchestration_id uuid not null references steward_orchestrations(id) on delete cascade,
+			node_id uuid not null references steward_orchestration_nodes(id) on delete cascade,
+			agent_id text not null references steward_orchestration_agents(id),
+			plan_hash text not null,
+			permission_ceiling text not null,
+			data_level text not null,
+			control_generation bigint not null,
+			expires_at timestamptz not null,
+			signature text not null,
+			created_at timestamptz not null default now(),
+			unique (node_id)
+		);`,
+		`do $$ begin
+			if not exists (
+				select 1 from pg_constraint
+				where conname='steward_orchestration_nodes_delegation_id_fkey'
+				  and conrelid='steward_orchestration_nodes'::regclass
+			) then
+				alter table steward_orchestration_nodes
+				add constraint steward_orchestration_nodes_delegation_id_fkey
+				foreign key (delegation_id) references steward_delegation_claims(id) on delete set null;
+			end if;
+		end $$;`,
+		`alter table steward_agent_runs
+			add column if not exists orchestration_id uuid references steward_orchestrations(id) on delete set null,
+			add column if not exists orchestration_node_id uuid references steward_orchestration_nodes(id) on delete set null,
+			add column if not exists delegation_id uuid references steward_delegation_claims(id) on delete set null;`,
+		`create table if not exists steward_orchestration_events (
+			sequence bigserial primary key,
+			id uuid not null unique,
+			orchestration_id uuid not null references steward_orchestrations(id) on delete cascade,
+			node_id uuid references steward_orchestration_nodes(id) on delete cascade,
+			type text not null,
+			status text not null,
+			message text not null default '',
+			payload jsonb not null default '{}'::jsonb,
+			created_at timestamptz not null default now()
+		);`,
+		`create table if not exists steward_agent_messages (
+			id uuid primary key,
+			agent_id text not null references steward_orchestration_agents(id),
+			orchestration_id uuid not null references steward_orchestrations(id) on delete cascade,
+			node_id uuid not null references steward_orchestration_nodes(id) on delete cascade,
+			runtime_run_id uuid not null references steward_agent_runs(id) on delete cascade,
+			type text not null default 'execute',
+			status text not null default 'pending',
+			payload jsonb not null default '{}'::jsonb,
+			attempt integer not null default 0,
+			max_attempts integer not null default 3,
+			lease_owner text not null default '',
+			lease_expires_at timestamptz,
+			available_at timestamptz not null default now(),
+			last_error text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			acknowledged_at timestamptz,
+			unique (node_id, type),
+			check (status in ('pending','leased','acknowledged','dead')),
+			check (attempt >= 0 and max_attempts between 1 and 10)
+		);`,
+		`create table if not exists steward_agent_workers (
+			worker_id text primary key,
+			agent_id text not null references steward_orchestration_agents(id),
+			status text not null default 'running',
+			process_id integer not null default 0,
+			current_message_id uuid references steward_agent_messages(id) on delete set null,
+			started_at timestamptz not null default now(),
+			heartbeat_at timestamptz not null default now(),
+			stopped_at timestamptz,
+			check (status in ('running','draining','stopped'))
+		);`,
+		`create table if not exists steward_remote_dispatches (
+			id uuid primary key,
+			orchestration_id uuid not null references steward_orchestrations(id) on delete cascade,
+			node_id uuid not null references steward_orchestration_nodes(id) on delete cascade,
+			target_device_id text not null references steward_devices(id),
+			status text not null default 'pending',
+			plan_hash text not null,
+			payload jsonb not null,
+			signature text not null,
+			attempt integer not null default 0,
+			available_at timestamptz not null default now(),
+			lease_expires_at timestamptz,
+			heartbeat_at timestamptz,
+			remote_run_id text not null default '',
+			result_payload jsonb not null default '{}'::jsonb,
+			result_signature text not null default '',
+			cancel_requested boolean not null default false,
+			last_error text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			completed_at timestamptz,
+			unique (node_id),
+			check (status in ('pending','sent','accepted','running','succeeded','failed','cancelled','blocked')),
+			check (attempt between 0 and 100)
+		);`,
+		`create table if not exists steward_remote_inbox (
+			dispatch_id uuid primary key,
+			origin_device_id text not null references steward_devices(id),
+			orchestration_id text not null,
+			node_id text not null,
+			plan_hash text not null,
+			payload jsonb not null,
+			signature text not null,
+			status text not null default 'accepted',
+			local_run_id uuid references steward_agent_runs(id) on delete set null,
+			lease_expires_at timestamptz not null,
+			heartbeat_at timestamptz not null default now(),
+			result_payload jsonb not null default '{}'::jsonb,
+			result_signature text not null default '',
+			cancel_requested boolean not null default false,
+			last_error text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			completed_at timestamptz,
+			check (status in ('accepted','running','succeeded','failed','cancelled','blocked'))
+		);`,
+		`alter table steward_remote_dispatches add column if not exists cancel_requested boolean not null default false;`,
+		`alter table steward_remote_inbox add column if not exists cancel_requested boolean not null default false;`,
+		`alter table steward_remote_inbox
+			add column if not exists execution_kind text not null default 'runtime',
+			add column if not exists broker_delegation jsonb not null default '{}'::jsonb;`,
+		`create table if not exists steward_conversation_executions (
+			id uuid primary key,
+			conversation_id uuid not null references steward_conversations(id) on delete cascade,
+			message_id uuid not null references steward_conversation_messages(id) on delete cascade,
+			request_message_id uuid not null references steward_conversation_messages(id) on delete cascade,
+			instruction text not null,
+			summary text not null default '',
+			kind text not null,
+			status text not null,
+			run_id uuid references steward_agent_runs(id) on delete set null,
+			orchestration_id uuid references steward_orchestrations(id) on delete set null,
+			target_device_id text not null default '',
+			target_device_name text not null default '',
+			permission_level text not null default 'A0',
+			risk_level text not null default 'low',
+			plan_hash text not null default '',
+			requires_confirmation boolean not null default false,
+			confirmation_reason text not null default '',
+			question text not null default '',
+			capability text not null default '',
+			approval_subject text not null default '',
+			control_generation bigint not null default 0,
+			evidence jsonb not null default '{}'::jsonb,
+			failure_summary text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			confirmed_at timestamptz,
+			completed_at timestamptz,
+			check (kind in ('run','orchestration','question')),
+			check (status in ('needs_input','awaiting_confirmation','queued','running','paused','succeeded','failed','cancelled','blocked')),
+			check ((kind='run' and run_id is not null and orchestration_id is null)
+				or (kind='orchestration' and orchestration_id is not null and run_id is null)
+				or (kind='question' and run_id is null and orchestration_id is null))
+		);`,
 		`alter table steward_events
 			add column if not exists valid_from timestamptz,
 			add column if not exists valid_to timestamptz,
@@ -1026,6 +1283,8 @@ func (db *DB) Migrate(ctx context.Context) error {
 		`create index if not exists idx_steward_data_policies_level on steward_data_policies(data_level, source_pattern);`,
 		`create index if not exists idx_steward_permission_policies_level on steward_permission_policies(permission_level, action_pattern);`,
 		`create index if not exists idx_steward_model_dispatches_pending on steward_model_dispatches(status, next_attempt_at, created_at);`,
+		`create index if not exists idx_steward_remote_dispatches_cycle on steward_remote_dispatches(status, available_at, updated_at);`,
+		`create index if not exists idx_steward_remote_inbox_cycle on steward_remote_inbox(status, updated_at);`,
 		`create index if not exists idx_steward_tool_definitions_enabled on steward_tool_definitions(enabled, permission_level, action);`,
 		`create index if not exists idx_steward_timeline_segments_updated_at on steward_timeline_segments(updated_at desc);`,
 		`create index if not exists idx_steward_timeline_pending_events_event on steward_timeline_pending_events(event_id);`,
@@ -1060,6 +1319,9 @@ func (db *DB) Migrate(ctx context.Context) error {
 		`create index if not exists idx_steward_conversations_updated_at on steward_conversations(updated_at desc);`,
 		`create index if not exists idx_steward_conversation_messages_conversation on steward_conversation_messages(conversation_id, created_at);`,
 		`create index if not exists idx_steward_conversation_suggestions_message on steward_conversation_suggestions(message_id, status);`,
+		`create index if not exists idx_steward_conversation_executions_message on steward_conversation_executions(message_id, created_at);`,
+		`create index if not exists idx_steward_conversation_executions_active on steward_conversation_executions(conversation_id, updated_at desc)
+			where status in ('needs_input','awaiting_confirmation','queued','running','paused','blocked');`,
 		`create index if not exists idx_steward_observations_time on steward_observations(occurred_at desc);`,
 		`create index if not exists idx_steward_observations_pending on steward_observations(status, session_id, occurred_at);`,
 		`create index if not exists idx_steward_observations_expiry on steward_observations(expires_at) where expires_at is not null;`,
@@ -1085,6 +1347,22 @@ func (db *DB) Migrate(ctx context.Context) error {
 		`create index if not exists idx_steward_evidence_artifacts_run on steward_evidence_artifacts(run_id, created_at);`,
 		`create index if not exists idx_steward_run_events_run on steward_run_events(run_id, sequence);`,
 		`create index if not exists idx_steward_runtime_control_events_created on steward_runtime_control_events(created_at desc);`,
+		`create unique index if not exists idx_steward_orchestrations_idempotency
+		on steward_orchestrations(idempotency_key) where idempotency_key is not null;`,
+		`create index if not exists idx_steward_orchestrations_queue
+		on steward_orchestrations(status, updated_at, created_at);`,
+		`create index if not exists idx_steward_orchestration_nodes_schedule
+		on steward_orchestration_nodes(orchestration_id, status, position);`,
+		`create index if not exists idx_steward_orchestration_nodes_agent
+		on steward_orchestration_nodes(agent_id, status);`,
+		`create index if not exists idx_steward_orchestration_events_parent
+		on steward_orchestration_events(orchestration_id, sequence);`,
+		`create index if not exists idx_steward_agent_runs_orchestration
+		on steward_agent_runs(orchestration_id, orchestration_node_id);`,
+		`create index if not exists idx_steward_agent_messages_claim
+		on steward_agent_messages(agent_id, status, available_at, lease_expires_at);`,
+		`create index if not exists idx_steward_agent_workers_heartbeat
+		on steward_agent_workers(agent_id, status, heartbeat_at);`,
 	}
 
 	for _, statement := range statements {
