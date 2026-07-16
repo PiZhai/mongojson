@@ -97,7 +97,7 @@ func (s *Service) listDaemonLoopStatuses(ctx context.Context) ([]domain.StewardB
 		       last_success_at, last_error, consecutive_failures, updated_at
 		from steward_daemon_loop_status
 		where agent_id = $1
-		order by case name when 'heartbeat' then 1 when 'sync' then 2 when 'autonomy' then 3 else 4 end, name
+		order by case name when 'heartbeat' then 1 when 'runtime-v2' then 2 when 'sync' then 3 when 'autonomy' then 4 else 5 end, name
 	`, s.agentIDValue())
 	if err != nil {
 		return nil, fmt.Errorf("list daemon loop statuses: %w", err)

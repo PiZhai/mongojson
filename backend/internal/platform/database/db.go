@@ -582,6 +582,13 @@ func (db *DB) Migrate(ctx context.Context) error {
 			created_at timestamptz not null default now(),
 			decided_at timestamptz
 		);`,
+		`alter table steward_approval_requests
+			add column if not exists approval_proof jsonb not null default '{}'::jsonb,
+			add column if not exists approval_proof_id text not null default '',
+			add column if not exists approval_key_id text not null default '',
+			add column if not exists approval_proof_expires_at timestamptz;`,
+		`create unique index if not exists idx_steward_approval_requests_proof_id
+			on steward_approval_requests(approval_proof_id) where approval_proof_id <> '';`,
 		`create table if not exists steward_autonomous_runs (
 			id uuid primary key,
 			proposal_id uuid references steward_autonomy_proposals(id) on delete set null,
@@ -801,6 +808,187 @@ func (db *DB) Migrate(ctx context.Context) error {
 			audit_id uuid references steward_audit_logs(id) on delete set null,
 			unique (entity_type, entity_id)
 		);`,
+		`create table if not exists steward_runtime_tool_specs (
+			name text primary key,
+			version text not null,
+			description text not null default '',
+			input_schema jsonb not null default '{}'::jsonb,
+			output_schema jsonb not null default '{}'::jsonb,
+			permission_level text not null,
+			risk_level text not null,
+			side_effect text not null default 'none',
+			approval_mode text not null default 'never',
+			idempotency_mode text not null default 'inherent',
+			deterministic boolean not null default false,
+			supports_cancel boolean not null default false,
+			default_timeout_seconds integer not null default 30,
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists steward_agent_runs (
+			id uuid primary key,
+			goal text not null,
+			status text not null,
+			mode text not null default 'manual',
+			plan_version integer not null default 1,
+			plan_hash text not null,
+			idempotency_key text,
+			requested_by text not null default 'local-user',
+			target_device text not null default 'local',
+			data_level text not null default 'D0',
+			permission_ceiling text not null default 'A0',
+			planner text not null default 'manual',
+			planner_version text not null default '1.0.0',
+			source_instruction text not null default '',
+			plan_summary text not null default '',
+			policy_summary jsonb not null default '{}'::jsonb,
+			cancel_requested boolean not null default false,
+			failure_summary text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			started_at timestamptz,
+			completed_at timestamptz,
+			check (status in ('draft','planning','awaiting_approval','queued','running','verifying','succeeded','failed','cancelled','compensating','blocked'))
+		);`,
+		`create table if not exists steward_run_steps (
+			id uuid primary key,
+			run_id uuid not null references steward_agent_runs(id) on delete cascade,
+			step_key text not null,
+			position integer not null,
+			title text not null,
+			tool_name text not null references steward_runtime_tool_specs(name),
+			tool_version text not null,
+			arguments jsonb not null default '{}'::jsonb,
+			expected_output jsonb not null default '{}'::jsonb,
+			depends_on jsonb not null default '[]'::jsonb,
+			status text not null default 'pending',
+			attempt integer not null default 0,
+			max_attempts integer not null default 1,
+			timeout_seconds integer not null default 30,
+			idempotency_key text not null,
+			tool_idempotency text not null default 'inherent',
+			policy_decision text not null default 'allow',
+			policy_reason text not null default '',
+			requires_approval boolean not null default false,
+			last_error text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			started_at timestamptz,
+			completed_at timestamptz,
+			unique (run_id, step_key),
+			unique (run_id, position),
+			check (status in ('pending','running','verifying','succeeded','failed','cancelled','blocked'))
+		);`,
+		`alter table steward_runtime_tool_specs
+			add column if not exists side_effect text not null default 'none',
+			add column if not exists approval_mode text not null default 'never',
+			add column if not exists idempotency_mode text not null default 'inherent';`,
+		`alter table steward_agent_runs
+			add column if not exists planner text not null default 'manual',
+			add column if not exists planner_version text not null default '1.0.0',
+			add column if not exists source_instruction text not null default '',
+			add column if not exists plan_summary text not null default '',
+			add column if not exists policy_summary jsonb not null default '{}'::jsonb;`,
+		`alter table steward_run_steps add column if not exists tool_version text not null default '1.0.0';`,
+		`alter table steward_run_steps
+			add column if not exists tool_idempotency text not null default 'inherent',
+			add column if not exists policy_decision text not null default 'allow',
+			add column if not exists policy_reason text not null default '';`,
+		`create table if not exists steward_approval_grants (
+			id uuid primary key,
+			run_id uuid not null references steward_agent_runs(id) on delete cascade,
+			plan_hash text not null,
+			scope text not null default 'run',
+			granted_by text not null,
+			status text not null default 'active',
+			reason text not null default '',
+			created_at timestamptz not null default now(),
+			expires_at timestamptz,
+			revoked_at timestamptz,
+			check (status in ('active','revoked','expired'))
+		);`,
+		`alter table steward_approval_grants
+			add column if not exists approval_proof jsonb not null default '{}'::jsonb,
+			add column if not exists approval_proof_id text not null default '',
+			add column if not exists approval_key_id text not null default '',
+			add column if not exists approval_proof_expires_at timestamptz;`,
+		`create unique index if not exists idx_steward_approval_grants_proof_id
+			on steward_approval_grants(approval_proof_id) where approval_proof_id <> '';`,
+		`create table if not exists steward_tool_invocations (
+			id uuid primary key,
+			run_id uuid not null references steward_agent_runs(id) on delete cascade,
+			step_id uuid not null references steward_run_steps(id) on delete cascade,
+			tool_name text not null,
+			tool_version text not null,
+			attempt integer not null,
+			idempotency_key text not null,
+			status text not null,
+			input jsonb not null default '{}'::jsonb,
+			output jsonb not null default '{}'::jsonb,
+			error_summary text not null default '',
+			started_at timestamptz not null,
+			finished_at timestamptz,
+			unique (step_id, attempt),
+			check (status in ('running','succeeded','failed','cancelled'))
+		);`,
+		`alter table steward_tool_invocations
+			add column if not exists lease_owner text not null default '',
+			add column if not exists control_generation bigint not null default 0,
+			add column if not exists heartbeat_at timestamptz,
+			add column if not exists lease_expires_at timestamptz;`,
+		`create table if not exists steward_evidence_artifacts (
+			id uuid primary key,
+			run_id uuid not null references steward_agent_runs(id) on delete cascade,
+			step_id uuid not null references steward_run_steps(id) on delete cascade,
+			kind text not null,
+			summary text not null default '',
+			payload jsonb not null default '{}'::jsonb,
+			created_at timestamptz not null default now()
+		);`,
+		`alter table steward_evidence_artifacts
+			add column if not exists data_level text not null default 'D0',
+			add column if not exists content_type text not null default 'application/json',
+			add column if not exists payload_state text not null default 'inline',
+			add column if not exists payload_available boolean not null default true,
+			add column if not exists size_bytes bigint not null default 0,
+			add column if not exists sha256 text not null default '',
+			add column if not exists redacted boolean not null default false;`,
+		`create table if not exists steward_run_events (
+			sequence bigserial primary key,
+			id uuid not null unique,
+			run_id uuid not null references steward_agent_runs(id) on delete cascade,
+			step_id uuid references steward_run_steps(id) on delete cascade,
+			type text not null,
+			status text not null,
+			message text not null default '',
+			payload jsonb not null default '{}'::jsonb,
+			created_at timestamptz not null default now()
+		);`,
+		`create table if not exists steward_runtime_execution_control (
+			id text primary key,
+			paused boolean not null default false,
+			reason text not null default '',
+			changed_by text not null default 'system',
+			changed_at timestamptz not null default now(),
+			generation bigint not null default 0,
+			check (id = 'global')
+		);`,
+		`alter table steward_runtime_execution_control
+			add column if not exists generation bigint not null default 0;`,
+		`insert into steward_runtime_execution_control (id, paused, reason, changed_by)
+		 values ('global', false, '', 'system') on conflict (id) do nothing;`,
+		`create table if not exists steward_runtime_control_events (
+			sequence bigserial primary key,
+			action text not null,
+			reason text not null default '',
+			changed_by text not null,
+			created_at timestamptz not null default now(),
+			check (action in ('paused','resumed'))
+		);`,
+		`alter table steward_runtime_control_events
+			drop constraint if exists steward_runtime_control_events_action_check;`,
+		`alter table steward_runtime_control_events
+			add constraint steward_runtime_control_events_action_check
+			check (action in ('paused','stopped','resumed'));`,
 		`alter table steward_events
 			add column if not exists valid_from timestamptz,
 			add column if not exists valid_to timestamptz,
@@ -888,6 +1076,15 @@ func (db *DB) Migrate(ctx context.Context) error {
 		`create index if not exists idx_steward_insights_value on steward_insights(status, value_score, updated_at);`,
 		`create index if not exists idx_steward_lifecycle_runs_job on steward_lifecycle_runs(job_type, started_at desc);`,
 		`create index if not exists idx_steward_tombstones_expiry on steward_deletion_tombstones(expires_at);`,
+		`create unique index if not exists idx_steward_agent_runs_idempotency
+		on steward_agent_runs(idempotency_key) where idempotency_key is not null;`,
+		`create index if not exists idx_steward_agent_runs_queue on steward_agent_runs(status, updated_at, created_at);`,
+		`create index if not exists idx_steward_run_steps_run on steward_run_steps(run_id, position);`,
+		`create index if not exists idx_steward_tool_invocations_run on steward_tool_invocations(run_id, started_at);`,
+		`create index if not exists idx_steward_tool_invocations_lease on steward_tool_invocations(status, lease_expires_at);`,
+		`create index if not exists idx_steward_evidence_artifacts_run on steward_evidence_artifacts(run_id, created_at);`,
+		`create index if not exists idx_steward_run_events_run on steward_run_events(run_id, sequence);`,
+		`create index if not exists idx_steward_runtime_control_events_created on steward_runtime_control_events(created_at desc);`,
 	}
 
 	for _, statement := range statements {

@@ -2,6 +2,8 @@
 
 本文档整理一个三端互通、长期常驻、高权限、可扩展的私人智能管家方向。它不是单纯的聊天机器人，而是一个运行在个人设备与私有数据之上的“个人操作系统级智能层”：能感知、记忆、计划、执行、复盘，并通过当前工具项目提供沟通入口、数据查看入口和可审计的任务控制入口。
 
+当前从“任务记录”走向“真实执行”的架构决策和 R0-R3.3 落地边界，见 [ADR-0001：执行内核](adr/0001-steward-execution-kernel.md)、[Runtime V2 实施基线](personal-ai-steward-runtime-v2.md)、[ADR-0002：R2 用户态执行](adr/0002-steward-r2-user-mode-execution.md)、[R2 运行说明](personal-ai-steward-runtime-r2.md)、[R2.5 执行控制面](personal-ai-steward-runtime-r2-5.md)、[R2.6 执行安全层](personal-ai-steward-runtime-r2-6.md)、[ADR-0003：独立 Privilege Broker](adr/0003-steward-r3-privilege-broker.md)、[R3.0 运行说明](personal-ai-steward-runtime-r3.md)、[ADR-0004：独立审批证明](adr/0004-steward-r3-1-independent-approval.md)、[R3.1 运行说明](personal-ai-steward-runtime-r3-1.md)、[ADR-0005：WebAuthn 审批](adr/0005-steward-r3-2-webauthn-approval.md)、[R3.2 运行说明](personal-ai-steward-runtime-r3-2.md)、[ADR-0006：Broker 生产加固](adr/0006-steward-r3-3-production-hardening.md) 与 [R3.3 运行说明](personal-ai-steward-runtime-r3-3.md)。高权限能力由独立 Broker 承载，并要求主进程不可伪造的独立签名审批票据；当前只开放固定 A4-A7 能力，A8/A9 凭据代理仍未实现。
+
 ## 一句话定位
 
 私人智能管家是一个本地优先、跨 Windows/macOS/Linux 常驻运行的个人 Agent 网络。它负责把用户的日常数据、项目上下文、任务意图、知识资产和自动化工具组织成一个可查询、可执行、可追溯、可反省的个人智能系统。

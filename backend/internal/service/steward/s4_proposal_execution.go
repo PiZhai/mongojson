@@ -89,6 +89,14 @@ func (s *Service) executeAutonomyProposal(ctx context.Context, id string, manual
 	if err != nil {
 		return domain.StewardAutonomousRun{}, err
 	}
+	stopped, generation, err := s.runtimeExecutionState(ctx)
+	if err != nil {
+		return domain.StewardAutonomousRun{}, err
+	}
+	if stopped {
+		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
+			proposal.TriggerReason, "system-wide execution emergency stop blocked autonomy", "resume unified execution before executing")
+	}
 	if issue := autonomyProposalPolicyIssue(proposal); issue != "" {
 		run, runErr := s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "invalid persisted proposal policy blocked execution", issue)
@@ -207,8 +215,13 @@ func (s *Service) executeAutonomyProposal(ctx context.Context, id string, manual
 				proposal.TriggerReason, "permission policy requires a rollback plan", "executor simulation did not provide recovery_hint")
 		}
 	}
-	execution, err := executor.Execute(ctx, proposal)
+	executionCtx, executionCancel := s.executionGuardContext(ctx, "s4:"+proposal.ID, generation)
+	execution, err := executor.Execute(executionCtx, proposal)
+	executionCancel()
 	if err != nil {
+		if executionCtx.Err() != nil {
+			return s.recordAutonomyExecutionFailure(ctx, proposal, "autonomy action stopped by unified execution control", ErrExecutionEmergencyStopped)
+		}
 		return s.recordAutonomyExecutionFailure(ctx, proposal, "autonomy action execution failed", err)
 	}
 	if err := validateAutonomyExecutionResult(executor, execution, true); err != nil {

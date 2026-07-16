@@ -319,6 +319,247 @@ export type MemoFloatingCardRecord = {
   updated_at: string;
 };
 
+export type StewardRuntimePlannerStatus = {
+  enabled: boolean;
+  provider: string;
+  model?: string;
+  reason?: string;
+  version: string;
+};
+
+export type StewardRuntimeControlEvent = {
+  sequence: number;
+  action: "paused" | "stopped" | "resumed";
+  reason?: string;
+  changed_by: string;
+  created_at: string;
+};
+
+export type StewardRuntimeExecutionControl = {
+  paused: boolean;
+  stopped: boolean;
+  generation: number;
+  scopes: string[];
+  draining: boolean;
+  reason?: string;
+  changed_by: string;
+  changed_at: string;
+  watchdog: {
+    enabled: boolean;
+    lease_ttl_seconds: number;
+    active_invocations: number;
+    stale_invocations: number;
+  };
+  broker: {
+    configured: boolean;
+    reachable: boolean;
+    stopped: boolean;
+    generation: number;
+    instance_id?: string;
+    policy_digest?: string;
+    key_id?: string;
+    capability_count: number;
+    active_executions: number;
+    approval_proof_required: boolean;
+    approval_authorities: Array<{
+      name: string;
+      algorithm: string;
+      key_id: string;
+	  credential_id?: string;
+	  rp_id?: string;
+	  allowed_origins?: string[];
+    }>;
+    error?: string;
+    capabilities: Array<{
+      name: string;
+      description: string;
+      permission_level: string;
+      risk_level: string;
+      executable_name: string;
+      argument_count: number;
+      timeout_seconds: number;
+      capability_digest: string;
+    }>;
+  };
+  events: StewardRuntimeControlEvent[];
+};
+
+export type StewardRuntimeRunStatus =
+  | "draft"
+  | "planning"
+  | "awaiting_approval"
+  | "queued"
+  | "running"
+  | "verifying"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "compensating"
+  | "blocked";
+
+export type StewardAgentRunSummary = {
+  id: string;
+  goal: string;
+  status: StewardRuntimeRunStatus;
+  mode: string;
+  plan_hash: string;
+  planner: string;
+  permission_ceiling: string;
+  data_level: string;
+  step_count: number;
+  completed_steps: number;
+  requires_approval: boolean;
+  failure_summary?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+};
+
+export type StewardToolInvocation = {
+  id: string;
+  run_id: string;
+  step_id: string;
+  tool_name: string;
+  tool_version: string;
+  attempt: number;
+  idempotency_key: string;
+  status: string;
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  error_summary?: string;
+  lease_owner?: string;
+  control_generation: number;
+  started_at: string;
+  finished_at?: string | null;
+  heartbeat_at?: string | null;
+  lease_expires_at?: string | null;
+};
+
+export type StewardEvidenceArtifact = {
+  id: string;
+  run_id: string;
+  step_id: string;
+  kind: string;
+  summary: string;
+  data_level: string;
+  content_type: string;
+  payload_state: 'inline' | 'encrypted' | 'summary_only';
+  payload_available: boolean;
+  size_bytes: number;
+  sha256: string;
+  redacted: boolean;
+  payload?: Record<string, unknown>;
+  created_at: string;
+};
+
+export type StewardApprovalGrant = {
+  id: string;
+  run_id: string;
+  plan_hash: string;
+  scope: string;
+  granted_by: string;
+  status: string;
+  reason?: string;
+  created_at: string;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  approval_proof_id?: string;
+  approval_key_id?: string;
+  approval_proof_expires_at?: string | null;
+};
+
+export type StewardSignedApprovalProof = {
+  claims: {
+    version: string;
+    proof_id: string;
+    subject: string;
+    plan_hash: string;
+    capability: string;
+    control_generation: number;
+    granted_by: string;
+    reason: string;
+    issued_at: string;
+    expires_at: string;
+  };
+  key_id: string;
+	algorithm?: "ed25519" | "webauthn-es256";
+	signature?: string;
+	webauthn?: {
+	  credential_id: string;
+	  client_data_json: string;
+	  authenticator_data: string;
+	  signature: string;
+	};
+};
+
+export type StewardRunStep = {
+  id: string;
+  run_id: string;
+  key: string;
+  position: number;
+  title: string;
+  tool_name: string;
+  tool_version: string;
+  arguments: Record<string, unknown>;
+  expected_output?: Record<string, unknown>;
+  depends_on: string[];
+  status: string;
+  attempt: number;
+  max_attempts: number;
+  timeout_seconds: number;
+  idempotency_key: string;
+  tool_idempotency: string;
+  policy_decision: string;
+  policy_reason: string;
+  requires_approval: boolean;
+  last_error?: string;
+  invocations: StewardToolInvocation[];
+  evidence: StewardEvidenceArtifact[];
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type StewardAgentRun = {
+  id: string;
+  goal: string;
+  status: StewardRuntimeRunStatus;
+  mode: string;
+  plan_version: number;
+  plan_hash: string;
+  idempotency_key?: string;
+  requested_by: string;
+  target_device: string;
+  data_level: string;
+  permission_ceiling: string;
+  planner: string;
+  planner_version: string;
+  source_instruction?: string;
+  plan_summary?: string;
+  policy_summary: Record<string, unknown>;
+  cancel_requested: boolean;
+  failure_summary?: string;
+  steps: StewardRunStep[];
+  approvals: StewardApprovalGrant[];
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type StewardRunEvent = {
+  sequence: number;
+  id: string;
+  run_id: string;
+  step_id?: string;
+  type: string;
+  status: string;
+  message: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
 export type StewardAgentStatus = {
   agent_id: string;
   device_name: string;
@@ -926,6 +1167,16 @@ export type StewardApprovalRequest = {
   decision_reason: string;
   created_at: string;
   decided_at?: string | null;
+  approval_proof_id?: string;
+  approval_key_id?: string;
+  approval_proof_expires_at?: string | null;
+  approval_proof_required: boolean;
+  approval_proof_expectation?: {
+    subject: string;
+    plan_hash: string;
+    capability: string;
+    control_generation: number;
+  };
 };
 
 export type StewardAutonomousRun = {

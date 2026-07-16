@@ -1,5 +1,7 @@
 package steward
 
+import "mongojson/backend/internal/privilegebroker"
+
 const (
 	AutonomySettingsID = "default"
 
@@ -70,5 +72,6 @@ type DismissAutonomyProposalsResult struct {
 }
 
 type DecideApprovalInput struct {
-	DecisionReason string `json:"decision_reason"`
+	DecisionReason string                               `json:"decision_reason"`
+	ApprovalProof  *privilegebroker.SignedApprovalProof `json:"approval_proof,omitempty"`
 }

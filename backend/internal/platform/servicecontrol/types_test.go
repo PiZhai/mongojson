@@ -131,6 +131,30 @@ func TestEnvironmentIncludesRuntimeIntervalsAndRedactsSecret(t *testing.T) {
 	}
 }
 
+func TestPlanInstallUsesExplicitServiceArgsAndRedactsBrokerKeys(t *testing.T) {
+	options := InstallOptions{
+		Name: "MongojsonStewardBroker", Scope: ScopeSystem,
+		BinaryPath: `C:\Program Files\Mongojson\steward-broker.exe`, WorkDir: `C:\ProgramData\Mongojson\broker`,
+		HTTPAddr: "127.0.0.1:18100", PeerHTTPAddr: "127.0.0.1:18101",
+		ServiceArgs: []string{"run", "--service-name", "MongojsonStewardBroker", "--workdir", `C:\ProgramData\Mongojson\broker`},
+		ExtraEnv: map[string]string{
+			"STEWARD_BROKER_CLIENT_KEY":          "client-secret",
+			"STEWARD_BROKER_CONTROL_KEY":         "control-secret",
+			"STEWARD_BROKER_SIGNING_PRIVATE_KEY": "signing-secret",
+		},
+	}
+	plan, err := PlanInstall("windows", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.RunArgs) < 2 || plan.RunArgs[1] != "run" {
+		t.Fatalf("explicit service args were not used: %+v", plan.RunArgs)
+	}
+	if plan.Environment["STEWARD_BROKER_CLIENT_KEY"] != "<redacted>" || plan.Environment["STEWARD_BROKER_CONTROL_KEY"] != "<redacted>" || plan.Environment["STEWARD_BROKER_SIGNING_PRIVATE_KEY"] != "<redacted>" {
+		t.Fatalf("broker keys were not redacted: %+v", plan.Environment)
+	}
+}
+
 func TestNormalizeInstallOptionsRejectsInvalidExtraEnvKey(t *testing.T) {
 	_, err := NormalizeInstallOptions(InstallOptions{
 		Name:       "MongojsonStewardTest",
@@ -140,6 +164,20 @@ func TestNormalizeInstallOptionsRejectsInvalidExtraEnvKey(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected invalid extra env key to fail")
+	}
+}
+
+func TestExplicitEnvironmentOmitsGenericServiceVariables(t *testing.T) {
+	options, err := NormalizeInstallOptionsForPlatform("windows", InstallOptions{
+		Name: "Broker", Scope: ScopeSystem, BinaryPath: os.Args[0], WorkDir: ".",
+		ExplicitEnvironment: map[string]string{"STEWARD_BROKER_LISTEN": "127.0.0.1:18100"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := Environment(options)
+	if len(env) != 1 || env["STEWARD_BROKER_LISTEN"] == "" {
+		t.Fatalf("explicit environment was expanded: %+v", env)
 	}
 }
 

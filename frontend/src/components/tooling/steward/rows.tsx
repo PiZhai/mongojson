@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   acceptStewardIntent,
   approveStewardAutonomyProposal,
@@ -20,6 +21,7 @@ import {
 } from "../../../lib/api/client";
 import type {
   StewardApprovalRequest,
+  StewardSignedApprovalProof,
   StewardAuditLog,
   StewardAutonomousRun,
   StewardAutonomyProposal,
@@ -467,9 +469,25 @@ export function ApprovalRow({
 }: {
   approval: StewardApprovalRequest;
   busy: boolean;
-  onApprove: (id: string) => Promise<void>;
+  onApprove: (id: string, proof?: StewardSignedApprovalProof) => Promise<void>;
   onReject: (id: string) => Promise<void>;
 }) {
+  const [proofText, setProofText] = useState("");
+  const [proofError, setProofError] = useState("");
+  const expectation = approval.approval_proof_expectation;
+  async function approve() {
+    let proof: StewardSignedApprovalProof | undefined;
+    if (approval.approval_proof_required) {
+      try {
+        proof = JSON.parse(proofText) as StewardSignedApprovalProof;
+      } catch {
+        setProofError("签名审批票据不是有效 JSON");
+        return;
+      }
+    }
+    setProofError("");
+    await onApprove(approval.id, proof);
+  }
   return (
     <article className="steward-list-item">
       <div>
@@ -478,12 +496,21 @@ export function ApprovalRow({
         <small>
           {statusText(approval.status)} · {formatDate(approval.created_at)}
         </small>
+        {approval.approval_proof_required && expectation ? (
+          <details>
+            <summary>独立审批票据</summary>
+            <p>在隔离终端签发，理由固定为 approved in steward workspace：</p>
+            <pre>{`steward-approval issue --approve --subject "${expectation.subject}" --plan-hash "${expectation.plan_hash}" --capability "${expectation.capability}" --generation ${expectation.control_generation} --granted-by "local-user" --reason "approved in steward workspace"`}</pre>
+            <textarea onChange={(event) => setProofText(event.target.value)} placeholder="粘贴签名审批票据 JSON" rows={6} value={proofText} />
+            {proofError ? <small className="steward-danger">{proofError}</small> : null}
+          </details>
+        ) : null}
       </div>
       <div className="steward-row-actions">
         <button
           className="steward-icon-button"
-          disabled={busy || approval.status !== "pending"}
-          onClick={() => onApprove(approval.id)}
+          onClick={() => void approve()}
+          disabled={busy || approval.status !== "pending" || (approval.approval_proof_required && !proofText.trim())}
           type="button"
         >
           批准

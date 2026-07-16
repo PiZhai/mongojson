@@ -12,19 +12,25 @@ import (
 )
 
 const (
-	DefaultHeartbeatInterval     = time.Minute
-	DefaultCollectionInterval    = 5 * time.Minute
-	DefaultModelDispatchInterval = time.Minute
+	DefaultHeartbeatInterval       = time.Minute
+	DefaultCollectionInterval      = 5 * time.Minute
+	DefaultModelDispatchInterval   = time.Minute
+	DefaultRuntimeInterval         = time.Second
+	DefaultRuntimeWatchdogInterval = 2 * time.Second
 )
 
 type DaemonOptions struct {
-	HeartbeatInterval     time.Duration
-	CollectionInterval    time.Duration
-	SyncInterval          time.Duration
-	AutonomyInterval      time.Duration
-	AutonomyLimit         int
-	ModelDispatchInterval time.Duration
-	ModelDispatchLimit    int
+	HeartbeatInterval       time.Duration
+	CollectionInterval      time.Duration
+	SyncInterval            time.Duration
+	AutonomyInterval        time.Duration
+	AutonomyLimit           int
+	ModelDispatchInterval   time.Duration
+	ModelDispatchLimit      int
+	RuntimeInterval         time.Duration
+	RuntimeLimit            int
+	RuntimeWatchdogInterval time.Duration
+	RuntimeWatchdogLimit    int
 }
 
 type Daemon struct {
@@ -46,13 +52,17 @@ func NewDaemon(service *Service, options DaemonOptions) *Daemon {
 
 func DaemonOptionsFromEnv() DaemonOptions {
 	return normalizeDaemonOptions(DaemonOptions{
-		HeartbeatInterval:     durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
-		CollectionInterval:    durationEnv("STEWARD_COLLECTION_INTERVAL", DefaultCollectionInterval),
-		SyncInterval:          durationEnv("STEWARD_SYNC_INTERVAL", 0),
-		AutonomyInterval:      durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
-		AutonomyLimit:         intEnv("STEWARD_AUTONOMY_LIMIT", 12),
-		ModelDispatchInterval: durationEnv("STEWARD_MODEL_DISPATCH_INTERVAL", DefaultModelDispatchInterval),
-		ModelDispatchLimit:    intEnv("STEWARD_MODEL_DISPATCH_LIMIT", 20),
+		HeartbeatInterval:       durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
+		CollectionInterval:      durationEnv("STEWARD_COLLECTION_INTERVAL", DefaultCollectionInterval),
+		SyncInterval:            durationEnv("STEWARD_SYNC_INTERVAL", 0),
+		AutonomyInterval:        durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
+		AutonomyLimit:           intEnv("STEWARD_AUTONOMY_LIMIT", 12),
+		ModelDispatchInterval:   durationEnv("STEWARD_MODEL_DISPATCH_INTERVAL", DefaultModelDispatchInterval),
+		ModelDispatchLimit:      intEnv("STEWARD_MODEL_DISPATCH_LIMIT", 20),
+		RuntimeInterval:         durationEnv("STEWARD_RUNTIME_INTERVAL", DefaultRuntimeInterval),
+		RuntimeLimit:            intEnv("STEWARD_RUNTIME_LIMIT", 10),
+		RuntimeWatchdogInterval: durationEnv("STEWARD_RUNTIME_WATCHDOG_INTERVAL", DefaultRuntimeWatchdogInterval),
+		RuntimeWatchdogLimit:    intEnv("STEWARD_RUNTIME_WATCHDOG_LIMIT", 20),
 	})
 }
 
@@ -69,6 +79,12 @@ func (d *Daemon) Start(parent context.Context) {
 	d.cancel = cancel
 	d.generation++
 	generation := d.generation
+	runtimeInterval := d.options.RuntimeInterval
+	runtimeWatchdogInterval := d.options.RuntimeWatchdogInterval
+	if !d.service.runtimeV2 {
+		runtimeInterval = 0
+		runtimeWatchdogInterval = 0
+	}
 	for _, loop := range []struct {
 		name     string
 		interval time.Duration
@@ -78,6 +94,8 @@ func (d *Daemon) Start(parent context.Context) {
 		{name: "sync", interval: d.options.SyncInterval},
 		{name: "autonomy", interval: d.options.AutonomyInterval},
 		{name: "model-dispatch", interval: d.options.ModelDispatchInterval},
+		{name: "runtime-v2", interval: runtimeInterval},
+		{name: "runtime-watchdog", interval: runtimeWatchdogInterval},
 	} {
 		if err := d.service.configureDaemonLoop(ctx, loop.name, loop.interval, loop.interval > 0); err != nil {
 			log.Printf("steward daemon %s loop status initialization failed: %v", loop.name, err)
@@ -131,6 +149,14 @@ func (d *Daemon) Start(parent context.Context) {
 			return nil
 		}
 		_, err = d.service.RunModelDispatches(ctx, d.options.ModelDispatchLimit)
+		return err
+	}) || started
+	started = d.startLoop(ctx, "runtime-watchdog", runtimeWatchdogInterval, func(ctx context.Context) error {
+		_, err := d.service.RunAgentRuntimeWatchdog(ctx, d.options.RuntimeWatchdogLimit)
+		return err
+	}) || started
+	started = d.startLoop(ctx, "runtime-v2", runtimeInterval, func(ctx context.Context) error {
+		_, err := d.service.RunAgentRuntimeCycle(ctx, d.options.RuntimeLimit)
 		return err
 	}) || started
 
@@ -264,6 +290,21 @@ func normalizeDaemonOptions(input DaemonOptions) DaemonOptions {
 	}
 	if out.ModelDispatchLimit <= 0 || out.ModelDispatchLimit > 100 {
 		out.ModelDispatchLimit = 20
+	}
+	if out.RuntimeInterval < 0 {
+		out.RuntimeInterval = 0
+	}
+	if out.RuntimeLimit <= 0 || out.RuntimeLimit > 50 {
+		out.RuntimeLimit = 10
+	}
+	if out.RuntimeWatchdogInterval < 0 {
+		out.RuntimeWatchdogInterval = 0
+	}
+	if out.RuntimeWatchdogInterval == 0 {
+		out.RuntimeWatchdogInterval = DefaultRuntimeWatchdogInterval
+	}
+	if out.RuntimeWatchdogLimit <= 0 || out.RuntimeWatchdogLimit > 100 {
+		out.RuntimeWatchdogLimit = 20
 	}
 	return out
 }

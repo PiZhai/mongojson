@@ -25,6 +25,7 @@ type Props = {
 }
 
 const permissionLevels = Array.from({ length: 10 }, (_, rank) => `A${rank}`)
+const brokerPermissionLevels = ['A4', 'A5', 'A6', 'A7']
 
 const permissionNames: Record<string, string> = {
   A0: '无操作',
@@ -273,6 +274,9 @@ function ToolDefinitionEditor({ tools, busy, onSave, onRun }: {
 
   return (
     <div className="steward-tool-editor">
+      <p className="steward-broker-boundary-note">
+        R3.1 中这里只保存能力的管理元数据；独立 Privilege Broker 的签名策略、可执行文件哈希、固定参数与独立审批票据才是执行授权源。Broker 仅接受 A4–A7，A8/A9 暂不开放。
+      </p>
       <div className="steward-automation-toolbar">
         <select aria-label="选择高权限工具" disabled={busy} onChange={(event) => selectTool(event.target.value)} value={selectedAction}>
           {tools.map((tool) => <option key={tool.id} value={tool.action}>{tool.action} · {tool.name}</option>)}
@@ -285,7 +289,7 @@ function ToolDefinitionEditor({ tools, busy, onSave, onRun }: {
         <label><span>名称</span><input disabled={busy} onChange={(event) => setDraft({ ...draft, name: event.target.value })} value={draft.name} /></label>
         <label><span>绝对可执行路径</span><input disabled={busy} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder="C:\\Tools\\backup.exe" value={draft.executable} /></label>
         <label><span>工作目录</span><input disabled={busy} onChange={(event) => setDraft({ ...draft, working_directory: event.target.value })} value={draft.working_directory} /></label>
-        <label><span>权限</span><select disabled={busy} onChange={(event) => setDraft({ ...draft, permission_level: event.target.value })} value={draft.permission_level}>{permissionLevels.map((level) => <option key={level} value={level}>{level} {permissionNames[level]}</option>)}</select></label>
+        <label><span>权限</span><select disabled={busy} onChange={(event) => setDraft({ ...draft, permission_level: event.target.value })} value={draft.permission_level}>{brokerPermissionLevels.map((level) => <option key={level} value={level}>{level} {permissionNames[level]}</option>)}</select></label>
         <label><span>风险</span><select disabled={busy} onChange={(event) => setDraft({ ...draft, risk_level: event.target.value })} value={draft.risk_level}><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="critical">关键</option></select></label>
         <label><span>超时/秒</span><input disabled={busy} max={3600} min={1} onChange={(event) => setDraft({ ...draft, timeout_seconds: Number(event.target.value) })} type="number" value={draft.timeout_seconds} /></label>
         <label className="steward-tool-wide"><span>固定参数，每行一个</span><textarea disabled={busy} onChange={(event) => setArgumentsText(event.target.value)} value={argumentsText} /></label>

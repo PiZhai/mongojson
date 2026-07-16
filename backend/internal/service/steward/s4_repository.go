@@ -48,11 +48,19 @@ func (s *Service) getAutonomyProposal(ctx context.Context, id string) (domain.St
 func (s *Service) getApprovalRequest(ctx context.Context, id string) (domain.StewardApprovalRequest, error) {
 	row := s.db.Pool.QueryRow(ctx, `
 		select id, coalesce(proposal_id::text, ''), requested_action, risk_summary, plan_summary, status,
-		       coalesce(decided_by, ''), coalesce(decision_reason, ''), created_at, decided_at
+		       coalesce(decided_by, ''), coalesce(decision_reason, ''), created_at, decided_at,
+		       approval_proof_id, approval_key_id, approval_proof_expires_at
 		from steward_approval_requests
 		where id = $1
 	`, id)
-	return scanApprovalRequest(row)
+	item, err := scanApprovalRequest(row)
+	if err != nil {
+		return item, err
+	}
+	if err := s.populateAutonomyApprovalExpectation(ctx, &item); err != nil {
+		return item, err
+	}
+	return item, nil
 }
 
 func scanAutonomyRule(row scanner) (domain.StewardAutonomyRule, error) {
@@ -91,7 +99,7 @@ func scanApprovalRequest(row scanner) (domain.StewardApprovalRequest, error) {
 	var proposalID string
 	err := row.Scan(&item.ID, &proposalID, &item.RequestedAction, &item.RiskSummary,
 		&item.PlanSummary, &item.Status, &item.DecidedBy, &item.DecisionReason,
-		&item.CreatedAt, &item.DecidedAt)
+		&item.CreatedAt, &item.DecidedAt, &item.ApprovalProofID, &item.ApprovalKeyID, &item.ApprovalProofExpiresAt)
 	item.ProposalID = stringPtrIfPresent(proposalID)
 	return item, err
 }

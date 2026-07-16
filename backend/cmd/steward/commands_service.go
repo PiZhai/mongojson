@@ -12,6 +12,7 @@ import (
 
 	"mongojson/backend/internal/platform/peerdiscovery"
 	"mongojson/backend/internal/platform/servicecontrol"
+	"mongojson/backend/internal/privilegebroker"
 )
 
 func (c cli) service(args []string) error {
@@ -299,6 +300,25 @@ func serviceInstall(args []string) error {
 	autonomyRetryMaxAttempts := fs.Int("autonomy-retry-max-attempts", envIntOrDefault("STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS", 0), "Maximum automatic execution attempts before manual recovery is required; 0 omits the value")
 	autonomyRetryBackoff := fs.Duration("autonomy-retry-backoff", envDurationOrDefault("STEWARD_AUTONOMY_RETRY_BACKOFF", 0), "Initial backoff between automatic execution retries; 0 omits the value")
 	autonomyRetryMaxBackoff := fs.Duration("autonomy-retry-max-backoff", envDurationOrDefault("STEWARD_AUTONOMY_RETRY_MAX_BACKOFF", 0), "Maximum exponential backoff between automatic execution retries; 0 omits the value")
+	runtimeV2 := fs.Bool("runtime-v2", envBoolOrDefault("STEWARD_RUNTIME_V2", false), "Enable the R1 durable execution kernel")
+	runtimeR2 := fs.Bool("runtime-r2", envBoolOrDefault("STEWARD_RUNTIME_R2", false), "Enable the R2 natural-language planner, policy gate, and current-user OS tools; implies --runtime-v2")
+	runtimeR3 := fs.Bool("runtime-r3", envBoolOrDefault("STEWARD_RUNTIME_R3", false), "Enable R3 isolated A4-A7 execution through the Privilege Broker; implies --runtime-v2")
+	brokerURL := fs.String("broker-url", envOrDefault("STEWARD_BROKER_URL", "http://127.0.0.1:18100"), "Loopback URL of the independently managed Privilege Broker")
+	brokerClientKey := fs.String("broker-client-key", envOrDefault("STEWARD_BROKER_CLIENT_KEY", ""), "Shared HMAC client key for the Privilege Broker; dry-run output is redacted")
+	brokerPublicKey := fs.String("broker-public-key", envOrDefault("STEWARD_BROKER_PUBLIC_KEY", ""), "Pinned Ed25519 public key used to verify Broker status and receipts")
+	runtimeAllowedRoots := fs.String("runtime-allowed-roots", envOrDefault("STEWARD_RUNTIME_ALLOWED_ROOTS", ""), "Comma-separated filesystem roots accessible to R2; defaults to STORAGE_DIR")
+	runtimeExecutables := fs.String("runtime-executables", envOrDefault("STEWARD_RUNTIME_EXECUTABLES", ""), "Comma-separated executable paths or names explicitly available to R2 shell.exec")
+	runtimeWebAllowedHosts := fs.String("runtime-web-allowed-hosts", envOrDefault("STEWARD_RUNTIME_WEB_ALLOWED_HOSTS", ""), "Comma-separated private or local hosts explicitly allowed for R2 web access")
+	runtimeBrowserOpen := fs.Bool("runtime-browser-open", envBoolOrDefault("STEWARD_RUNTIME_BROWSER_OPEN_ENABLED", false), "Allow R2 to request the current user's default browser after plan-bound approval")
+	runtimePlannerProvider := fs.String("runtime-planner-provider", envOrDefault("STEWARD_RUNTIME_PLANNER_PROVIDER", "local"), "R2 planner provider: local or openai-compatible")
+	runtimePlannerBaseURL := fs.String("runtime-planner-base-url", envOrDefault("STEWARD_RUNTIME_PLANNER_BASE_URL", ""), "OpenAI-compatible base URL for the optional R2 planner")
+	runtimePlannerModel := fs.String("runtime-planner-model", envOrDefault("STEWARD_RUNTIME_PLANNER_MODEL", ""), "Model name for the optional R2 planner")
+	runtimePlannerAPIKey := fs.String("runtime-planner-api-key", envOrDefault("STEWARD_RUNTIME_PLANNER_API_KEY", ""), "API key for the optional R2 planner; dry-run output is redacted")
+	runtimePlannerAllowNoAPIKey := fs.Bool("runtime-planner-allow-no-api-key", envBoolOrDefault("STEWARD_RUNTIME_PLANNER_ALLOW_NO_API_KEY", false), "Allow an R2 OpenAI-compatible planner endpoint without an API key")
+	runtimePlannerTimeout := fs.Duration("runtime-planner-timeout", envDurationOrDefault("STEWARD_RUNTIME_PLANNER_TIMEOUT", 30*time.Second), "Timeout for optional R2 planner requests")
+	runtimePlannerMaxDataLevel := fs.String("runtime-planner-max-data-level", envOrDefault("STEWARD_RUNTIME_PLANNER_MAX_DATA_LEVEL", "D1"), "Highest data level that may be sent to the optional R2 planner")
+	runtimeInterval := fs.Duration("runtime-interval", envDurationOrDefault("STEWARD_RUNTIME_INTERVAL", time.Second), "STEWARD_RUNTIME_INTERVAL for queued R1 runs")
+	runtimeLimit := fs.Int("runtime-limit", envIntOrDefault("STEWARD_RUNTIME_LIMIT", 10), "Maximum R1 runs claimed per daemon cycle")
 	discoveryEnabled := fs.Bool("discovery-enabled", discoveryDefaults.Enabled, "Enable signed LAN candidate discovery without automatically trusting devices")
 	deviceName := fs.String("device-name", discoveryDefaults.DeviceName, "STEWARD_DEVICE_NAME advertised in signed discovery announcements")
 	discoveryListenAddr := fs.String("discovery-listen-addr", discoveryDefaults.ListenAddr, "UDP listen address or multicast group for signed peer discovery")
@@ -330,6 +350,29 @@ func serviceInstall(args []string) error {
 	if err := validateServicePostVerifyOptions("service install", postVerify); err != nil {
 		return err
 	}
+	if *runtimeInterval < 0 {
+		return fmt.Errorf("service install --runtime-interval must not be negative")
+	}
+	if *runtimeLimit < 1 || *runtimeLimit > 50 {
+		return fmt.Errorf("service install --runtime-limit must be between 1 and 50")
+	}
+	if *runtimePlannerTimeout <= 0 || *runtimePlannerTimeout > 2*time.Minute {
+		return fmt.Errorf("service install --runtime-planner-timeout must be between 1ns and 2m")
+	}
+	runtimePlannerDataLevel := strings.ToUpper(strings.TrimSpace(*runtimePlannerMaxDataLevel))
+	if runtimePlannerDataLevel != "D0" && runtimePlannerDataLevel != "D1" && runtimePlannerDataLevel != "D2" && runtimePlannerDataLevel != "D3" &&
+		runtimePlannerDataLevel != "D4" && runtimePlannerDataLevel != "D5" && runtimePlannerDataLevel != "D6" {
+		return fmt.Errorf("service install --runtime-planner-max-data-level must be D0-D6")
+	}
+	if *runtimeR2 {
+		*runtimeV2 = true
+	}
+	if *runtimeR3 {
+		*runtimeV2 = true
+		if _, err := privilegebroker.NewClientFromEncoded(*brokerURL, *brokerClientKey, *brokerPublicKey); err != nil {
+			return fmt.Errorf("service install R3 privilege broker configuration: %w", err)
+		}
+	}
 	retryEnv := map[string]string{}
 	if *autonomyRetryMaxAttempts > 0 {
 		retryEnv["STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS"] = strconv.Itoa(*autonomyRetryMaxAttempts)
@@ -339,6 +382,27 @@ func serviceInstall(args []string) error {
 	}
 	if *autonomyRetryMaxBackoff > 0 {
 		retryEnv["STEWARD_AUTONOMY_RETRY_MAX_BACKOFF"] = autonomyRetryMaxBackoff.String()
+	}
+	runtimeEnv := map[string]string{
+		"STEWARD_RUNTIME_V2":                       strconv.FormatBool(*runtimeV2),
+		"STEWARD_RUNTIME_R2":                       strconv.FormatBool(*runtimeR2),
+		"STEWARD_RUNTIME_R3":                       strconv.FormatBool(*runtimeR3),
+		"STEWARD_BROKER_URL":                       strings.TrimSpace(*brokerURL),
+		"STEWARD_BROKER_CLIENT_KEY":                strings.TrimSpace(*brokerClientKey),
+		"STEWARD_BROKER_PUBLIC_KEY":                strings.TrimSpace(*brokerPublicKey),
+		"STEWARD_RUNTIME_ALLOWED_ROOTS":            strings.TrimSpace(*runtimeAllowedRoots),
+		"STEWARD_RUNTIME_EXECUTABLES":              strings.TrimSpace(*runtimeExecutables),
+		"STEWARD_RUNTIME_WEB_ALLOWED_HOSTS":        strings.TrimSpace(*runtimeWebAllowedHosts),
+		"STEWARD_RUNTIME_BROWSER_OPEN_ENABLED":     strconv.FormatBool(*runtimeBrowserOpen),
+		"STEWARD_RUNTIME_PLANNER_PROVIDER":         strings.TrimSpace(*runtimePlannerProvider),
+		"STEWARD_RUNTIME_PLANNER_BASE_URL":         strings.TrimSpace(*runtimePlannerBaseURL),
+		"STEWARD_RUNTIME_PLANNER_MODEL":            strings.TrimSpace(*runtimePlannerModel),
+		"STEWARD_RUNTIME_PLANNER_API_KEY":          strings.TrimSpace(*runtimePlannerAPIKey),
+		"STEWARD_RUNTIME_PLANNER_ALLOW_NO_API_KEY": strconv.FormatBool(*runtimePlannerAllowNoAPIKey),
+		"STEWARD_RUNTIME_PLANNER_TIMEOUT":          runtimePlannerTimeout.String(),
+		"STEWARD_RUNTIME_PLANNER_MAX_DATA_LEVEL":   runtimePlannerDataLevel,
+		"STEWARD_RUNTIME_INTERVAL":                 runtimeInterval.String(),
+		"STEWARD_RUNTIME_LIMIT":                    strconv.Itoa(*runtimeLimit),
 	}
 	opts.ExtraEnv = mergeServiceEnv(serviceInstallAdvisorEnv(fs, serviceInstallAdvisorFlagValues{
 		Provider:         *llmProvider,
@@ -350,7 +414,7 @@ func serviceInstall(args []string) error {
 		MaxDataLevel:     *llmMaxDataLevel,
 		FailureThreshold: *llmFailureThreshold,
 		FailureCooldown:  *llmFailureCooldown,
-	}), retryEnv, serviceInstallDiscoveryEnv(fs, serviceInstallDiscoveryFlagValues{
+	}), retryEnv, runtimeEnv, serviceInstallDiscoveryEnv(fs, serviceInstallDiscoveryFlagValues{
 		Enabled:    *discoveryEnabled,
 		DeviceName: *deviceName,
 		ListenAddr: *discoveryListenAddr,

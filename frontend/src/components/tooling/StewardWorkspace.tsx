@@ -56,6 +56,7 @@ import { CollectorSettings } from "./steward/CollectorSettings";
 import { ConversationWorkspace } from "./steward/ConversationWorkspace";
 import { ActivityMemoryWorkspace } from "./steward/ActivityMemoryWorkspace";
 import { AutomationPolicyWorkspace } from "./steward/AutomationPolicyWorkspace";
+import { RuntimeControlWorkspace } from "./steward/RuntimeControlWorkspace";
 
 export function StewardWorkspace() {
   const {
@@ -197,6 +198,8 @@ export function StewardWorkspace() {
           <Metric label="审计" value={counts.audit_logs ?? 0} />
         </div>
       </section>
+
+      <RuntimeControlWorkspace />
 
       <ConversationWorkspace onDataChanged={refresh} />
 
@@ -626,11 +629,12 @@ export function StewardWorkspace() {
                 approval={approval}
                 busy={busy !== null}
                 key={approval.id}
-                onApprove={(id) =>
+                onApprove={(id, approvalProof) =>
                   runAction("批准审批", () =>
                     approveStewardApprovalRequest(
                       id,
                       "approved in steward workspace",
+					  approvalProof,
                     ),
                   )
                 }

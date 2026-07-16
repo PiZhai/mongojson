@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"log"
@@ -227,6 +228,46 @@ func TestServiceInstallAdvisorEnvOmitsZeroTuningValues(t *testing.T) {
 		if _, ok := env[key]; ok {
 			t.Fatalf("zero-value tuning key %s should be omitted: %#v", key, env)
 		}
+	}
+}
+
+func TestServiceInstallR3ValidatesAndRedactsBrokerConfiguration(t *testing.T) {
+	clientKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x21}, 32))
+	publicKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	output, err := captureStdoutText(t, func() error {
+		return serviceInstall([]string{
+			"--dry-run", "--name", "MongojsonStewardR3Test", "--workdir", ".", "--ui-dir", ".",
+			"--runtime-r3", "--broker-url", "http://127.0.0.1:18100",
+			"--broker-client-key", clientKey, "--broker-public-key", publicKey,
+		})
+	})
+	if err != nil {
+		t.Fatalf("service install R3 dry-run: %v", err)
+	}
+	if strings.Contains(output, clientKey) {
+		t.Fatalf("R3 dry-run leaked broker client key: %s", output)
+	}
+	var payload struct {
+		Service struct {
+			Environment map[string]string `json:"environment"`
+		} `json:"service"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode R3 service output: %v\n%s", err, output)
+	}
+	env := payload.Service.Environment
+	if env["STEWARD_RUNTIME_R3"] != "true" || env["STEWARD_RUNTIME_V2"] != "true" ||
+		env["STEWARD_BROKER_URL"] != "http://127.0.0.1:18100" ||
+		env["STEWARD_BROKER_CLIENT_KEY"] != "<redacted>" || env["STEWARD_BROKER_PUBLIC_KEY"] != publicKey {
+		t.Fatalf("unexpected R3 service environment: %#v", env)
+	}
+
+	err = serviceInstall([]string{
+		"--dry-run", "--runtime-r3", "--broker-url", "http://192.0.2.10:18100",
+		"--broker-client-key", clientKey, "--broker-public-key", publicKey,
+	})
+	if err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("non-loopback R3 broker was accepted: %v", err)
 	}
 }
 

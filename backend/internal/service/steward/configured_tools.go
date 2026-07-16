@@ -1,15 +1,10 @@
 package steward
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -19,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"mongojson/backend/internal/domain"
+	"mongojson/backend/internal/privilegebroker"
 )
 
 const AutonomyActionConfiguredToolPrefix = "tool:"
@@ -135,6 +131,9 @@ func normalizeToolDefinition(input UpsertToolDefinitionInput) (domain.StewardToo
 	if err != nil {
 		return domain.StewardToolDefinition{}, err
 	}
+	if permissionRank(permission) < permissionRank(PermissionA4) || permissionRank(permission) > permissionRank(PermissionA7) {
+		return domain.StewardToolDefinition{}, fmt.Errorf("R3.0 configured broker tools must use A4-A7; use R2 tools for A0-A3 and keep A8-A9 disabled")
+	}
 	risk, err := autonomyRiskValue(input.RiskLevel, "high")
 	if err != nil {
 		return domain.StewardToolDefinition{}, err
@@ -210,83 +209,97 @@ type configuredToolAutonomyExecutor struct {
 
 func (e configuredToolAutonomyExecutor) Capability() domain.StewardAutonomyActionCapability {
 	return domain.StewardAutonomyActionCapability{
-		Action: e.action, Description: "运行用户明确登记的结构化本地工具",
-		TargetType: "configured_tool_run", RiskLevel: "critical", MaxPermissionLevel: PermissionA9,
+		Action: e.action, Description: "通过独立 Privilege Broker 运行系统级固定能力",
+		TargetType: "configured_tool_run", RiskLevel: "critical", MaxPermissionLevel: PermissionA7,
 	}
 }
 
 func (e configuredToolAutonomyExecutor) Simulate(ctx context.Context, proposal domain.StewardAutonomyProposal) (AutonomyExecutionResult, error) {
-	tool, err := e.authorizedTool(ctx, proposal)
+	tool, capability, err := e.authorizedTool(ctx, proposal)
 	if err != nil {
 		return AutonomyExecutionResult{}, err
 	}
-	if _, err := os.Stat(tool.Executable); err != nil {
-		return AutonomyExecutionResult{}, fmt.Errorf("configured tool executable is unavailable: %w", err)
-	}
-	if tool.WorkingDirectory != "" {
-		if info, err := os.Stat(tool.WorkingDirectory); err != nil || !info.IsDir() {
-			return AutonomyExecutionResult{}, fmt.Errorf("configured tool working directory is unavailable")
-		}
-	}
 	recovery := ""
 	if tool.RollbackExecutable != "" {
-		recovery = fmt.Sprintf("rollback configured with %s and %d fixed arguments", filepath.Base(tool.RollbackExecutable), len(tool.RollbackArguments))
+		rollbackName := capability.Name + ".rollback"
+		if _, rollbackErr := e.service.privilegeBroker.Capability(ctx, rollbackName); rollbackErr != nil {
+			return AutonomyExecutionResult{}, fmt.Errorf("rollback metadata requires broker capability %s: %w", rollbackName, rollbackErr)
+		}
+		recovery = "rollback is independently registered as broker capability " + rollbackName
 	}
 	return AutonomyExecutionResult{
 		TargetType:    "configured_tool_run",
-		ImpactSummary: fmt.Sprintf("would run %s with %d fixed arguments as %s", filepath.Base(tool.Executable), len(tool.Arguments), tool.PermissionLevel),
+		ImpactSummary: fmt.Sprintf("would ask isolated broker capability %s to run pinned %s with %d fixed arguments as %s", capability.Name, capability.ExecutableName, capability.ArgumentCount, capability.PermissionLevel),
 		RecoveryHint:  recovery,
 	}, nil
 }
 
 func (e configuredToolAutonomyExecutor) Execute(ctx context.Context, proposal domain.StewardAutonomyProposal) (AutonomyExecutionResult, error) {
-	tool, err := e.authorizedTool(ctx, proposal)
+	_, capability, err := e.authorizedTool(ctx, proposal)
 	if err != nil {
 		return AutonomyExecutionResult{}, err
 	}
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(tool.TimeoutSeconds)*time.Second)
-	defer cancel()
-	command := exec.CommandContext(runCtx, tool.Executable, tool.Arguments...)
-	command.Dir = tool.WorkingDirectory
-	command.Env = configuredToolEnvironment()
-	var output cappedToolOutput
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Run(); err != nil {
-		if runCtx.Err() != nil {
-			return AutonomyExecutionResult{}, fmt.Errorf("configured tool timed out after %d seconds", tool.TimeoutSeconds)
-		}
-		return AutonomyExecutionResult{}, fmt.Errorf("configured tool exited unsuccessfully: %w; output_sha256=%s bytes=%d", err, output.digest(), output.total)
+	stopped, generation, err := e.service.runtimeExecutionState(ctx)
+	if err != nil {
+		return AutonomyExecutionResult{}, err
 	}
-	recovery := ""
-	if tool.RollbackExecutable != "" {
-		recovery = fmt.Sprintf("rollback available through %s with %d fixed arguments", filepath.Base(tool.RollbackExecutable), len(tool.RollbackArguments))
+	if stopped {
+		return AutonomyExecutionResult{}, ErrExecutionEmergencyStopped
 	}
+	approvalProof, err := e.service.approvedAutonomyApprovalProof(ctx, proposal.ID)
+	if err != nil {
+		return AutonomyExecutionResult{}, err
+	}
+	response, err := e.service.privilegeBroker.ExecuteCapability(ctx, privilegebroker.Authorization{
+		Capability: capability.Name, Subject: "s4:" + proposal.ID,
+		PlanHash: autonomyBrokerPlanHash(proposal), ApprovalRef: approvalProof.Claims.ProofID,
+		ApprovalProof:     approvalProof,
+		ControlGeneration: generation,
+	})
+	if err != nil {
+		return AutonomyExecutionResult{}, fmt.Errorf("privilege broker %s: %w", brokerExecutionErrorCode(err), err)
+	}
+	receipt := response.Receipt.Payload
 	return AutonomyExecutionResult{
 		TargetType: "configured_tool_run", TargetID: proposal.ID,
-		ImpactSummary: fmt.Sprintf("ran %s successfully; output_sha256=%s bytes=%d", tool.Name, output.digest(), output.total),
-		RecoveryHint:  recovery,
+		ImpactSummary: fmt.Sprintf("broker executed %s; receipt=%s stdout_sha256=%s stderr_sha256=%s", capability.Name, receipt.ExecutionID, receipt.StdoutSHA256, receipt.StderrSHA256),
 	}, nil
 }
 
-func (e configuredToolAutonomyExecutor) authorizedTool(ctx context.Context, proposal domain.StewardAutonomyProposal) (domain.StewardToolDefinition, error) {
+func (e configuredToolAutonomyExecutor) authorizedTool(ctx context.Context, proposal domain.StewardAutonomyProposal) (domain.StewardToolDefinition, privilegebroker.PublicCapability, error) {
 	if e.service == nil || e.service.db == nil || e.service.db.Pool == nil {
-		return domain.StewardToolDefinition{}, fmt.Errorf("configured tool executor is not initialized")
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("configured tool executor is not initialized")
 	}
 	tool, found, err := e.service.findToolDefinition(ctx, e.action)
 	if err != nil {
-		return domain.StewardToolDefinition{}, err
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, err
 	}
 	if !found || !tool.Enabled {
-		return domain.StewardToolDefinition{}, fmt.Errorf("configured tool %s is missing or disabled", e.action)
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("configured tool %s is missing or disabled", e.action)
 	}
-	if permissionRank(proposal.PermissionLevel) < permissionRank(tool.PermissionLevel) {
-		return domain.StewardToolDefinition{}, fmt.Errorf("configured tool %s requires at least %s", e.action, tool.PermissionLevel)
+	if !e.service.runtimeR3 || e.service.privilegeBroker == nil {
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("configured tools require the independent R3 privilege broker")
 	}
-	if autonomyRiskRank(proposal.RiskLevel) < autonomyRiskRank(tool.RiskLevel) {
-		return domain.StewardToolDefinition{}, fmt.Errorf("configured tool %s requires risk level %s", e.action, tool.RiskLevel)
+	if e.service.privilegeBrokerError != nil {
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, e.service.privilegeBrokerError
 	}
-	return tool, nil
+	capability, err := e.service.privilegeBroker.Capability(ctx, e.action)
+	if err != nil {
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, err
+	}
+	if capability.PermissionLevel != tool.PermissionLevel || autonomyRiskRank(capability.RiskLevel) < autonomyRiskRank(tool.RiskLevel) {
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("broker policy is weaker than the registered tool declaration")
+	}
+	if !strings.EqualFold(filepath.Base(tool.Executable), capability.ExecutableName) || len(tool.Arguments) != capability.ArgumentCount {
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("registered tool metadata does not match the broker-owned capability")
+	}
+	if permissionRank(proposal.PermissionLevel) < permissionRank(capability.PermissionLevel) {
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("configured tool %s requires at least %s", e.action, capability.PermissionLevel)
+	}
+	if autonomyRiskRank(proposal.RiskLevel) < autonomyRiskRank(capability.RiskLevel) {
+		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("configured tool %s requires risk level %s", e.action, capability.RiskLevel)
+	}
+	return tool, capability, nil
 }
 
 func autonomyRiskRank(value string) int {
@@ -302,40 +315,4 @@ func autonomyRiskRank(value string) int {
 	default:
 		return 0
 	}
-}
-
-type cappedToolOutput struct {
-	buffer bytes.Buffer
-	total  int64
-}
-
-func (w *cappedToolOutput) Write(value []byte) (int, error) {
-	w.total += int64(len(value))
-	remaining := 32*1024 - w.buffer.Len()
-	if remaining > 0 {
-		_, _ = w.buffer.Write(value[:min(remaining, len(value))])
-	}
-	return len(value), nil
-}
-
-func (w *cappedToolOutput) digest() string {
-	digest := sha256.Sum256(w.buffer.Bytes())
-	return hex.EncodeToString(digest[:])
-}
-
-func configuredToolEnvironment() []string {
-	allowed := map[string]bool{
-		"PATH": true, "PATHEXT": true, "SYSTEMROOT": true, "WINDIR": true, "COMSPEC": true,
-		"TEMP": true, "TMP": true, "TMPDIR": true, "HOME": true, "USERPROFILE": true,
-		"PROGRAMDATA": true, "PROGRAMFILES": true, "PROGRAMFILES(X86)": true,
-		"LANG": true, "LC_ALL": true,
-	}
-	result := []string{}
-	for _, item := range os.Environ() {
-		key, _, found := strings.Cut(item, "=")
-		if found && allowed[strings.ToUpper(key)] {
-			result = append(result, item)
-		}
-	}
-	return result
 }

@@ -38,6 +38,9 @@ func (s *Service) CreateAutonomyProposal(ctx context.Context, input CreateAutono
 	if policy == AutonomyPolicyNever {
 		status = ProposalBlocked
 		blockedReason = "rule policy is never"
+	} else if policy == AutonomyPolicyAuto && risk != "low" {
+		status = ProposalBlocked
+		blockedReason = "only low-risk proposals may use automatic execution policy"
 	} else if permissionPolicyErr != nil || permissionPolicy.ExecutionMode == PolicyModeDeny {
 		status = ProposalBlocked
 		blockedReason = "permission policy denied action"

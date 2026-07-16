@@ -65,16 +65,33 @@ const (
 )
 
 type Service struct {
-	db              *database.DB
-	agentID         string
-	storageDir      string
-	advisor         AutonomyAdvisor
-	proposalScorer  AutonomyProposalScorer
-	proposalSources *autonomyProposalDiscovererRegistry
-	actionExecutors *autonomyActionExecutorRegistry
-	retryPolicy     autonomyRetryPolicy
-	syncEntities    *syncEntityAdapterRegistry
-	peerDiscovery   PeerDiscoveryCatalog
+	db                      *database.DB
+	agentID                 string
+	storageDir              string
+	advisor                 AutonomyAdvisor
+	proposalScorer          AutonomyProposalScorer
+	proposalSources         *autonomyProposalDiscovererRegistry
+	actionExecutors         *autonomyActionExecutorRegistry
+	retryPolicy             autonomyRetryPolicy
+	syncEntities            *syncEntityAdapterRegistry
+	peerDiscovery           PeerDiscoveryCatalog
+	runtimeV2               bool
+	runtimeR2               bool
+	runtimeR3               bool
+	runtimeTools            *runtimeToolRegistry
+	runtimePolicy           RuntimePolicyEngine
+	runtimePlanner          RuntimePlanner
+	runtimeAllowedRoots     []string
+	runtimeExecutables      map[string]string
+	runtimeWebAllowedHosts  map[string]bool
+	runtimeBrowserOpen      bool
+	runtimeWorkerID         string
+	runtimeLeaseTTL         time.Duration
+	runtimeEvidenceMaxBytes int
+	runtimeCancelMu         sync.Mutex
+	runtimeCancels          map[string]context.CancelFunc
+	privilegeBroker         PrivilegeBrokerClient
+	privilegeBrokerError    error
 
 	advisorAuditMu           sync.Mutex
 	lastAdvisorFallbackAudit time.Time
@@ -141,6 +158,94 @@ func WithPeerDiscovery(discovery PeerDiscoveryCatalog) ServiceOption {
 	}
 }
 
+// WithRuntimeV2Enabled overrides STEWARD_RUNTIME_V2. It is primarily useful
+// for deterministic tests and explicit embedding configurations.
+func WithRuntimeV2Enabled(enabled bool) ServiceOption {
+	return func(s *Service) {
+		s.runtimeV2 = enabled
+	}
+}
+
+func WithRuntimeR2Enabled(enabled bool) ServiceOption {
+	return func(s *Service) {
+		s.runtimeR2 = enabled
+	}
+}
+
+func WithRuntimeR3Enabled(enabled bool) ServiceOption {
+	return func(s *Service) {
+		s.runtimeR3 = enabled
+	}
+}
+
+func WithPrivilegeBrokerClient(client PrivilegeBrokerClient) ServiceOption {
+	return func(s *Service) {
+		s.privilegeBroker = client
+		s.privilegeBrokerError = nil
+	}
+}
+
+func WithRuntimePlanner(planner RuntimePlanner) ServiceOption {
+	return func(s *Service) {
+		s.runtimePlanner = planner
+	}
+}
+
+func WithRuntimePolicyEngine(policy RuntimePolicyEngine) ServiceOption {
+	return func(s *Service) {
+		s.runtimePolicy = policy
+	}
+}
+
+func WithRuntimeAllowedRoots(roots ...string) ServiceOption {
+	return func(s *Service) {
+		s.runtimeAllowedRoots = append([]string(nil), roots...)
+	}
+}
+
+func WithRuntimeExecutables(executables ...string) ServiceOption {
+	return func(s *Service) {
+		s.runtimeExecutables = resolveRuntimeExecutables(executables)
+	}
+}
+
+func WithRuntimeWebAllowedHosts(hosts ...string) ServiceOption {
+	return func(s *Service) {
+		s.runtimeWebAllowedHosts = runtimeHostSet(hosts)
+	}
+}
+
+func WithRuntimeBrowserOpenEnabled(enabled bool) ServiceOption {
+	return func(s *Service) {
+		s.runtimeBrowserOpen = enabled
+	}
+}
+
+func WithRuntimeLeaseTTL(ttl time.Duration) ServiceOption {
+	return func(s *Service) {
+		if ttl > 0 {
+			s.runtimeLeaseTTL = ttl
+		}
+	}
+}
+
+func WithRuntimeEvidenceMaxBytes(limit int) ServiceOption {
+	return func(s *Service) {
+		if limit > 0 {
+			s.runtimeEvidenceMaxBytes = limit
+		}
+	}
+}
+
+func WithRuntimeTool(tool RuntimeTool) ServiceOption {
+	return func(s *Service) {
+		if s.runtimeTools == nil {
+			s.runtimeTools = newRuntimeToolRegistry()
+		}
+		s.runtimeTools.register(tool)
+	}
+}
+
 type CreateEventInput struct {
 	Type            string `json:"type"`
 	Title           string `json:"title"`
@@ -181,13 +286,22 @@ type UpdateCollectorInput struct {
 
 func NewService(db *database.DB, options ...ServiceOption) *Service {
 	service := &Service{
-		db:             db,
-		agentID:        envOrDefault("STEWARD_AGENT_ID", DefaultAgentID),
-		storageDir:     envOrDefault("STORAGE_DIR", "./data"),
-		advisor:        NewAutonomyAdvisorFromEnv(),
-		proposalScorer: NewRuleBasedAutonomyProposalScorer(),
-		retryPolicy:    autonomyRetryPolicyFromEnv(),
-		peerDiscovery:  disabledPeerDiscovery{},
+		db:                      db,
+		agentID:                 envOrDefault("STEWARD_AGENT_ID", DefaultAgentID),
+		storageDir:              envOrDefault("STORAGE_DIR", "./data"),
+		advisor:                 NewAutonomyAdvisorFromEnv(),
+		proposalScorer:          NewRuleBasedAutonomyProposalScorer(),
+		retryPolicy:             autonomyRetryPolicyFromEnv(),
+		peerDiscovery:           disabledPeerDiscovery{},
+		runtimeV2:               boolEnv("STEWARD_RUNTIME_V2", false),
+		runtimeR2:               boolEnv("STEWARD_RUNTIME_R2", false),
+		runtimeR3:               boolEnv("STEWARD_RUNTIME_R3", false),
+		runtimeBrowserOpen:      boolEnv("STEWARD_RUNTIME_BROWSER_OPEN_ENABLED", false),
+		runtimeTools:            newRuntimeToolRegistry(newRuntimeEchoTool()),
+		runtimeWorkerID:         uuid.NewString(),
+		runtimeLeaseTTL:         durationEnv("STEWARD_RUNTIME_LEASE_TTL", 10*time.Second),
+		runtimeEvidenceMaxBytes: intEnv("STEWARD_RUNTIME_EVIDENCE_MAX_BYTES", 64<<10),
+		runtimeCancels:          map[string]context.CancelFunc{},
 	}
 	service.actionExecutors = newAutonomyActionExecutorRegistry(
 		newLocalTaskAutonomyExecutor(service, AutonomyActionCreateLocalTask, "创建本地低风险任务", "autonomous"),
@@ -241,6 +355,45 @@ func NewService(db *database.DB, options ...ServiceOption) *Service {
 	}
 	if service.peerDiscovery == nil {
 		service.peerDiscovery = disabledPeerDiscovery{}
+	}
+	if service.runtimeTools == nil {
+		service.runtimeTools = newRuntimeToolRegistry(newRuntimeEchoTool())
+	}
+	if service.runtimePolicy == nil {
+		service.runtimePolicy = newDefaultRuntimePolicyEngine()
+	}
+	if len(service.runtimeAllowedRoots) == 0 {
+		service.runtimeAllowedRoots = runtimeAllowedRootsFromEnv(service.storageDir)
+	} else {
+		service.runtimeAllowedRoots = normalizeRuntimeAllowedRoots(service.runtimeAllowedRoots, service.storageDir)
+	}
+	if service.runtimeExecutables == nil {
+		service.runtimeExecutables = resolveRuntimeExecutables(splitRuntimeCSV(os.Getenv("STEWARD_RUNTIME_EXECUTABLES")))
+	}
+	if service.runtimeWebAllowedHosts == nil {
+		service.runtimeWebAllowedHosts = runtimeHostSet(splitRuntimeCSV(os.Getenv("STEWARD_RUNTIME_WEB_ALLOWED_HOSTS")))
+	}
+	if service.runtimePlanner == nil {
+		service.runtimePlanner = newRuntimePlannerFromEnv()
+	}
+	if service.runtimeLeaseTTL <= 0 {
+		service.runtimeLeaseTTL = 10 * time.Second
+	}
+	if service.runtimeEvidenceMaxBytes <= 0 {
+		service.runtimeEvidenceMaxBytes = 64 << 10
+	} else if service.runtimeEvidenceMaxBytes > 1<<20 {
+		service.runtimeEvidenceMaxBytes = 1 << 20
+	}
+	if service.runtimeR2 {
+		service.runtimeV2 = true
+		service.registerRuntimeR2Tools()
+	}
+	if service.runtimeR3 {
+		service.runtimeV2 = true
+		if service.privilegeBroker == nil {
+			service.privilegeBroker, service.privilegeBrokerError = newPrivilegeBrokerClientFromEnv()
+		}
+		service.runtimeTools.registerIfAbsent(newRuntimePrivilegeBrokerTool(service))
 	}
 	return service
 }
@@ -326,6 +479,15 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 	}
 	if err := s.ensureAutomationPolicyDefaults(ctx, now); err != nil {
 		return err
+	}
+	if err := s.ensureRuntimeToolSpecs(ctx, now); err != nil {
+		return err
+	}
+	// The database is the unified control-plane authority. Reconcile a configured
+	// broker on startup, but keep the ordinary steward available when the
+	// independently managed privileged service is offline.
+	if s.runtimeR3 && s.privilegeBroker != nil && s.privilegeBrokerError == nil {
+		_ = s.syncPrivilegeBrokerControl(ctx, "steward-startup")
 	}
 
 	return nil

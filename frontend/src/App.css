@@ -1497,6 +1497,17 @@
   gap: 12px;
 }
 
+.steward-broker-boundary-note {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .steward-tool-form {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1531,6 +1542,692 @@
 @media (max-width: 1180px) {
   .steward-activity-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* R2.6 unified execution safety plane */
+.steward-runtime-control {
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--steward-line);
+  border-radius: 10px;
+  background: var(--steward-surface);
+  box-shadow: var(--steward-shadow);
+}
+
+.steward-runtime-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px;
+  border-bottom: 1px solid #2d3a4e;
+  background: #172033;
+  color: #f8fafc;
+}
+
+.steward-runtime-header h2 {
+  margin: 3px 0 7px;
+  color: #ffffff;
+  font-size: 24px;
+}
+
+.steward-runtime-header p {
+  max-width: 760px;
+  color: #cbd5e1;
+}
+
+.steward-runtime-health,
+.steward-runtime-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.steward-runtime-chip,
+.steward-runtime-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.steward-runtime-chip {
+  min-height: 32px;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+}
+
+.steward-runtime-chip.is-ready::before,
+.steward-runtime-chip.is-danger::before {
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #5eead4;
+  content: "";
+}
+
+.steward-runtime-chip.is-danger::before {
+  background: #fb7185;
+}
+
+.steward-runtime-control .steward-button {
+  min-height: 44px;
+}
+
+.steward-runtime-stop-button {
+  border-color: #e11d48;
+  background: #be123c;
+  color: #ffffff;
+}
+
+.steward-runtime-stop-button:hover {
+  border-color: #fb7185;
+  background: #9f1239;
+}
+
+.steward-runtime-error,
+.steward-runtime-loading,
+.steward-runtime-failure {
+  margin: 14px 18px 0;
+  padding: 11px 13px;
+  border: 1px solid rgba(190, 18, 60, 0.28);
+  border-radius: 8px;
+  background: var(--steward-rose-soft);
+  color: var(--steward-rose);
+}
+
+.steward-runtime-confirm {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(280px, 0.8fr) auto;
+  gap: 16px;
+  align-items: end;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(190, 18, 60, 0.2);
+  background: #fff1f2;
+}
+
+.steward-runtime-confirm.is-resume {
+  border-bottom-color: rgba(15, 118, 110, 0.2);
+  background: #f0fdfa;
+}
+
+.steward-runtime-confirm p,
+.steward-runtime-confirm label span,
+.steward-runtime-plan-form label span {
+  color: var(--steward-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.steward-runtime-confirm label,
+.steward-runtime-plan-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.steward-runtime-confirm input,
+.steward-runtime-plan-form textarea,
+.steward-runtime-plan-form select,
+.steward-runtime-list-header select,
+.steward-runtime-approval textarea {
+  width: 100%;
+  min-height: 44px;
+  box-sizing: border-box;
+  border: 1px solid var(--steward-line-strong);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--steward-ink);
+}
+
+.steward-runtime-confirm input:focus,
+.steward-runtime-plan-form textarea:focus,
+.steward-runtime-plan-form select:focus,
+.steward-runtime-list-header select:focus,
+.steward-runtime-approval textarea:focus,
+.steward-runtime-run-item:focus-visible,
+.steward-runtime-control summary:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.25);
+  outline-offset: 2px;
+  border-color: var(--steward-blue);
+}
+
+.steward-runtime-plan-form {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 120px 120px auto;
+  gap: 12px;
+  align-items: end;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--steward-line);
+  background: #f8fafc;
+}
+
+.steward-runtime-control-audit {
+  border-bottom: 1px solid var(--steward-line);
+  background: #ffffff;
+}
+
+.steward-runtime-control-audit > summary {
+  padding-right: 20px;
+  padding-left: 20px;
+}
+
+.steward-runtime-control-current,
+.steward-runtime-control-event {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 9px 20px;
+  border-top: 1px solid var(--steward-line);
+  font-size: 12px;
+}
+
+.steward-runtime-control-current strong {
+  grid-column: 1 / 3;
+}
+
+.steward-runtime-control-current small,
+.steward-runtime-control-event small {
+  color: var(--steward-subtle);
+}
+
+.steward-runtime-control-event > strong {
+  color: var(--steward-blue);
+}
+
+.steward-runtime-control-audit > p {
+  padding: 0 20px 12px;
+  color: var(--steward-muted);
+}
+
+.steward-runtime-instruction textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+
+.steward-runtime-instruction small {
+  color: var(--steward-subtle);
+}
+
+.steward-runtime-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  min-height: 560px;
+}
+
+.steward-runtime-run-list {
+  min-width: 0;
+  border-right: 1px solid var(--steward-line);
+  background: #f8fafc;
+}
+
+.steward-runtime-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px;
+  border-bottom: 1px solid var(--steward-line);
+}
+
+.steward-runtime-list-header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.steward-runtime-list-header small {
+  color: var(--steward-subtle);
+}
+
+.steward-runtime-list-header select {
+  width: auto;
+  max-width: 140px;
+}
+
+.steward-runtime-run-scroll {
+  display: grid;
+  gap: 8px;
+  max-height: 760px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.steward-runtime-run-item {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  min-height: 112px;
+  padding: 12px;
+  border: 1px solid var(--steward-line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--steward-ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.steward-runtime-run-item:hover {
+  border-color: #93a9c6;
+  box-shadow: var(--steward-shadow-soft);
+  transform: translateY(-1px);
+}
+
+.steward-runtime-run-item[aria-current="true"] {
+  border-color: var(--steward-blue);
+  box-shadow: inset 3px 0 0 var(--steward-blue);
+}
+
+.steward-runtime-run-item strong,
+.steward-runtime-run-item small,
+.steward-runtime-run-item em {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.steward-runtime-run-item small {
+  color: var(--steward-subtle);
+}
+
+.steward-runtime-run-item em {
+  color: var(--steward-rose);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.steward-runtime-status {
+  padding: 3px 8px;
+  border-color: var(--steward-line);
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.steward-runtime-status.is-active {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: var(--steward-blue-soft);
+  color: #1d4ed8;
+}
+
+.steward-runtime-status.is-success {
+  border-color: rgba(15, 118, 110, 0.25);
+  background: var(--steward-teal-soft);
+  color: var(--steward-teal);
+}
+
+.steward-runtime-status.is-warning {
+  border-color: rgba(180, 83, 9, 0.28);
+  background: var(--steward-amber-soft);
+  color: var(--steward-amber);
+}
+
+.steward-runtime-status.is-danger {
+  border-color: rgba(190, 18, 60, 0.26);
+  background: var(--steward-rose-soft);
+  color: var(--steward-rose);
+}
+
+.steward-runtime-detail {
+  min-width: 0;
+  padding: 18px;
+}
+
+.steward-runtime-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.steward-runtime-detail-header h3 {
+  margin: 8px 0 4px;
+  font-size: 21px;
+  overflow-wrap: anywhere;
+}
+
+.steward-runtime-detail-header p {
+  color: var(--steward-muted);
+}
+
+.steward-runtime-metadata {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 16px 0;
+  overflow: hidden;
+  border: 1px solid var(--steward-line);
+  border-radius: 8px;
+  background: var(--steward-line);
+}
+
+.steward-runtime-metadata div {
+  min-width: 0;
+  padding: 10px 12px;
+  background: #f8fafc;
+}
+
+.steward-runtime-metadata dt,
+.steward-runtime-policy-grid span,
+.steward-runtime-code-grid > div > span {
+  color: var(--steward-subtle);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.steward-runtime-metadata dd {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--steward-ink);
+  font-family: "Fira Code", Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.steward-runtime-approval,
+.steward-runtime-failure {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(260px, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+  margin: 0 0 16px;
+  padding: 14px;
+  border: 1px solid rgba(180, 83, 9, 0.28);
+  border-radius: 8px;
+  background: var(--steward-amber-soft);
+}
+
+.steward-runtime-approval label {
+  display: grid;
+  gap: 5px;
+  color: var(--steward-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.steward-runtime-failure {
+  display: block;
+  border-color: rgba(190, 18, 60, 0.28);
+  background: var(--steward-rose-soft);
+}
+
+.steward-runtime-steps {
+  display: grid;
+  gap: 12px;
+}
+
+.steward-runtime-step {
+  overflow: hidden;
+  border: 1px solid var(--steward-line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.steward-runtime-step-head {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--steward-line);
+  background: #f8fafc;
+}
+
+.steward-runtime-step-head > span:first-child {
+  color: var(--steward-blue);
+  font-family: "Fira Code", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.steward-runtime-step-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.steward-runtime-step-head small {
+  color: var(--steward-subtle);
+  font-family: "Fira Code", Consolas, monospace;
+}
+
+.steward-runtime-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 14px 6px;
+}
+
+.steward-runtime-policy-grid > div {
+  display: grid;
+  gap: 3px;
+}
+
+.steward-runtime-policy-grid strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.steward-runtime-policy-reason,
+.steward-runtime-step-error {
+  margin: 4px 14px 12px;
+  color: var(--steward-muted);
+  font-size: 12px;
+}
+
+.steward-runtime-step-error {
+  color: var(--steward-rose);
+}
+
+.steward-runtime-step details,
+.steward-runtime-event-log {
+  border-top: 1px solid var(--steward-line);
+}
+
+.steward-runtime-control summary {
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  color: var(--steward-blue);
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.steward-runtime-code-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.steward-runtime-code-grid > div {
+  min-width: 0;
+}
+
+.steward-runtime-control pre {
+  max-height: 280px;
+  margin: 5px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid #263244;
+  border-radius: 6px;
+  background: #172033;
+  color: #dbeafe;
+  font: 12px/1.55 "Fira Code", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.steward-runtime-invocation,
+.steward-runtime-evidence-item {
+  display: grid;
+  gap: 4px;
+  margin: 0 14px 10px;
+  padding: 10px;
+  border: 1px solid var(--steward-line);
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.steward-runtime-invocation small,
+.steward-runtime-evidence-item small {
+  color: var(--steward-subtle);
+}
+
+.steward-runtime-evidence-label,
+.steward-runtime-evidence-detail > span {
+  margin-top: 4px;
+  color: var(--steward-subtle);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.steward-runtime-evidence-reveal {
+  width: fit-content;
+  margin-top: 6px;
+}
+
+.steward-runtime-evidence-notice {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid #b45309;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+}
+
+.steward-runtime-evidence-detail {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.steward-runtime-event-log {
+  margin-top: 16px;
+  border: 1px solid var(--steward-line);
+  border-radius: 8px;
+}
+
+.steward-runtime-event-log > div {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--steward-line);
+  font-size: 12px;
+}
+
+.steward-runtime-event-log code {
+  color: var(--steward-blue);
+}
+
+.steward-runtime-event-log small {
+  color: var(--steward-subtle);
+}
+
+@media (max-width: 1180px) {
+  .steward-runtime-header,
+  .steward-runtime-detail-header {
+    flex-direction: column;
+  }
+
+  .steward-runtime-health,
+  .steward-runtime-inline-actions {
+    justify-content: flex-start;
+  }
+
+  .steward-runtime-confirm,
+  .steward-runtime-plan-form,
+  .steward-runtime-approval {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .steward-runtime-instruction,
+  .steward-runtime-confirm > div:first-child,
+  .steward-runtime-approval > div:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .steward-runtime-metadata {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .steward-runtime-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .steward-runtime-run-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--steward-line);
+  }
+
+  .steward-runtime-run-scroll {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 350px;
+  }
+
+  .steward-runtime-event-log > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .steward-runtime-control-current,
+  .steward-runtime-control-event {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .steward-runtime-control-current strong {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .steward-runtime-header,
+  .steward-runtime-plan-form,
+  .steward-runtime-detail {
+    padding: 14px;
+  }
+
+  .steward-runtime-confirm,
+  .steward-runtime-plan-form,
+  .steward-runtime-approval,
+  .steward-runtime-run-scroll,
+  .steward-runtime-metadata,
+  .steward-runtime-policy-grid,
+  .steward-runtime-code-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .steward-runtime-confirm > div:first-child,
+  .steward-runtime-approval > div:first-child {
+    grid-column: auto;
+  }
+
+  .steward-runtime-health,
+  .steward-runtime-health .steward-button,
+  .steward-runtime-inline-actions,
+  .steward-runtime-inline-actions .steward-button {
+    width: 100%;
+  }
+
+  .steward-runtime-step-head {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .steward-runtime-step-head .steward-runtime-status {
+    grid-column: 2;
   }
 }
 

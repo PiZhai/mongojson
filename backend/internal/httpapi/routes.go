@@ -146,6 +146,24 @@ type StewardAutomationPolicyStore interface {
 	UpsertToolDefinition(context.Context, steward.UpsertToolDefinitionInput) (domain.StewardToolDefinition, error)
 }
 
+type StewardRuntimeStore interface {
+	ListRuntimeToolSpecs(context.Context) ([]domain.StewardToolSpec, error)
+	GetRuntimePlannerStatus() domain.StewardRuntimePlannerStatus
+	ListAgentRuns(context.Context, string, int) ([]domain.StewardAgentRunSummary, error)
+	PlanAgentRun(context.Context, steward.PlanAgentRunInput) (domain.StewardAgentRun, error)
+	CreateAgentRun(context.Context, steward.CreateAgentRunInput) (domain.StewardAgentRun, error)
+	GetAgentRun(context.Context, string) (domain.StewardAgentRun, error)
+	GetEvidenceArtifact(context.Context, string, string) (domain.StewardEvidenceArtifact, error)
+	ListAgentRunEvents(context.Context, string, int64, int) ([]domain.StewardRunEvent, error)
+	StartAgentRun(context.Context, string) (domain.StewardAgentRun, error)
+	CancelAgentRun(context.Context, string) (domain.StewardAgentRun, error)
+	ResumeAgentRun(context.Context, string) (domain.StewardAgentRun, error)
+	ApproveAgentRun(context.Context, string, steward.ApproveAgentRunInput) (domain.StewardAgentRun, error)
+	GetRuntimeExecutionControl(context.Context) (domain.StewardRuntimeExecutionControl, error)
+	PauseRuntimeExecution(context.Context, steward.SetRuntimeExecutionControlInput) (domain.StewardRuntimeExecutionControl, error)
+	ResumeRuntimeExecution(context.Context, steward.SetRuntimeExecutionControlInput) (domain.StewardRuntimeExecutionControl, error)
+}
+
 type Dependencies struct {
 	Config         config.Config
 	FileService    *filemeta.Service
@@ -200,6 +218,24 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/steward/automation/model-dispatches/run", handler.runStewardModelDispatches)
 		r.Get("/steward/automation/tools", handler.listStewardToolDefinitions)
 		r.Put("/steward/automation/tools", handler.upsertStewardToolDefinition)
+		r.Get("/steward/runtime/tools", handler.listStewardRuntimeTools)
+		r.Get("/steward/runtime/planner", handler.getStewardRuntimePlanner)
+		r.Get("/steward/runtime/control", handler.getStewardRuntimeControl)
+		r.Post("/steward/runtime/control/pause", handler.pauseStewardRuntime)
+		r.Post("/steward/runtime/control/resume", handler.resumeStewardRuntime)
+		r.Get("/steward/execution/control", handler.getStewardRuntimeControl)
+		r.Post("/steward/execution/control/stop", handler.pauseStewardRuntime)
+		r.Post("/steward/execution/control/resume", handler.resumeStewardRuntime)
+		r.Post("/steward/runs/plan", handler.planStewardAgentRun)
+		r.Get("/steward/runs", handler.listStewardAgentRuns)
+		r.Post("/steward/runs", handler.createStewardAgentRun)
+		r.Get("/steward/runs/{id}", handler.getStewardAgentRun)
+		r.Get("/steward/runs/{id}/evidence/{evidenceID}", handler.getStewardAgentRunEvidence)
+		r.Get("/steward/runs/{id}/events", handler.streamStewardAgentRunEvents)
+		r.Post("/steward/runs/{id}/start", handler.startStewardAgentRun)
+		r.Post("/steward/runs/{id}/cancel", handler.cancelStewardAgentRun)
+		r.Post("/steward/runs/{id}/resume", handler.resumeStewardAgentRun)
+		r.Post("/steward/runs/{id}/approve", handler.approveStewardAgentRun)
 		r.Get("/steward/conversations", handler.listStewardConversations)
 		r.Post("/steward/conversations", handler.createStewardConversation)
 		r.Get("/steward/conversations/{id}/messages", handler.listStewardConversationMessages)

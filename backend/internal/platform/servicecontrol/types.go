@@ -50,7 +50,18 @@ type InstallOptions struct {
 	AutonomyInterval            time.Duration     `json:"autonomy_interval"`
 	LogDir                      string            `json:"log_dir"`
 	ExtraEnv                    map[string]string `json:"extra_env,omitempty"`
+	ExplicitEnvironment         map[string]string `json:"-"`
+	ServiceArgs                 []string          `json:"service_args,omitempty"`
 	DryRun                      bool              `json:"dry_run"`
+	// WindowsHardened enables production service isolation on Windows. The
+	// executable is copied into InstallDir, sensitive environment values are
+	// stored in PrivateEnvironmentFile instead of the service registry, and the
+	// service SID is granted access to the explicitly listed protected paths.
+	WindowsHardened        bool              `json:"windows_hardened,omitempty"`
+	InstallDir             string            `json:"install_dir,omitempty"`
+	PrivateEnvironmentFile string            `json:"private_environment_file,omitempty"`
+	ProtectedPaths         []string          `json:"protected_paths,omitempty"`
+	ProtectedFileCopies    map[string]string `json:"-"` // destination -> trusted source
 }
 
 type EnvPatchOptions struct {
@@ -263,10 +274,66 @@ func NormalizeInstallOptionsForPlatform(platform string, input InstallOptions) (
 		normalizedExtraEnv[key] = value
 	}
 	out.ExtraEnv = normalizedExtraEnv
+	if out.ExplicitEnvironment != nil {
+		normalizedExplicit := make(map[string]string, len(out.ExplicitEnvironment))
+		for key, value := range out.ExplicitEnvironment {
+			key = strings.TrimSpace(key)
+			if err := validateEnvKey(key); err != nil {
+				return InstallOptions{}, err
+			}
+			normalizedExplicit[key] = value
+		}
+		out.ExplicitEnvironment = normalizedExplicit
+	}
+	out.ServiceArgs = append([]string(nil), out.ServiceArgs...)
+	if strings.TrimSpace(out.InstallDir) != "" {
+		out.InstallDir, err = filepath.Abs(out.InstallDir)
+		if err != nil {
+			return InstallOptions{}, fmt.Errorf("resolve install dir: %w", err)
+		}
+	}
+	if strings.TrimSpace(out.PrivateEnvironmentFile) != "" {
+		out.PrivateEnvironmentFile, err = filepath.Abs(out.PrivateEnvironmentFile)
+		if err != nil {
+			return InstallOptions{}, fmt.Errorf("resolve private environment file: %w", err)
+		}
+	}
+	out.ProtectedPaths = append([]string(nil), out.ProtectedPaths...)
+	for i, path := range out.ProtectedPaths {
+		path, err = filepath.Abs(path)
+		if err != nil {
+			return InstallOptions{}, fmt.Errorf("resolve protected path: %w", err)
+		}
+		out.ProtectedPaths[i] = path
+	}
+	protectedCopies := make(map[string]string, len(out.ProtectedFileCopies))
+	for destination, source := range out.ProtectedFileCopies {
+		absDestination, absErr := filepath.Abs(destination)
+		if absErr != nil {
+			return InstallOptions{}, fmt.Errorf("resolve protected destination: %w", absErr)
+		}
+		absSource, absErr := filepath.Abs(source)
+		if absErr != nil {
+			return InstallOptions{}, fmt.Errorf("resolve protected source: %w", absErr)
+		}
+		protectedCopies[absDestination] = absSource
+	}
+	out.ProtectedFileCopies = protectedCopies
+	if len(out.ServiceArgs) > 32 {
+		return InstallOptions{}, fmt.Errorf("service args must not exceed 32 entries")
+	}
+	for _, argument := range out.ServiceArgs {
+		if argument == "" || strings.ContainsAny(argument, "\x00\r\n") {
+			return InstallOptions{}, fmt.Errorf("service args must be non-empty single-line values")
+		}
+	}
 	return out, nil
 }
 
 func Environment(options InstallOptions) map[string]string {
+	if options.ExplicitEnvironment != nil {
+		return copyEnvMap(options.ExplicitEnvironment)
+	}
 	env := map[string]string{
 		"HTTP_ADDR":              options.HTTPAddr,
 		"STEWARD_PEER_HTTP_ADDR": options.PeerHTTPAddr,
@@ -354,6 +421,9 @@ func isSensitiveEnvKey(key string) bool {
 		return false
 	}
 	return key == "DATABASE_URL" ||
+		key == "STEWARD_BROKER_CLIENT_KEY" ||
+		key == "STEWARD_BROKER_CONTROL_KEY" ||
+		key == "STEWARD_BROKER_SIGNING_PRIVATE_KEY" ||
 		strings.Contains(key, "SECRET") ||
 		strings.Contains(key, "TOKEN") ||
 		strings.Contains(key, "PASSWORD") ||
@@ -490,6 +560,9 @@ func copyEnvMap(env map[string]string) map[string]string {
 }
 
 func serviceRunArgs(options InstallOptions) []string {
+	if len(options.ServiceArgs) > 0 {
+		return append([]string(nil), options.ServiceArgs...)
+	}
 	return []string{"run", "--service-name", options.Name, "--workdir", options.WorkDir}
 }
 
@@ -533,6 +606,13 @@ func Restart(ctx context.Context, name string, scope string, dryRun bool) (Resul
 
 func Status(ctx context.Context, name string, scope string) (StatusResult, error) {
 	return statusPlatform(ctx, defaultString(name, DefaultName()), defaultString(scope, DefaultScope()))
+}
+
+// ProtectServicePaths reapplies the platform service identity ACL after files
+// are created during post-install initialization. It is a no-op on platforms
+// whose service managers protect their environment files directly.
+func ProtectServicePaths(name string, paths []string) error {
+	return protectServicePathsPlatform(name, paths)
 }
 
 func PatchEnvironment(ctx context.Context, options EnvPatchOptions) (Result, error) {

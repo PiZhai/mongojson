@@ -31,6 +31,25 @@
 | S6 | 创造性智能层 | 实现传送门、自动工具、多代理会议等高级能力 | 可长期陪伴、可自我扩展的个人智能系统 |
 | S7 | 稳定化与长期运营 | 让系统可信、可维护、可迁移 | 备份恢复、性能治理、数据治理、版本升级 |
 
+## 执行能力重构轨道（R0-R4）
+
+S0-S7 描述产品能力的长期演进；R0-R4 是针对当前“任务记录系统无法可靠执行”的横向重构轨道，两者不能混用完成状态。
+
+| 重构阶段 | 目标 | 当前状态 |
+|---|---|---|
+| R0 | 固化执行有界上下文、状态机、权限边界、兼容与迁移策略 | 已建立 [ADR-0001](adr/0001-steward-execution-kernel.md) |
+| R1 | 持久化执行内核：手工计划、队列、调用、审批、验证、证据、SSE、恢复 | 已实现，见 [Runtime V2 基线](personal-ai-steward-runtime-v2.md) |
+| R2 | 自然语言 Planner、低风险用户态文件/Shell/浏览器工具、策略引擎 | 已实现，见 [R2 用户态执行层](personal-ai-steward-runtime-r2.md) 与 [ADR-0002](adr/0002-steward-r2-user-mode-execution.md) |
+| R2.5 | 执行控制面：计划预览、哈希绑定审批、实时状态、证据、单任务控制与持久化全局暂停 | 已实现，见 [R2.5 执行控制面](personal-ai-steward-runtime-r2-5.md) |
+| R2.6 | 执行安全层：统一紧急停止、证据治理、执行租约、watchdog 与进程树回收 | 已实现，见 [R2.6 执行安全层](personal-ai-steward-runtime-r2-6.md) |
+| R3.0 | 独立 Privilege Broker、短期单次能力令牌、A4-A7 提权隔离、签名证据与停止联动 | 已实现；见 [R3.0 独立 Privilege Broker](personal-ai-steward-runtime-r3.md) 与 [ADR-0003](adr/0003-steward-r3-privilege-broker.md)，A8/A9 凭据代理延后 |
+| R3.1 | 独立 Approval Authority、短时一次性签名审批票据、重启后防重放、Runtime/S4 统一审批证明 | 已实现；见 [R3.1 独立审批证明](personal-ai-steward-runtime-r3-1.md) 与 [ADR-0004](adr/0004-steward-r3-1-independent-approval.md) |
+| R3.2 | WebAuthn/Windows Hello/安全密钥交互审批、origin/RP/UV 绑定与认证器计数器检测 | 已实现；见 [R3.2 WebAuthn 交互式审批](personal-ai-steward-runtime-r3-2.md) 与 [ADR-0005](adr/0005-steward-r3-2-webauthn-approval.md) |
+| R3.3 | Broker 生产部署、独立恢复授权、防回滚 checkpoint、Service SID、restricted token 与原子 Job 隔离 | 已实现；见 [R3.3 Broker 生产加固](personal-ai-steward-runtime-r3-3.md) 与 [ADR-0006](adr/0006-steward-r3-3-production-hardening.md) |
+| R4 | 多 Agent、跨设备执行、补偿编排、长期自治和工具生成 | 未开始 |
+
+R2 已经能在显式目录、可执行文件和网络白名单内操作真实系统资源；R2.5 提供执行前后的计划、审批、状态和控制面；R2.6 又把 Runtime V2 与 S4 纳入同一个持久化紧急停止代际，并以证据治理、租约和 watchdog 防止正文泄露、活跃 worker 误接管与迟到提交。R3.0 进一步把 A4-A7 固定高权限能力迁入独立 system-scope Broker；R3.1 再以主进程不可持有的 Approval Authority 私钥、短时一次性票据和审计恢复防重放；R3.2 把日常确认升级为绑定 RP、origin、UV 和执行 claims 的 WebAuthn assertion。A8/A9 明文凭据代理、任意 Shell、跨设备高权限委派和不可逆自治仍未开放。
+
 ## 跨阶段原则
 
 - 每阶段都必须保留人工可控入口，不能只依赖自主行为。

@@ -7,6 +7,7 @@ import type {
   StewardAgentStatus,
   StewardActivitySession,
   StewardApprovalRequest,
+  StewardSignedApprovalProof,
   StewardAuditLog,
   StewardAutonomousRun,
   StewardAutonomyBulkDismissResult,
@@ -49,6 +50,12 @@ import type {
   StewardSyncStatus,
   StewardTask,
   StewardTimelineSegment,
+  StewardAgentRun,
+  StewardAgentRunSummary,
+  StewardEvidenceArtifact,
+  StewardRunEvent,
+  StewardRuntimeExecutionControl,
+  StewardRuntimePlannerStatus,
 } from '../../types/tooling'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
@@ -903,13 +910,13 @@ export async function retryStewardAutonomyProposal(id: string) {
   })
 }
 
-export async function approveStewardApprovalRequest(id: string, decisionReason = '') {
+export async function approveStewardApprovalRequest(id: string, decisionReason = '', approvalProof?: StewardSignedApprovalProof) {
   return request<{ approval: StewardApprovalRequest }>(`${API_BASE}/steward/autonomy/approvals/${id}/approve`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ decision_reason: decisionReason }),
+    body: JSON.stringify({ decision_reason: decisionReason, approval_proof: approvalProof }),
   })
 }
 
@@ -921,4 +928,116 @@ export async function rejectStewardApprovalRequest(id: string, decisionReason = 
     },
     body: JSON.stringify({ decision_reason: decisionReason }),
   })
+}
+
+export async function getStewardRuntimePlanner() {
+  return request<{ planner: StewardRuntimePlannerStatus }>(`${API_BASE}/steward/runtime/planner`)
+}
+
+export async function getStewardExecutionControl() {
+  return request<{ control: StewardRuntimeExecutionControl }>(`${API_BASE}/steward/execution/control`)
+}
+
+export async function setStewardExecutionStopped(stopped: boolean, reason: string) {
+  return request<{ control: StewardRuntimeExecutionControl }>(
+    `${API_BASE}/steward/execution/control/${stopped ? 'stop' : 'resume'}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason, changed_by: 'local-user' }),
+    },
+  )
+}
+
+export const getStewardRuntimeControl = getStewardExecutionControl
+export const setStewardRuntimePaused = setStewardExecutionStopped
+
+export async function getStewardAgentRuns(limit = 40, status = '') {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (status) params.set('status', status)
+  return request<{ runs: StewardAgentRunSummary[] }>(`${API_BASE}/steward/runs?${params.toString()}`)
+}
+
+export async function getStewardAgentRun(id: string) {
+  return request<{ run: StewardAgentRun }>(`${API_BASE}/steward/runs/${encodeURIComponent(id)}`)
+}
+
+export async function getStewardAgentRunEvidence(runId: string, evidenceId: string) {
+  return request<{ evidence: StewardEvidenceArtifact }>(
+    `${API_BASE}/steward/runs/${encodeURIComponent(runId)}/evidence/${encodeURIComponent(evidenceId)}`,
+  )
+}
+
+export async function planStewardAgentRun(payload: {
+  instruction: string
+  data_level: string
+  permission_ceiling: string
+  auto_start: boolean
+}) {
+  return request<{ run: StewardAgentRun }>(`${API_BASE}/steward/runs/plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function transitionStewardAgentRun(id: string, action: 'start' | 'cancel' | 'resume') {
+  return request<{ run: StewardAgentRun }>(
+    `${API_BASE}/steward/runs/${encodeURIComponent(id)}/${action}`,
+    { method: 'POST' },
+  )
+}
+
+export async function approveStewardAgentRun(id: string, planHash: string, reason: string, approvalProof?: StewardSignedApprovalProof) {
+  return request<{ run: StewardAgentRun }>(
+    `${API_BASE}/steward/runs/${encodeURIComponent(id)}/approve`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plan_hash: planHash,
+        granted_by: 'local-user',
+        scope: 'run',
+        reason,
+        approval_proof: approvalProof,
+      }),
+    },
+  )
+}
+
+export async function streamStewardAgentRunEvents(
+  id: string,
+  after: number,
+  onEvent: (event: StewardRunEvent) => void,
+  signal: AbortSignal,
+  onOpen?: () => void,
+) {
+  const url = new URL(`${API_BASE}/steward/runs/${encodeURIComponent(id)}/events`, window.location.origin)
+  url.searchParams.set('after', String(after))
+  const response = await fetch(url, { headers: { Accept: 'text/event-stream' }, signal })
+  if (!response.ok || !response.body) {
+    throw new Error((await response.text()) || `Event stream failed: ${response.status}`)
+  }
+  onOpen?.()
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      const data = block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n')
+      if (!data) continue
+      const parsed = JSON.parse(data) as StewardRunEvent | { error: string }
+      if ('error' in parsed) throw new Error(parsed.error)
+      onEvent(parsed)
+    }
+    if (done) break
+  }
 }

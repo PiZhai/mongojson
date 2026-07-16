@@ -47,6 +47,15 @@ func (s *Service) RunAutonomyCycle(ctx context.Context, limit int) (domain.Stewa
 	}
 	defer gate.Release()
 	ctx = gatedCtx
+	stopped, _, err := s.runtimeExecutionState(ctx)
+	if err != nil {
+		return domain.StewardAutonomyOverview{}, err
+	}
+	if stopped {
+		_, _ = s.recordAutonomousRun(ctx, nil, nil, RunModeSimulate, RunBlocked,
+			"system-wide execution emergency stop", "no proposals created or executed", "resume unified execution before scanning")
+		return s.GetAutonomyOverview(ctx)
+	}
 	settings, err := s.GetAutonomySettings(ctx)
 	if err != nil {
 		return domain.StewardAutonomyOverview{}, err

@@ -535,16 +535,28 @@ type StewardAutonomyProposal struct {
 }
 
 type StewardApprovalRequest struct {
-	ID              string     `json:"id"`
-	ProposalID      *string    `json:"proposal_id,omitempty"`
-	RequestedAction string     `json:"requested_action"`
-	RiskSummary     string     `json:"risk_summary"`
-	PlanSummary     string     `json:"plan_summary"`
-	Status          string     `json:"status"`
-	DecidedBy       string     `json:"decided_by"`
-	DecisionReason  string     `json:"decision_reason"`
-	CreatedAt       time.Time  `json:"created_at"`
-	DecidedAt       *time.Time `json:"decided_at,omitempty"`
+	ID                       string                           `json:"id"`
+	ProposalID               *string                          `json:"proposal_id,omitempty"`
+	RequestedAction          string                           `json:"requested_action"`
+	RiskSummary              string                           `json:"risk_summary"`
+	PlanSummary              string                           `json:"plan_summary"`
+	Status                   string                           `json:"status"`
+	DecidedBy                string                           `json:"decided_by"`
+	DecisionReason           string                           `json:"decision_reason"`
+	CreatedAt                time.Time                        `json:"created_at"`
+	DecidedAt                *time.Time                       `json:"decided_at,omitempty"`
+	ApprovalProofID          string                           `json:"approval_proof_id,omitempty"`
+	ApprovalKeyID            string                           `json:"approval_key_id,omitempty"`
+	ApprovalProofExpiresAt   *time.Time                       `json:"approval_proof_expires_at,omitempty"`
+	ApprovalProofRequired    bool                             `json:"approval_proof_required"`
+	ApprovalProofExpectation *StewardApprovalProofExpectation `json:"approval_proof_expectation,omitempty"`
+}
+
+type StewardApprovalProofExpectation struct {
+	Subject           string `json:"subject"`
+	PlanHash          string `json:"plan_hash"`
+	Capability        string `json:"capability"`
+	ControlGeneration int64  `json:"control_generation"`
 }
 
 type StewardAutonomousRun struct {

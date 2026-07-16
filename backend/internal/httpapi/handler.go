@@ -27,7 +27,10 @@ type Handler struct {
 	peerService StewardPeerStore
 }
 
-const maxUploadBytes = 64 << 20
+const (
+	maxUploadBytes       = 64 << 20
+	maxAgentRunBodyBytes = 1 << 20
+)
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -436,6 +439,339 @@ func (h *Handler) upsertStewardToolDefinition(w http.ResponseWriter, r *http.Req
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.StewardToolDefinition{"tool": item})
+}
+
+func (h *Handler) listStewardRuntimeTools(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListRuntimeToolSpecs(r.Context())
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardToolSpec{"tools": items})
+}
+
+func (h *Handler) getStewardRuntimePlanner(w http.ResponseWriter, _ *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardRuntimePlannerStatus{"planner": service.GetRuntimePlannerStatus()})
+}
+
+func (h *Handler) listStewardAgentRuns(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListAgentRuns(r.Context(), r.URL.Query().Get("status"), queryLimit(r, 40))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardAgentRunSummary{"runs": items})
+}
+
+func (h *Handler) getStewardRuntimeControl(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	control, err := service.GetRuntimeExecutionControl(r.Context())
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardRuntimeExecutionControl{"control": control})
+}
+
+func (h *Handler) pauseStewardRuntime(w http.ResponseWriter, r *http.Request) {
+	h.setStewardRuntimeControl(w, r, true)
+}
+
+func (h *Handler) resumeStewardRuntime(w http.ResponseWriter, r *http.Request) {
+	h.setStewardRuntimeControl(w, r, false)
+}
+
+func (h *Handler) setStewardRuntimeControl(w http.ResponseWriter, r *http.Request, paused bool) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	var body steward.SetRuntimeExecutionControlInput
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentRunBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "runtime control JSON body exceeds 1 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid runtime control JSON body: "+err.Error())
+		return
+	}
+	var (
+		control domain.StewardRuntimeExecutionControl
+		err     error
+	)
+	if paused {
+		control, err = service.PauseRuntimeExecution(r.Context(), body)
+	} else {
+		control, err = service.ResumeRuntimeExecution(r.Context(), body)
+	}
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardRuntimeExecutionControl{"control": control})
+}
+
+func (h *Handler) planStewardAgentRun(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	var body steward.PlanAgentRunInput
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentRunBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "natural-language plan JSON body exceeds 1 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid natural-language plan JSON body: "+err.Error())
+		return
+	}
+	run, err := service.PlanAgentRun(r.Context(), body)
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.StewardAgentRun{"run": run})
+}
+
+func (h *Handler) createStewardAgentRun(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	var body steward.CreateAgentRunInput
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentRunBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "agent run JSON body exceeds 1 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid agent run JSON body: "+err.Error())
+		return
+	}
+	run, err := service.CreateAgentRun(r.Context(), body)
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.StewardAgentRun{"run": run})
+}
+
+func (h *Handler) getStewardAgentRun(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	run, err := service.GetAgentRun(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardAgentRun{"run": run})
+}
+
+func (h *Handler) getStewardAgentRunEvidence(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	if !isLocalRequest(r) {
+		httpError(w, http.StatusForbidden, "execution evidence payload can only be revealed through the local management endpoint")
+		return
+	}
+	evidence, err := service.GetEvidenceArtifact(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "evidenceID"))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardEvidenceArtifact{"evidence": evidence})
+}
+
+func (h *Handler) startStewardAgentRun(w http.ResponseWriter, r *http.Request) {
+	h.transitionStewardAgentRun(w, r, "start")
+}
+
+func (h *Handler) cancelStewardAgentRun(w http.ResponseWriter, r *http.Request) {
+	h.transitionStewardAgentRun(w, r, "cancel")
+}
+
+func (h *Handler) resumeStewardAgentRun(w http.ResponseWriter, r *http.Request) {
+	h.transitionStewardAgentRun(w, r, "resume")
+}
+
+func (h *Handler) transitionStewardAgentRun(w http.ResponseWriter, r *http.Request, action string) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	var (
+		run domain.StewardAgentRun
+		err error
+	)
+	switch action {
+	case "start":
+		run, err = service.StartAgentRun(r.Context(), chi.URLParam(r, "id"))
+	case "cancel":
+		run, err = service.CancelAgentRun(r.Context(), chi.URLParam(r, "id"))
+	case "resume":
+		run, err = service.ResumeAgentRun(r.Context(), chi.URLParam(r, "id"))
+	default:
+		err = steward.ErrAgentRunInvalidTransition
+	}
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardAgentRun{"run": run})
+}
+
+func (h *Handler) approveStewardAgentRun(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	var body steward.ApproveAgentRunInput
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentRunBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "approval JSON body exceeds 1 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid approval JSON body: "+err.Error())
+		return
+	}
+	run, err := service.ApproveAgentRun(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardAgentRun{"run": run})
+}
+
+func (h *Handler) streamStewardAgentRunEvents(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	runID := chi.URLParam(r, "id")
+	if _, err := service.GetAgentRun(r.Context(), runID); err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		httpError(w, http.StatusInternalServerError, "streaming is not supported by this server")
+		return
+	}
+	after := queryInt64(r, "after")
+	if lastID := strings.TrimSpace(r.Header.Get("Last-Event-ID")); lastID != "" {
+		if parsed, err := strconv.ParseInt(lastID, 10, 64); err == nil && parsed > after {
+			after = parsed
+		}
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		events, err := service.ListAgentRunEvents(r.Context(), runID, after, 100)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(map[string]string{"error": err.Error()}))
+			flusher.Flush()
+			return
+		}
+		for _, event := range events {
+			payload, _ := json.Marshal(event)
+			_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, payload)
+			after = event.Sequence
+		}
+		if len(events) > 0 {
+			flusher.Flush()
+		}
+		if len(events) == 100 {
+			continue
+		}
+		run, err := service.GetAgentRun(r.Context(), runID)
+		if err != nil || runtimeRunTerminalStatus(run.Status) {
+			return
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func runtimeRunTerminalStatus(status string) bool {
+	switch status {
+	case steward.RuntimeRunSucceeded, steward.RuntimeRunFailed, steward.RuntimeRunCancelled, steward.RuntimeRunBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
+func mustJSON(value any) string {
+	payload, _ := json.Marshal(value)
+	return string(payload)
+}
+
+func respondStewardRuntimeError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, steward.ErrRuntimeV2Disabled), errors.Is(err, steward.ErrRuntimeR2Disabled):
+		status = http.StatusServiceUnavailable
+	case errors.Is(err, steward.ErrAgentRunNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, steward.ErrRuntimePolicyDenied),
+		errors.Is(err, steward.ErrRuntimePathDenied),
+		errors.Is(err, steward.ErrRuntimeCommandDenied),
+		errors.Is(err, steward.ErrAdvisorDataLevelDenied):
+		status = http.StatusForbidden
+	case errors.Is(err, steward.ErrRuntimePlannerUnsupported), errors.Is(err, steward.ErrRuntimePlannerToolUnavailable):
+		status = http.StatusUnprocessableEntity
+	case errors.Is(err, steward.ErrAgentRunInvalid), errors.Is(err, steward.ErrRuntimeToolInput):
+		status = http.StatusBadRequest
+	case errors.Is(err, steward.ErrAgentRunConflict),
+		errors.Is(err, steward.ErrAgentRunInvalidTransition),
+		errors.Is(err, steward.ErrAgentRunPlanHashMismatch):
+		status = http.StatusConflict
+	}
+	httpError(w, status, err.Error())
 }
 
 func (h *Handler) listStewardConversations(w http.ResponseWriter, r *http.Request) {
@@ -1887,6 +2223,15 @@ func (h *Handler) requireStewardAutomationPolicyService(w http.ResponseWriter) (
 	service, ok := h.deps.StewardService.(StewardAutomationPolicyStore)
 	if !ok || service == nil {
 		httpError(w, http.StatusServiceUnavailable, "steward automation policy service is not configured")
+		return nil, false
+	}
+	return service, true
+}
+
+func (h *Handler) requireStewardRuntimeService(w http.ResponseWriter) (StewardRuntimeStore, bool) {
+	service, ok := h.deps.StewardService.(StewardRuntimeStore)
+	if !ok || service == nil {
+		httpError(w, http.StatusServiceUnavailable, "steward runtime v2 service is not configured")
 		return nil, false
 	}
 	return service, true

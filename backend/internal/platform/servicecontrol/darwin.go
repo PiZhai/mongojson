@@ -17,6 +17,8 @@ import (
 	"strings"
 )
 
+func protectServicePathsPlatform(_ string, _ []string) error { return nil }
+
 func runPlatform(_ string, run func(context.Context) error) error {
 	return runWithSignals(run)
 }
