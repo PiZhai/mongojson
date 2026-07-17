@@ -28,8 +28,8 @@ func (s *Service) ensureS4Defaults(ctx context.Context, now time.Time) error {
 			Policy:             AutonomyPolicyConfirm,
 			RiskLevel:          "low",
 			MaxPermissionLevel: PermissionA3,
-			Enabled:            true,
-			ScopeSummary:       "从手动事件生成待确认的跟进任务建议",
+			Enabled:            false,
+			ScopeSummary:       "R4.8 已停用：由模型主动决策替代固定事件跟进规则",
 		},
 		{
 			Name:               "stale-open-task-review",
@@ -39,8 +39,8 @@ func (s *Service) ensureS4Defaults(ctx context.Context, now time.Time) error {
 			Policy:             AutonomyPolicySuggest,
 			RiskLevel:          "low",
 			MaxPermissionLevel: PermissionA3,
-			Enabled:            true,
-			ScopeSummary:       "为长期未更新任务生成复盘或检查清单建议",
+			Enabled:            false,
+			ScopeSummary:       "R4.8 已停用：由模型结合完整上下文决定是否复盘",
 		},
 		{
 			Name:               "event-knowledge-summary",
@@ -50,8 +50,8 @@ func (s *Service) ensureS4Defaults(ctx context.Context, now time.Time) error {
 			Policy:             AutonomyPolicySuggest,
 			RiskLevel:          "low",
 			MaxPermissionLevel: PermissionA3,
-			Enabled:            true,
-			ScopeSummary:       "把 D0/D1 事件整理为可索引的本地知识摘要",
+			Enabled:            false,
+			ScopeSummary:       "R4.8 已停用：由每日和每周模型归纳替代",
 		},
 		{
 			Name:               "due-task-reminder",
@@ -61,8 +61,8 @@ func (s *Service) ensureS4Defaults(ctx context.Context, now time.Time) error {
 			Policy:             AutonomyPolicySuggest,
 			RiskLevel:          "low",
 			MaxPermissionLevel: PermissionA3,
-			Enabled:            true,
-			ScopeSummary:       "为已到期或 24 小时内到期的本地任务生成提醒",
+			Enabled:            false,
+			ScopeSummary:       "R4.8 已停用：由模型判断提醒价值和时机",
 		},
 		{
 			Name:               "sync-conflict-diagnostics",
@@ -72,8 +72,8 @@ func (s *Service) ensureS4Defaults(ctx context.Context, now time.Time) error {
 			Policy:             AutonomyPolicySuggest,
 			RiskLevel:          "low",
 			MaxPermissionLevel: PermissionA3,
-			Enabled:            true,
-			ScopeSummary:       "同步冲突出现时建议运行只读诊断并保存本地报告",
+			Enabled:            false,
+			ScopeSummary:       "R4.8 已停用：由模型按需调用诊断工具",
 		},
 		{
 			Name:               "high-risk-guardrail",
@@ -83,8 +83,8 @@ func (s *Service) ensureS4Defaults(ctx context.Context, now time.Time) error {
 			Policy:             AutonomyPolicyNever,
 			RiskLevel:          "high",
 			MaxPermissionLevel: PermissionA4,
-			Enabled:            true,
-			ScopeSummary:       "高风险操作只生成计划和审批请求，不直接执行",
+			Enabled:            false,
+			ScopeSummary:       "R4.8 已停用规则；高风险阻断由 Runtime/Broker 安全层强制执行",
 		},
 	}
 	for _, rule := range defaults {
@@ -94,7 +94,7 @@ func (s *Service) ensureS4Defaults(ctx context.Context, now time.Time) error {
 				max_permission_level, enabled, scope_summary, created_at, updated_at
 			)
 			values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
-			on conflict (name) do nothing
+			on conflict (name) do update set enabled=false,scope_summary=excluded.scope_summary,updated_at=excluded.updated_at
 		`, uuid.NewString(), rule.Name, rule.TriggerType, rule.TargetType, rule.Action, rule.Policy,
 			rule.RiskLevel, rule.MaxPermissionLevel, rule.Enabled, rule.ScopeSummary, now); err != nil {
 			return fmt.Errorf("ensure autonomy rule: %w", err)

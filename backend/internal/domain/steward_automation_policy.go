@@ -57,6 +57,31 @@ type StewardModelDispatch struct {
 	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
+// StewardProactiveRun records one model-led daily or weekly reflection. The
+// model decides whether the outcome is silence, a conversation message, or a
+// governed execution; the record exists for deduplication and auditability.
+type StewardProactiveRun struct {
+	ID             string         `json:"id"`
+	Cadence        string         `json:"cadence"`
+	PeriodKey      string         `json:"period_key"`
+	PeriodStart    time.Time      `json:"period_start"`
+	PeriodEnd      time.Time      `json:"period_end"`
+	Status         string         `json:"status"`
+	Summary        string         `json:"summary"`
+	Analysis       map[string]any `json:"analysis"`
+	Decision       string         `json:"decision"`
+	ConversationID *string        `json:"conversation_id,omitempty"`
+	MessageID      *string        `json:"message_id,omitempty"`
+	ExecutionID    *string        `json:"execution_id,omitempty"`
+	Provider       string         `json:"provider"`
+	Model          string         `json:"model"`
+	ErrorSummary   string         `json:"error_summary,omitempty"`
+	AuditID        *string        `json:"audit_id,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	CompletedAt    *time.Time     `json:"completed_at,omitempty"`
+}
+
 type StewardToolDefinition struct {
 	ID                 string    `json:"id"`
 	Action             string    `json:"action"`

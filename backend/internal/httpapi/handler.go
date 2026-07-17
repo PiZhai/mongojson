@@ -2046,6 +2046,37 @@ func (h *Handler) runStewardAutonomyCycle(w http.ResponseWriter, r *http.Request
 	respondJSON(w, http.StatusOK, map[string]domain.StewardAutonomyOverview{"autonomy": overview})
 }
 
+func (h *Handler) listStewardProactiveRuns(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListProactiveRuns(r.Context(), queryLimit(r, 50))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardProactiveRun{"runs": items})
+}
+
+func (h *Handler) runStewardProactiveCycle(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardService(w)
+	if !ok {
+		return
+	}
+	var body steward.RunProactiveInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	items, err := service.RunProactiveCycle(r.Context(), body)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardProactiveRun{"runs": items})
+}
+
 func (h *Handler) listStewardAutonomyRules(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.requireStewardService(w)
 	if !ok {

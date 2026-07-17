@@ -71,6 +71,9 @@ export function StewardStatusBar({ refreshToken }: Props) {
   const broker = snapshot?.control.broker
   const brokerReady = Boolean(broker?.configured && broker.reachable && !broker.error)
   const watchdogReady = Boolean(snapshot?.control.watchdog.enabled && snapshot.control.watchdog.stale_invocations === 0)
+  const activityLoop = snapshot?.agent.background_loops?.find((loop) => loop.name === 'activity-sample')
+  const proactiveLoop = snapshot?.agent.background_loops?.find((loop) => loop.name === 'proactive')
+  const activityEnabled = snapshot?.agent.enabled_collectors?.includes('windows-activity') ?? false
 
   return (
     <section className="steward-status-bar" aria-label="管家运行状态">
@@ -87,6 +90,8 @@ export function StewardStatusBar({ refreshToken }: Props) {
           <StatusChip ready={snapshot?.agent.status === 'running'} label="Agent" value={agentLabel(snapshot?.agent.status)} />
           <StatusChip ready={snapshot?.model.advisor.enabled === true} label="模型" value={snapshot?.model.model || '未配置'} />
           <StatusChip ready={snapshot?.planner.enabled === true} label="规划" value={snapshot?.planner.enabled ? '可用' : '不可用'} />
+          <StatusChip ready={activityEnabled && activityLoop?.running === true} label="活动采集" value={activityEnabled ? activityLoop?.running ? '运行中' : '等待' : '未启用'} />
+          <StatusChip ready={proactiveLoop?.running === true} label="主动管家" value={proactiveLoop?.running ? '运行中' : '未启用'} />
           <StatusChip ready={!stopped} label="执行" value={stopped ? '已停止' : '允许'} />
           <StatusChip ready={watchdogReady} label="Watchdog" value={watchdogReady ? '正常' : '需检查'} />
           <StatusChip ready={brokerReady} label="Broker" value={!broker?.configured ? '未配置' : brokerReady ? '正常' : '异常'} />

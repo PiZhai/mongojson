@@ -574,6 +574,7 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 
 	defaults := []domain.StewardCollectorConfig{
 		{Name: "manual-input", Enabled: true, ScopeSummary: "用户手动创建事件和任务"},
+		{Name: "windows-activity", Enabled: runtime.GOOS == "windows", ScopeSummary: "Windows 前台应用与窗口标题活动采样，不采集键盘内容"},
 		{Name: "browser-link", Enabled: false, ScopeSummary: "用户手动导入网页链接"},
 		{Name: "clipboard-summary", Enabled: false, ScopeSummary: "剪贴板文本摘要，不保存疑似敏感字段原文"},
 		{Name: "watched-directory", Enabled: false, ScopeSummary: "指定目录文件新增、修改、删除元数据"},
@@ -607,6 +608,9 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureRuntimeToolSpecs(ctx, now); err != nil {
+		return err
+	}
+	if err := s.refreshEnabledCollectors(ctx); err != nil {
 		return err
 	}
 	// The database is the unified control-plane authority. Reconcile a configured

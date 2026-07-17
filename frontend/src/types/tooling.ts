@@ -652,6 +652,28 @@ export type StewardModelDispatch = {
   completed_at?: string | null;
 };
 
+export type StewardProactiveRun = {
+  id: string;
+  cadence: "daily" | "weekly" | string;
+  period_key: string;
+  period_start: string;
+  period_end: string;
+  status: "processing" | "silent" | "message" | "execution" | "blocked" | "failed" | string;
+  summary: string;
+  analysis: Record<string, unknown>;
+  decision: string;
+  conversation_id?: string;
+  message_id?: string;
+  execution_id?: string;
+  provider: string;
+  model: string;
+  error_summary?: string;
+  audit_id?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+};
+
 export type StewardToolDefinition = {
   id: string;
   action: string;

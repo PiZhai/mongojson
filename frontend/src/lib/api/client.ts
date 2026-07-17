@@ -19,6 +19,7 @@ import type {
   StewardDataPolicy,
   StewardPermissionPolicy,
   StewardModelDispatch,
+  StewardProactiveRun,
   StewardModelSettings,
   StewardToolDefinition,
   StewardConversation,
@@ -223,6 +224,18 @@ export async function getStewardModelDispatches(limit = 60) {
 export async function runStewardModelDispatches(limit = 20) {
   return request<{ model_dispatches: StewardModelDispatch[] }>(`${API_BASE}/steward/automation/model-dispatches/run?limit=${limit}`, {
     method: 'POST',
+  })
+}
+
+export async function getStewardProactiveRuns(limit = 50) {
+  return request<{ runs: StewardProactiveRun[] }>(`${API_BASE}/steward/proactive/runs?limit=${limit}`)
+}
+
+export async function runStewardProactiveCycle(payload: { force?: boolean; cadence?: 'daily' | 'weekly' | 'all' } = {}) {
+  return request<{ runs: StewardProactiveRun[] }>(`${API_BASE}/steward/proactive/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   })
 }
 

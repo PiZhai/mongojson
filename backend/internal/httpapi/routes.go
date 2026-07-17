@@ -102,6 +102,8 @@ type StewardStore interface {
 	ApproveRequest(context.Context, string, steward.DecideApprovalInput) (domain.StewardApprovalRequest, error)
 	RejectRequest(context.Context, string, steward.DecideApprovalInput) (domain.StewardApprovalRequest, error)
 	ListAutonomousRuns(context.Context, int) ([]domain.StewardAutonomousRun, error)
+	RunProactiveCycle(context.Context, steward.RunProactiveInput) ([]domain.StewardProactiveRun, error)
+	ListProactiveRuns(context.Context, int) ([]domain.StewardProactiveRun, error)
 }
 
 type StewardPeerStore interface {
@@ -355,6 +357,8 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/steward/autonomy/approvals/{id}/approve", handler.approveStewardApprovalRequest)
 		r.Post("/steward/autonomy/approvals/{id}/reject", handler.rejectStewardApprovalRequest)
 		r.Get("/steward/autonomy/runs", handler.listStewardAutonomousRuns)
+		r.Get("/steward/proactive/runs", handler.listStewardProactiveRuns)
+		r.Post("/steward/proactive/run", handler.runStewardProactiveCycle)
 	})
 }
 

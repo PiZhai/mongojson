@@ -21,6 +21,12 @@ const maxWatchedDirectoryEntries = 1000
 func normalizeCollectorSettings(name string, input map[string]any) (map[string]any, error) {
 	result := map[string]any{}
 	switch name {
+	case "windows-activity":
+		interval := collectorInt(input["sample_interval_seconds"], 15)
+		if interval < 5 || interval > 300 {
+			return nil, fmt.Errorf("windows-activity sample_interval_seconds must be between 5 and 300")
+		}
+		result["sample_interval_seconds"] = interval
 	case "watched-directory":
 		paths, err := collectorPaths(input["paths"])
 		if err != nil {
@@ -74,6 +80,27 @@ func normalizeCollectorSettings(name string, input map[string]any) (map[string]a
 		return nil, fmt.Errorf("unsupported collector %q", name)
 	}
 	return result, nil
+}
+
+// RunRealtimeCollectors samples sources that lose important information when
+// polled by the slower five-minute collection loop. Every source is still
+// governed by its collector switch and the data-policy gate in CreateObservation.
+func (s *Service) RunRealtimeCollectors(ctx context.Context) error {
+	collector, err := s.getCollector(ctx, "windows-activity")
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if !collector.Enabled {
+		return nil
+	}
+	runErr := s.collectForegroundActivity(ctx, collector.Settings)
+	if updateErr := s.recordCollectorRun(ctx, collector.Name, runErr); updateErr != nil {
+		return updateErr
+	}
+	return runErr
 }
 
 func (s *Service) RunEnabledCollectors(ctx context.Context) error {

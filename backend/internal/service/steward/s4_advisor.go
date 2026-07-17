@@ -54,6 +54,58 @@ type ObservationModelOutput struct {
 	SuggestedActions []string `json:"suggested_actions"`
 }
 
+// UnmarshalJSON tolerates a common model variation where a one-item list is
+// returned as a plain string. The service still exposes a stable []string
+// contract to the rest of the runtime.
+func (o *ObservationModelOutput) UnmarshalJSON(data []byte) error {
+	type rawOutput struct {
+		Summary          string          `json:"summary"`
+		Insights         json.RawMessage `json:"insights"`
+		SuggestedActions json.RawMessage `json:"suggested_actions"`
+	}
+	var raw rawOutput
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	insights, err := decodeModelStringList(raw.Insights)
+	if err != nil {
+		return fmt.Errorf("decode insights: %w", err)
+	}
+	actions, err := decodeModelStringList(raw.SuggestedActions)
+	if err != nil {
+		return fmt.Errorf("decode suggested_actions: %w", err)
+	}
+	o.Summary = strings.TrimSpace(raw.Summary)
+	o.Insights = insights
+	o.SuggestedActions = actions
+	return nil
+}
+
+func decodeModelStringList(raw json.RawMessage) ([]string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err == nil {
+		return compactModelStringList(values), nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("expected string or string array")
+	}
+	return compactModelStringList([]string{value}), nil
+}
+
+func compactModelStringList(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
 type ConversationAdvisorInput struct {
 	Message      string
 	DataLevel    string

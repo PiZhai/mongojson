@@ -16,6 +16,7 @@ import (
 const (
 	conversationRoleUser      = "user"
 	conversationRoleAssistant = "assistant"
+	conversationRoleSystem    = "system"
 )
 
 type CreateConversationInput struct {
@@ -71,7 +72,7 @@ func (s *Service) ListConversations(ctx context.Context, limit int) ([]domain.St
 	rows, err := s.db.Pool.Query(ctx, `
 		select c.id, c.title, c.status, c.data_level, count(m.id), max(m.created_at), c.created_at, c.updated_at
 		from steward_conversations c
-		left join steward_conversation_messages m on m.conversation_id = c.id
+		left join steward_conversation_messages m on m.conversation_id = c.id and m.role <> 'system'
 		where c.status <> 'deleted'
 		group by c.id
 		order by coalesce(max(m.created_at), c.updated_at) desc
@@ -101,7 +102,7 @@ func (s *Service) ListConversationMessages(ctx context.Context, conversationID s
 		from (
 			select id, conversation_id, role, content, data_level, model, context_summary, payload_encrypted, encrypted_payload, created_at
 			from steward_conversation_messages
-			where conversation_id = $1
+			where conversation_id = $1 and role <> 'system'
 			order by created_at desc
 			limit $2
 		) recent
@@ -320,7 +321,7 @@ func (s *Service) getConversation(ctx context.Context, id string) (domain.Stewar
 	err := s.db.Pool.QueryRow(ctx, `
 		select c.id, c.title, c.status, c.data_level, count(m.id), max(m.created_at), c.created_at, c.updated_at
 		from steward_conversations c
-		left join steward_conversation_messages m on m.conversation_id = c.id
+		left join steward_conversation_messages m on m.conversation_id = c.id and m.role <> 'system'
 		where c.id = $1 and c.status <> 'deleted'
 		group by c.id
 	`, id).Scan(&item.ID, &item.Title, &item.Status, &item.DataLevel, &item.MessageCount, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt)

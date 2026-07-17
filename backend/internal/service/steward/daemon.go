@@ -14,6 +14,8 @@ import (
 const (
 	DefaultHeartbeatInterval       = time.Minute
 	DefaultCollectionInterval      = 5 * time.Minute
+	DefaultActivitySampleInterval  = 15 * time.Second
+	DefaultProactiveInterval       = 5 * time.Minute
 	DefaultModelDispatchInterval   = time.Minute
 	DefaultRuntimeInterval         = time.Second
 	DefaultRuntimeWatchdogInterval = 2 * time.Second
@@ -22,6 +24,8 @@ const (
 type DaemonOptions struct {
 	HeartbeatInterval       time.Duration
 	CollectionInterval      time.Duration
+	ActivitySampleInterval  time.Duration
+	ProactiveInterval       time.Duration
 	SyncInterval            time.Duration
 	AutonomyInterval        time.Duration
 	AutonomyLimit           int
@@ -54,6 +58,8 @@ func DaemonOptionsFromEnv() DaemonOptions {
 	return normalizeDaemonOptions(DaemonOptions{
 		HeartbeatInterval:       durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
 		CollectionInterval:      durationEnv("STEWARD_COLLECTION_INTERVAL", DefaultCollectionInterval),
+		ActivitySampleInterval:  durationEnv("STEWARD_ACTIVITY_SAMPLE_INTERVAL", DefaultActivitySampleInterval),
+		ProactiveInterval:       durationEnv("STEWARD_PROACTIVE_INTERVAL", DefaultProactiveInterval),
 		SyncInterval:            durationEnv("STEWARD_SYNC_INTERVAL", 0),
 		AutonomyInterval:        durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
 		AutonomyLimit:           intEnv("STEWARD_AUTONOMY_LIMIT", 12),
@@ -91,6 +97,8 @@ func (d *Daemon) Start(parent context.Context) {
 	}{
 		{name: "heartbeat", interval: d.options.HeartbeatInterval},
 		{name: "collection", interval: d.options.CollectionInterval},
+		{name: "activity-sample", interval: d.options.ActivitySampleInterval},
+		{name: "proactive", interval: d.options.ProactiveInterval},
 		{name: "sync", interval: d.options.SyncInterval},
 		{name: "autonomy", interval: d.options.AutonomyInterval},
 		{name: "model-dispatch", interval: d.options.ModelDispatchInterval},
@@ -117,6 +125,21 @@ func (d *Daemon) Start(parent context.Context) {
 		lifecycleErr := d.service.RunLifecycleMaintenance(ctx)
 		collectorErr := d.service.RunEnabledCollectors(ctx)
 		return errors.Join(collectorErr, lifecycleErr)
+	}) || started
+	started = d.startLoop(ctx, "activity-sample", d.options.ActivitySampleInterval, func(ctx context.Context) error {
+		enabled, err := d.service.BackgroundWorkEnabled(ctx)
+		if err != nil || !enabled {
+			return err
+		}
+		return d.service.RunRealtimeCollectors(ctx)
+	}) || started
+	started = d.startLoop(ctx, "proactive", d.options.ProactiveInterval, func(ctx context.Context) error {
+		enabled, err := d.service.BackgroundWorkEnabled(ctx)
+		if err != nil || !enabled {
+			return err
+		}
+		_, err = d.service.RunProactiveCycle(ctx, RunProactiveInput{})
+		return err
 	}) || started
 	started = d.startLoop(ctx, "sync", d.options.SyncInterval, func(ctx context.Context) error {
 		enabled, err := d.service.BackgroundWorkEnabled(ctx)
@@ -293,6 +316,18 @@ func normalizeDaemonOptions(input DaemonOptions) DaemonOptions {
 	}
 	if out.CollectionInterval < 0 {
 		out.CollectionInterval = 0
+	}
+	if out.ActivitySampleInterval < 0 {
+		out.ActivitySampleInterval = 0
+	}
+	if out.ActivitySampleInterval == 0 {
+		out.ActivitySampleInterval = DefaultActivitySampleInterval
+	}
+	if out.ProactiveInterval < 0 {
+		out.ProactiveInterval = 0
+	}
+	if out.ProactiveInterval == 0 {
+		out.ProactiveInterval = DefaultProactiveInterval
 	}
 	if out.CollectionInterval == 0 {
 		out.CollectionInterval = DefaultCollectionInterval
