@@ -39,12 +39,24 @@ func TestWithStaticWorkspaceServesAPIAndSPA(t *testing.T) {
 	assertResponseBody(t, handler, "/healthz", "ok")
 	assertResponseBody(t, handler, "/assets/app.js", "console.log('steward')")
 	assertResponseBody(t, handler, "/tools/steward", "steward workspace")
+	assertCacheControl(t, handler, "/assets/app.js", "no-cache")
+	assertCacheControl(t, handler, "/tools/steward", "no-store")
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("missing asset status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func assertCacheControl(t *testing.T, handler http.Handler, path string, want string) {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	handler.ServeHTTP(rr, req)
+	if got := rr.Header().Get("Cache-Control"); got != want {
+		t.Fatalf("%s Cache-Control = %q, want %q", path, got, want)
 	}
 }
 

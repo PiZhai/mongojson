@@ -19,6 +19,38 @@ function sourcePath(path) {
   return relative(sourceRoot, path).split(sep).join('/')
 }
 
+function cssBraceBalance(content) {
+  let balance = 0
+  let quote = null
+  let inComment = false
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index]
+    const next = content[index + 1]
+    if (inComment) {
+      if (char === '*' && next === '/') {
+        inComment = false
+        index += 1
+      }
+      continue
+    }
+    if (quote) {
+      if (char === '\\') index += 1
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === '/' && next === '*') {
+      inComment = true
+      index += 1
+    } else if (char === '"' || char === "'") quote = char
+    else if (char === '{') balance += 1
+    else if (char === '}') {
+      balance -= 1
+      if (balance < 0) return balance
+    }
+  }
+  return balance
+}
+
 function resolveImport(importer, specifier) {
   if (!specifier.startsWith('.')) return null
   const candidate = resolve(dirname(importer), specifier)
@@ -68,6 +100,11 @@ for (const file of walk(sourceRoot).filter((path) => sourceExtensions.has(extnam
       violations.push(`${importerPath} bypasses the module registry: ${importedPath}`)
     }
   }
+}
+
+for (const file of walk(sourceRoot).filter((path) => extname(path) === '.css')) {
+  const balance = cssBraceBalance(readFileSync(file, 'utf8'))
+  if (balance !== 0) violations.push(`${sourcePath(file)} has unbalanced CSS braces (${balance})`)
 }
 
 const forbiddenLegacyPaths = [

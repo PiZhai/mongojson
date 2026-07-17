@@ -115,7 +115,11 @@ func (s *Service) CreateDocument(ctx context.Context, slug, title string) (domai
 }
 
 func (s *Service) GetDocument(ctx context.Context, slug string) (domain.MemoRecord, error) {
-	record, err := s.getBySlug(ctx, normalizeSlug(slug))
+	slug = normalizeSlug(slug)
+	if slug == DefaultSlug {
+		return s.GetOrCreate(ctx, slug)
+	}
+	record, err := s.getBySlug(ctx, slug)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.MemoRecord{}, ErrDocumentNotFound
 	}

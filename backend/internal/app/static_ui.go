@@ -38,6 +38,7 @@ func withStaticWorkspace(api http.Handler, uiDir string) (http.Handler, error) {
 		filePath, ok := workspaceFilePath(root, requestPath)
 		if ok {
 			if stat, statErr := os.Stat(filePath); statErr == nil && !stat.IsDir() {
+				setWorkspaceCacheHeaders(w, requestPath)
 				fileServer.ServeHTTP(w, r)
 				return
 			}
@@ -46,8 +47,22 @@ func withStaticWorkspace(api http.Handler, uiDir string) (http.Handler, error) {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-store")
 		http.ServeFile(w, r, indexPath)
 	}), nil
+}
+
+func setWorkspaceCacheHeaders(w http.ResponseWriter, requestPath string) {
+	if requestPath == "/index.html" {
+		w.Header().Set("Cache-Control", "no-store")
+		return
+	}
+	if strings.HasPrefix(requestPath, "/assets/") {
+		// The workspace is a local, frequently replaced deployment. Revalidate
+		// assets so a rebuilt bundle can never be shadowed by an older response
+		// that happened to use the same generated filename.
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 }
 
 func routeToManagementAPI(r *http.Request) bool {
