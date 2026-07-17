@@ -1,0 +1,1 @@
+export { stewardModule } from './manifest'

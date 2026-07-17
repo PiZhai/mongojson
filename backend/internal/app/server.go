@@ -17,9 +17,12 @@ import (
 	"mongojson/backend/internal/platform/database"
 	"mongojson/backend/internal/platform/peerdiscovery"
 	"mongojson/backend/internal/platform/storage"
+	"mongojson/backend/internal/service/canvas"
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/memosync"
+	"mongojson/backend/internal/service/music"
 	"mongojson/backend/internal/service/presets"
 	"mongojson/backend/internal/service/steward"
 	"mongojson/backend/internal/service/watchsync"
@@ -57,6 +60,11 @@ func NewServer() (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "outputs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir outputs: %w", err)
 	}
+	for _, directory := range []string{"music", "music-lyrics", "canvas-assets"} {
+		if err := os.MkdirAll(filepath.Join(cfg.StorageDir, directory), 0o755); err != nil {
+			return nil, fmt.Errorf("mkdir %s: %w", directory, err)
+		}
+	}
 
 	db, err := database.Connect(context.Background(), cfg.DatabaseURL)
 	if err != nil {
@@ -72,6 +80,9 @@ func NewServer() (*Server, error) {
 	jobService := jobs.NewService(db, fileStore, cfg.FileRetention)
 	presetService := presets.NewService(db)
 	memoService := memo.NewService(db)
+	memoSyncHub := memosync.NewHub()
+	musicService := music.NewService(db, fileStore)
+	canvasService := canvas.NewService(db, fileStore)
 	stewardService := steward.NewService(db, steward.WithPeerDiscovery(peerDiscovery), steward.WithStorageDir(cfg.StorageDir))
 	watchSyncHub := watchsync.NewHub()
 	if err := stewardService.EnsureDefaults(context.Background()); err != nil {
@@ -90,6 +101,9 @@ func NewServer() (*Server, error) {
 		FileService:    fileService,
 		JobService:     jobService,
 		MemoService:    memoService,
+		MemoSync:       memoSyncHub,
+		MusicService:   musicService,
+		CanvasService:  canvasService,
 		PresetService:  presetService,
 		StewardService: stewardService,
 		WatchSync:      watchSyncHub,

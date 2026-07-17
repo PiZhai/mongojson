@@ -1,0 +1,72 @@
+{
+  "description": "Authoritative source of truth for the project-wide minimum-grid layout. Desktop and landscape layouts keep their columns and scroll inside the workspace when space is scarce. Only portrait viewports at or below mobilePortraitMax switch to a stacked layout.",
+  "sizeTokens": {
+    "sidebarExpandedWidth": 228,
+    "sidebarCollapsedWidth": 72,
+    "contentPadding": 14,
+    "gapXs": 8,
+    "gapSm": 10,
+    "gapMd": 14,
+    "gapLg": 20,
+    "editorPaneMin": 420,
+    "cardTileMin": 220,
+    "summaryTileMin": 180,
+    "formFieldMin": 180,
+    "inspectPrimaryMin": 720,
+    "inspectRailMin": 280,
+    "inspectWorkspaceMin": 1014,
+    "jsonWorkspaceMin": 854,
+    "mongoWorkspaceMin": 854,
+    "visualizationInputMin": 420,
+    "visualizationRailMin": 360,
+    "visualizationWorkspaceMin": 794,
+    "memoOutlineMin": 140,
+    "memoOutlineMax": 200,
+    "memoEditorMin": 520,
+    "memoPrimaryMin": 660,
+    "memoCardRailMin": 380,
+    "memoCardRailMax": 400,
+    "memoWorkspaceMin": 1080,
+    "musicSidebarMin": 260,
+    "musicSidebarMax": 300,
+    "musicMainMin": 620,
+    "musicWorkspaceMin": 894,
+    "musicMiniInfoMin": 190,
+    "musicMiniPlaybackMin": 360,
+    "musicMiniActionsMin": 210,
+    "musicMiniWorkspaceMin": 788,
+    "watchStageMin": 640,
+    "watchRailMin": 340,
+    "watchWorkspaceMin": 996
+  },
+  "breakpoints": {
+    "shell.mobilePortraitMax": {
+      "value": 768,
+      "formula": "The only project-wide structural reflow: common portrait phone width. Desktop, tablet landscape and phone landscape retain their minimum grids.",
+      "layer": "shell",
+      "queryType": "media",
+      "containerName": null
+    },
+    "component.controlsCompactBelow": {
+      "value": 400,
+      "formula": "Component-local compact controls threshold used by narrow panels and the 380-400px memo card rail; it never changes the page grid.",
+      "layer": "component",
+      "queryType": "container",
+      "containerName": null
+    },
+    "memo.notesDrawerBelow": {
+      "value": 1600,
+      "formula": "The memo workspace moves its side-note rail into an overlay when its own container cannot hold all three panes.",
+      "layer": "module",
+      "queryType": "container",
+      "containerName": "memo-workspace"
+    },
+    "memo.outlineDrawerBelow": {
+      "value": 1120,
+      "formula": "The memo workspace also moves its outline into an overlay when its own container cannot hold the outline and minimum editor surface.",
+      "layer": "module",
+      "queryType": "container",
+      "containerName": "memo-workspace"
+    }
+  }
+}

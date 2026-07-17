@@ -7,15 +7,16 @@ type PanelProps = PropsWithChildren<{
   actions?: ReactNode
 }>
 
-export function Panel({ eyebrow, title, actions, children }: PanelProps) {
+export function Panel({ eyebrow, title, subtitle, actions, children }: PanelProps) {
   return (
-    <section className="panel">
+    <section className="panel layout-cell" data-layout-region="panel">
       <div className="panel-header">
         <div className="panel-header-copy">
           {eyebrow ? <div className="panel-eyebrow">{eyebrow}</div> : null}
           <h2 className="panel-title">{title}</h2>
+          {subtitle ? <p className="panel-subtitle">{subtitle}</p> : null}
         </div>
-        {actions ? <div className="toolbar">{actions}</div> : null}
+        {actions ? <div className="toolbar layout-toolbar">{actions}</div> : null}
       </div>
       {children}
     </section>

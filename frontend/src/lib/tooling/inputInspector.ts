@@ -3,7 +3,7 @@ import type {
   InspectResult,
   InspectSuggestedAction,
   InspectSuggestedActionId,
-} from '../../types/tooling'
+} from '../../shared/data/types'
 import { formatMongoJson, repairStandardJson, unescapeMongoJsonString } from '../mongodb-core'
 import { parseShellStatement } from './jsonFormatter'
 
@@ -17,31 +17,26 @@ const actionCatalog: Record<InspectSuggestedActionId, InspectSuggestedAction> = 
     id: 'repair',
     label: '修复 JSON',
     description: '显式把破损或宽松 JSON 修复为标准 JSON。',
-    targetPath: '/tools/mongodb-json?mode=repair',
   },
   unescape: {
     id: 'unescape',
     label: '还原字符串',
     description: '把转义后的 JSON 字符串还原成可读文本。',
-    targetPath: '/tools/mongodb-json?mode=unescape',
   },
   diff: {
     id: 'diff',
     label: '进入 Diff',
     description: '把提取结果作为左侧输入，进入 MongoDB 结构对比。',
-    targetPath: '/tools/mongodb-json?mode=diff',
   },
   table: {
     id: 'table',
     label: '构建表格',
     description: '将对象或对象数组展平，查看字段稳定性。',
-    targetPath: '/tools/mongodb-json?mode=table',
   },
   shell: {
     id: 'shell',
     label: 'Shell 检查',
     description: '识别集合、方法链、操作符和潜在查询风险。',
-    targetPath: '/tools/mongodb-json?mode=shell',
   },
   extract: {
     id: 'extract',

@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"mongojson/backend/internal/domain"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/music"
 )
 
 func TestReadyzUsesReadinessChecker(t *testing.T) {
@@ -162,6 +166,142 @@ func TestUploadFileRejectsBodyOverHardLimit(t *testing.T) {
 	}
 }
 
+func TestUploadMusicTrackAcceptsMetadata(t *testing.T) {
+	var captured music.UploadInput
+	store := fakeMusicStore{saveUpload: func(_ context.Context, input music.UploadInput) (music.UploadResult, error) {
+		captured = input
+		return music.UploadResult{Track: domain.MusicTrackRecord{ID: "track-1", Title: input.Title, OriginalName: input.Header.Filename, CreatedAt: time.Now()}}, nil
+	}}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("title", "Remote song")
+	_ = writer.WriteField("artist", "Artist")
+	part, err := writer.CreateFormFile("file", "song.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("audio-data"))
+	lyricPart, err := writer.CreateFormFile("lyric", "song.lrc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = lyricPart.Write([]byte("[00:00.00]Song"))
+	_ = writer.Close()
+
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodPost, "/api/music/tracks", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if captured.Title != "Remote song" || captured.Artist != "Artist" || captured.Header.Filename != "song.mp3" || captured.LyricHeader.Filename != "song.lrc" {
+		t.Fatalf("unexpected upload input: %#v", captured)
+	}
+}
+
+func TestUploadMusicTrackReturnsOKForDuplicate(t *testing.T) {
+	store := fakeMusicStore{saveUpload: func(_ context.Context, _ music.UploadInput) (music.UploadResult, error) {
+		return music.UploadResult{Track: domain.MusicTrackRecord{ID: "existing"}, Duplicate: true}, nil
+	}}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "song.mp3")
+	_, _ = part.Write([]byte("same-audio"))
+	_ = writer.Close()
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodPost, "/api/music/tracks", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"duplicate":true`) {
+		t.Fatalf("unexpected duplicate response %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListMusicTracksPassesCursorAndLimit(t *testing.T) {
+	store := fakeMusicStore{list: func(_ context.Context, cursor string, limit int) (music.Page, error) {
+		if cursor != "next-page" || limit != 7 {
+			t.Fatalf("unexpected pagination: cursor=%q limit=%d", cursor, limit)
+		}
+		return music.Page{Tracks: []domain.MusicTrackRecord{{ID: "track-1", Title: "Song"}}, NextCursor: "more"}, nil
+	}}
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodGet, "/api/music/tracks?cursor=next-page&limit=7", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"next_cursor":"more"`) {
+		t.Fatalf("unexpected list response %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStreamMusicTrackSupportsRanges(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "music-*.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.Write([]byte("0123456789"))
+	_ = file.Close()
+	store := fakeMusicStore{getByID: func(_ context.Context, id string) (domain.MusicTrackRecord, error) {
+		return domain.MusicTrackRecord{ID: id, OriginalName: "song.mp3", MIMEType: "audio/mpeg", StoragePath: file.Name()}, nil
+	}}
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodGet, "/api/music/tracks/track-1/content", nil)
+	req.Header.Set("Range", "bytes=2-5")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusPartialContent || rec.Body.String() != "2345" {
+		t.Fatalf("unexpected range response %d: %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStreamMusicLyrics(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "lyrics-*.lrc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.Write([]byte("[00:00.00]Lyrics"))
+	_ = file.Close()
+	store := fakeMusicStore{getByID: func(_ context.Context, id string) (domain.MusicTrackRecord, error) {
+		return domain.MusicTrackRecord{ID: id, LyricFileName: "song.lrc", LyricMIMEType: "text/plain", LyricStoragePath: file.Name()}, nil
+	}}
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodGet, "/api/music/tracks/track-1/lyrics", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "[00:00.00]Lyrics" {
+		t.Fatalf("unexpected lyric response %d: %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteMusicTrack(t *testing.T) {
+	deletedID := ""
+	store := fakeMusicStore{deleteTrack: func(_ context.Context, id string) error {
+		deletedID = id
+		return nil
+	}}
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := httptest.NewRequest(http.MethodDelete, "/api/music/tracks/track-1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent || deletedID != "track-1" {
+		t.Fatalf("unexpected delete response %d for %q", rec.Code, deletedID)
+	}
+}
+
 func TestSaveMemoAcceptsFloatingCards(t *testing.T) {
 	var captured memo.SaveInput
 	router := chi.NewRouter()
@@ -262,8 +402,37 @@ func (r repeatingReader) Read(p []byte) (int, error) {
 }
 
 type fakeMemoStore struct {
-	getOrCreate func(context.Context, string) (domain.MemoRecord, error)
-	saveMemo    func(context.Context, memo.SaveInput) (domain.MemoRecord, error)
+	getOrCreate    func(context.Context, string) (domain.MemoRecord, error)
+	saveMemo       func(context.Context, memo.SaveInput) (domain.MemoRecord, error)
+	listDocuments  func(context.Context) ([]domain.MemoDocumentSummary, error)
+	getDocument    func(context.Context, string) (domain.MemoRecord, error)
+	saveDocument   func(context.Context, string, memo.DocumentSaveInput) (domain.MemoRecord, error)
+	listSideNotes  func(context.Context, string) ([]domain.MemoSideNoteRecord, error)
+	createSideNote func(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
+	saveSideNote   func(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
+}
+
+type fakeMusicStore struct {
+	saveUpload  func(context.Context, music.UploadInput) (music.UploadResult, error)
+	list        func(context.Context, string, int) (music.Page, error)
+	getByID     func(context.Context, string) (domain.MusicTrackRecord, error)
+	deleteTrack func(context.Context, string) error
+}
+
+func (s fakeMusicStore) SaveUpload(ctx context.Context, input music.UploadInput) (music.UploadResult, error) {
+	return s.saveUpload(ctx, input)
+}
+
+func (s fakeMusicStore) List(ctx context.Context, cursor string, limit int) (music.Page, error) {
+	return s.list(ctx, cursor, limit)
+}
+
+func (s fakeMusicStore) GetByID(ctx context.Context, id string) (domain.MusicTrackRecord, error) {
+	return s.getByID(ctx, id)
+}
+
+func (s fakeMusicStore) Delete(ctx context.Context, id string) error {
+	return s.deleteTrack(ctx, id)
 }
 
 func (s fakeMemoStore) GetOrCreate(ctx context.Context, slug string) (domain.MemoRecord, error) {
@@ -279,3 +448,53 @@ func (s fakeMemoStore) SaveMemo(ctx context.Context, input memo.SaveInput) (doma
 	}
 	return domain.MemoRecord{ID: "memo-1", Slug: input.Slug, FloatingCards: []domain.MemoFloatingCard{}}, nil
 }
+
+func (s fakeMemoStore) CreateDocument(_ context.Context, slug, title string) (domain.MemoRecord, error) {
+	return domain.MemoRecord{ID: "memo-1", Slug: slug, Title: title, Revision: 1}, nil
+}
+
+func (s fakeMemoStore) ListDocuments(ctx context.Context) ([]domain.MemoDocumentSummary, error) {
+	if s.listDocuments != nil {
+		return s.listDocuments(ctx)
+	}
+	return []domain.MemoDocumentSummary{}, nil
+}
+
+func (s fakeMemoStore) GetDocument(ctx context.Context, slug string) (domain.MemoRecord, error) {
+	if s.getDocument != nil {
+		return s.getDocument(ctx, slug)
+	}
+	return domain.MemoRecord{ID: "memo-1", Slug: slug, Revision: 1}, nil
+}
+
+func (s fakeMemoStore) SaveDocument(ctx context.Context, id string, input memo.DocumentSaveInput) (domain.MemoRecord, error) {
+	if s.saveDocument != nil {
+		return s.saveDocument(ctx, id, input)
+	}
+	return domain.MemoRecord{ID: id, Title: input.Title, ContentJSON: input.ContentJSON, Revision: input.Revision + 1}, nil
+}
+
+func (s fakeMemoStore) DeleteDocument(context.Context, string) error { return nil }
+
+func (s fakeMemoStore) ListSideNotes(ctx context.Context, documentID string) ([]domain.MemoSideNoteRecord, error) {
+	if s.listSideNotes != nil {
+		return s.listSideNotes(ctx, documentID)
+	}
+	return []domain.MemoSideNoteRecord{}, nil
+}
+
+func (s fakeMemoStore) CreateSideNote(ctx context.Context, documentID string, input memo.SideNoteInput) (domain.MemoSideNoteRecord, error) {
+	if s.createSideNote != nil {
+		return s.createSideNote(ctx, documentID, input)
+	}
+	return domain.MemoSideNoteRecord{ID: "note-1", DocumentID: documentID, Revision: 1}, nil
+}
+
+func (s fakeMemoStore) SaveSideNote(ctx context.Context, id string, input memo.SideNoteInput) (domain.MemoSideNoteRecord, error) {
+	if s.saveSideNote != nil {
+		return s.saveSideNote(ctx, id, input)
+	}
+	return domain.MemoSideNoteRecord{ID: id, Revision: input.Revision + 1}, nil
+}
+
+func (s fakeMemoStore) DeleteSideNote(context.Context, string) (string, error) { return "memo-1", nil }

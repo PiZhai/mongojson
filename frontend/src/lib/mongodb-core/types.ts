@@ -1,4 +1,4 @@
-import type { JsonNode } from '../../types/tooling'
+import type { JsonNode } from '../../shared/data/types'
 
 export type MongoInputMode = 'mongo-json' | 'mongo-shell' | 'standard-json' | 'repair-json'
 

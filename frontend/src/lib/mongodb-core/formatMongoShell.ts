@@ -1,5 +1,5 @@
 import { formatShellStatement, parseShellStatement, validateShellStatement } from '../tooling/jsonFormatter'
-import type { ShellValidation } from '../../types/tooling'
+import type { ShellValidation } from '../../shared/data/types'
 import { validateMongoQueryPart } from './validateQuery'
 import type { MongoFormatResult, MongoQueryPartKind, MongoShellSummary } from './types'
 

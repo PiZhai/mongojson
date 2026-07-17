@@ -1,7 +1,7 @@
 import { Binary, BSONRegExp, Decimal128, Double, Int32, Long, MaxKey, MinKey, ObjectId, Timestamp, UUID } from 'bson'
 
 import { compareFieldKeys } from '../tooling/jsonFormatter/ast'
-import type { JsonNode } from '../../types/tooling'
+import type { JsonNode } from '../../shared/data/types'
 
 function quoteArg(value: string) {
   return JSON.stringify(value)

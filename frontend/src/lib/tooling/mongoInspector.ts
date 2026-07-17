@@ -1,4 +1,4 @@
-import type { MongoQueryRisk, PipelineInspectionResult, PipelineStageSummary, ShellMethod } from '../../types/tooling'
+import type { MongoQueryRisk, PipelineInspectionResult, PipelineStageSummary, ShellMethod } from '../../shared/data/types'
 import { parseShellStatement } from './jsonFormatter'
 
 const stageDescriptions: Record<string, string> = {

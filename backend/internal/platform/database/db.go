@@ -88,8 +88,87 @@ func (db *DB) Migrate(ctx context.Context) error {
 		);`,
 		`alter table tool_memos
 			add column if not exists floating_cards jsonb not null default '[]'::jsonb;`,
+		`alter table tool_memos add column if not exists content_json jsonb not null default '[]'::jsonb;`,
+		`alter table tool_memos add column if not exists schema_version integer not null default 0;`,
+		`alter table tool_memos add column if not exists revision bigint not null default 1;`,
+		`alter table tool_memos add column if not exists editor_type text not null default 'vditor';`,
+		`create table if not exists memo_side_notes (
+			id text primary key,
+			document_id uuid not null references tool_memos(id) on delete cascade,
+			anchor_block_id text,
+			body_json jsonb not null default '{"text":""}'::jsonb,
+			color text not null default '#fff7d6',
+			sort_order integer not null default 0,
+			collapsed boolean not null default false,
+			status text not null default 'active',
+			revision bigint not null default 1,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists memo_migration_backups (
+			document_id uuid not null references tool_memos(id) on delete cascade,
+			source_revision bigint not null,
+			content_html text not null,
+			content_text text not null,
+			floating_cards jsonb not null default '[]'::jsonb,
+			created_at timestamptz not null default now(),
+			primary key(document_id, source_revision)
+		);`,
+		`insert into memo_side_notes (
+			id, document_id, body_json, color, sort_order, collapsed, status, revision, created_at, updated_at
+		)
+		select
+			coalesce(nullif(card.value->>'id', ''), gen_random_uuid()::text),
+			memo.id,
+			jsonb_build_object('text', coalesce(card.value->>'content', '')),
+			case when coalesce(card.value->>'color', '') ~ '^#[0-9a-fA-F]{6}$' then lower(card.value->>'color') else '#fff7d6' end,
+			(card.ordinality - 1)::integer,
+			false,
+			'active',
+			1,
+			memo.created_at,
+			memo.updated_at
+		from tool_memos memo
+		cross join lateral jsonb_array_elements(coalesce(memo.floating_cards, '[]'::jsonb)) with ordinality as card(value, ordinality)
+		on conflict (id) do nothing;`,
+		`create table if not exists music_tracks (
+			id uuid primary key,
+			file_id uuid not null unique references tool_files(id) on delete cascade,
+			lyric_file_id uuid unique references tool_files(id) on delete set null,
+			content_sha256 text,
+			title text not null,
+			artist text not null default '',
+			note text not null default '',
+			duration_seconds double precision,
+			audio_quality jsonb not null default '{}'::jsonb,
+			created_at timestamptz not null default now()
+		);`,
+		`alter table music_tracks add column if not exists lyric_file_id uuid unique references tool_files(id) on delete set null;`,
+		`alter table music_tracks add column if not exists content_sha256 text;`,
+		`create table if not exists canvas_boards (
+			id uuid primary key,
+			title text not null,
+			scene_json jsonb not null default '{"elements":[],"appState":{},"files":{}}'::jsonb,
+			revision bigint not null default 1,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists canvas_assets (
+			id uuid primary key,
+			board_id uuid not null references canvas_boards(id) on delete cascade,
+			file_id uuid not null unique references tool_files(id) on delete cascade,
+			canvas_file_id text not null,
+			created_at timestamptz not null default now(),
+			unique(board_id, canvas_file_id)
+		);`,
 		`create index if not exists idx_tool_jobs_status on tool_jobs(status);`,
 		`create index if not exists idx_tool_files_expires_at on tool_files(expires_at);`,
+		`create index if not exists idx_music_tracks_created_at_id on music_tracks(created_at desc, id desc);`,
+		`create unique index if not exists idx_music_tracks_content_sha256 on music_tracks(content_sha256) where content_sha256 is not null;`,
+		`create index if not exists idx_canvas_boards_updated_at on canvas_boards(updated_at desc, id desc);`,
+		`create index if not exists idx_canvas_assets_board_id on canvas_assets(board_id);`,
+		`create index if not exists idx_memo_side_notes_document_order on memo_side_notes(document_id, sort_order, created_at);`,
+		`create index if not exists idx_memo_side_notes_anchor on memo_side_notes(document_id, anchor_block_id) where anchor_block_id is not null;`,
 		`create table if not exists steward_agent_status (
 			agent_id text primary key,
 			device_name text not null,

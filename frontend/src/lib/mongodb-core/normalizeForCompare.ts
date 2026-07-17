@@ -1,4 +1,4 @@
-import type { FormatMeta, JsonNode } from '../../types/tooling'
+import type { FormatMeta, JsonNode } from '../../shared/data/types'
 import { collectFieldPaths, computeMaxDepth, formatAst, sortAstNode } from '../tooling/jsonFormatter/ast'
 import { formatMongoJson } from './formatMongoJson'
 

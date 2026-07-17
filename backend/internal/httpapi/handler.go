@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,8 +20,11 @@ import (
 	"github.com/google/uuid"
 
 	"mongojson/backend/internal/domain"
+	"mongojson/backend/internal/service/canvas"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/memosync"
+	"mongojson/backend/internal/service/music"
 	"mongojson/backend/internal/service/steward"
 )
 
@@ -32,6 +37,10 @@ const (
 	maxUploadBytes       = 64 << 20
 	maxAgentRunBodyBytes = 1 << 20
 )
+const maxMusicUploadBytes = 512 << 20
+const maxCanvasSceneBytes = 16 << 20
+const maxMemoContentBytes = 16 << 20
+const multipartMemoryBytes = 32 << 20
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -82,7 +91,7 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "missing file")
 		return
 	}
-
+	defer file.Close()
 	record, err := h.deps.FileService.SaveUpload(r.Context(), file, header)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -128,6 +137,527 @@ func (h *Handler) saveMemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"memo": record})
+}
+
+func (h *Handler) createMemoDocument(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Slug  string `json:"slug"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.MemoService.CreateDocument(r.Context(), body.Slug, body.Title)
+	if err != nil {
+		if errors.Is(err, memo.ErrSlugConflict) {
+			httpError(w, http.StatusConflict, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.MemoRecord{"document": record})
+}
+
+func (h *Handler) listMemoDocuments(w http.ResponseWriter, r *http.Request) {
+	items, err := h.deps.MemoService.ListDocuments(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.MemoDocumentSummary{"documents": items})
+}
+
+func (h *Handler) getMemoDocument(w http.ResponseWriter, r *http.Request) {
+	record, err := h.deps.MemoService.GetDocument(r.Context(), chi.URLParam(r, "slug"))
+	if err != nil {
+		if errors.Is(err, memo.ErrDocumentNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"document": record})
+}
+
+func (h *Handler) saveMemoDocument(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title         string          `json:"title"`
+		ContentJSON   json.RawMessage `json:"content_json"`
+		ContentHTML   string          `json:"content_html"`
+		ContentText   string          `json:"content_markdown"`
+		SchemaVersion int             `json:"schema_version"`
+		Revision      int64           `json:"revision"`
+		EditorType    string          `json:"editor_type"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxMemoContentBytes))
+	if err := decoder.Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "memo document exceeds 16 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.MemoService.SaveDocument(r.Context(), chi.URLParam(r, "id"), memo.DocumentSaveInput{
+		Title: body.Title, ContentJSON: body.ContentJSON, ContentHTML: body.ContentHTML,
+		ContentText: body.ContentText, SchemaVersion: body.SchemaVersion,
+		Revision: body.Revision, EditorType: body.EditorType,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, memo.ErrDocumentNotFound):
+			httpError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, memo.ErrRevisionConflict):
+			httpError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, memo.ErrInvalidContentJSON):
+			httpError(w, http.StatusBadRequest, err.Error())
+		default:
+			httpError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	h.publishMemoEvent(r, memosync.EventDocumentUpdated, record.ID, record.Revision)
+	respondJSON(w, http.StatusOK, map[string]domain.MemoRecord{"document": record})
+}
+
+func (h *Handler) memoDocumentWebSocket(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MemoSync == nil {
+		httpError(w, http.StatusServiceUnavailable, "memo sync is not configured")
+		return
+	}
+	h.deps.MemoSync.ServeDocument(w, r, chi.URLParam(r, "id"))
+}
+
+func (h *Handler) deleteMemoDocument(w http.ResponseWriter, r *http.Request) {
+	documentID := chi.URLParam(r, "id")
+	if err := h.deps.MemoService.DeleteDocument(r.Context(), documentID); err != nil {
+		if errors.Is(err, memo.ErrDocumentNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.publishMemoEvent(r, memosync.EventDocumentDeleted, documentID, 0)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) listMemoSideNotes(w http.ResponseWriter, r *http.Request) {
+	items, err := h.deps.MemoService.ListSideNotes(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.MemoSideNoteRecord{"notes": items})
+}
+
+func (h *Handler) createMemoSideNote(w http.ResponseWriter, r *http.Request) {
+	input, ok := decodeMemoSideNoteInput(w, r)
+	if !ok {
+		return
+	}
+	record, err := h.deps.MemoService.CreateSideNote(r.Context(), chi.URLParam(r, "id"), input)
+	if err != nil {
+		respondMemoSideNoteError(w, err)
+		return
+	}
+	h.publishMemoEvent(r, memosync.EventNotesUpdated, record.DocumentID, 0)
+	respondJSON(w, http.StatusCreated, map[string]domain.MemoSideNoteRecord{"note": record})
+}
+
+func (h *Handler) saveMemoSideNote(w http.ResponseWriter, r *http.Request) {
+	input, ok := decodeMemoSideNoteInput(w, r)
+	if !ok {
+		return
+	}
+	record, err := h.deps.MemoService.SaveSideNote(r.Context(), chi.URLParam(r, "id"), input)
+	if err != nil {
+		respondMemoSideNoteError(w, err)
+		return
+	}
+	h.publishMemoEvent(r, memosync.EventNotesUpdated, record.DocumentID, 0)
+	respondJSON(w, http.StatusOK, map[string]domain.MemoSideNoteRecord{"note": record})
+}
+
+func (h *Handler) deleteMemoSideNote(w http.ResponseWriter, r *http.Request) {
+	documentID, err := h.deps.MemoService.DeleteSideNote(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		respondMemoSideNoteError(w, err)
+		return
+	}
+	h.publishMemoEvent(r, memosync.EventNotesUpdated, documentID, 0)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) publishMemoEvent(r *http.Request, eventType, documentID string, revision int64) {
+	if h.deps.MemoSync == nil {
+		return
+	}
+	h.deps.MemoSync.Publish(memosync.Event{
+		Type: eventType, DocumentID: documentID, Revision: revision,
+		ActorClientID: strings.TrimSpace(r.Header.Get("X-Memo-Client-ID")),
+	})
+}
+
+func decodeMemoSideNoteInput(w http.ResponseWriter, r *http.Request) (memo.SideNoteInput, bool) {
+	var body struct {
+		ID            string          `json:"id"`
+		AnchorBlockID *string         `json:"anchor_block_id"`
+		BodyJSON      json.RawMessage `json:"body_json"`
+		Color         string          `json:"color"`
+		SortOrder     int             `json:"sort_order"`
+		Collapsed     bool            `json:"collapsed"`
+		Status        string          `json:"status"`
+		Revision      int64           `json:"revision"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return memo.SideNoteInput{}, false
+	}
+	return memo.SideNoteInput{
+		ID: body.ID, AnchorBlockID: body.AnchorBlockID, BodyJSON: body.BodyJSON,
+		Color: body.Color, SortOrder: body.SortOrder, Collapsed: body.Collapsed,
+		Status: body.Status, Revision: body.Revision,
+	}, true
+}
+
+func respondMemoSideNoteError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, memo.ErrDocumentNotFound), errors.Is(err, memo.ErrSideNoteNotFound):
+		httpError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, memo.ErrRevisionConflict):
+		httpError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, memo.ErrInvalidSideNote):
+		httpError(w, http.StatusBadRequest, err.Error())
+	default:
+		httpError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+func (h *Handler) uploadMusicTrack(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxMusicUploadBytes)
+	if err := r.ParseMultipartForm(multipartMemoryBytes); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "music upload body exceeds 512 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid music upload")
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "missing file")
+		return
+	}
+	defer file.Close()
+	var lyric multipart.File
+	var lyricHeader *multipart.FileHeader
+	lyric, lyricHeader, err = r.FormFile("lyric")
+	if err != nil && !errors.Is(err, http.ErrMissingFile) {
+		httpError(w, http.StatusBadRequest, "invalid lyric file")
+		return
+	}
+	if lyric != nil {
+		defer lyric.Close()
+	}
+	var duration *float64
+	if value := strings.TrimSpace(r.FormValue("duration")); value != "" {
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || parsed < 0 {
+			httpError(w, http.StatusBadRequest, "duration must be a positive number")
+			return
+		}
+		duration = &parsed
+	}
+	result, err := h.deps.MusicService.SaveUpload(r.Context(), music.UploadInput{
+		File: file, Header: header, Lyric: lyric, LyricHeader: lyricHeader, Title: r.FormValue("title"), Artist: r.FormValue("artist"),
+		Note: r.FormValue("note"), Duration: duration, AudioQuality: json.RawMessage(r.FormValue("audio_quality")),
+	})
+	if err != nil {
+		if errors.Is(err, music.ErrUnsupportedAudio) || errors.Is(err, music.ErrUnsupportedLyric) {
+			httpError(w, http.StatusUnsupportedMediaType, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status := http.StatusCreated
+	if result.Duplicate {
+		status = http.StatusOK
+	}
+	respondJSON(w, status, result)
+}
+
+func (h *Handler) listMusicTracks(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	limit := 20
+	if value := r.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 100 {
+			httpError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	page, err := h.deps.MusicService.List(r.Context(), r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		if errors.Is(err, music.ErrInvalidCursor) {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) streamMusicTrack(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	record, err := h.deps.MusicService.GetByID(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	file, err := os.Open(record.StoragePath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "music file not found")
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot inspect music file")
+		return
+	}
+	w.Header().Set("Content-Type", record.MIMEType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": record.OriginalName}))
+	http.ServeContent(w, r, record.OriginalName, info.ModTime(), file)
+}
+
+func (h *Handler) streamMusicLyrics(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	record, err := h.deps.MusicService.GetByID(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || record.LyricStoragePath == "" {
+		httpError(w, http.StatusNotFound, music.ErrLyricsNotFound.Error())
+		return
+	}
+	file, err := os.Open(record.LyricStoragePath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, music.ErrLyricsNotFound.Error())
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot inspect lyric file")
+		return
+	}
+	w.Header().Set("Content-Type", record.LyricMIMEType)
+	http.ServeContent(w, r, record.LyricFileName, info.ModTime(), file)
+}
+
+func (h *Handler) deleteMusicTrack(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	if err := h.deps.MusicService.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
+		if errors.Is(err, music.ErrTrackNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) listCanvasBoards(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	items, err := h.deps.CanvasService.List(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.CanvasBoardRecord{"boards": items})
+}
+
+func (h *Handler) createCanvasBoard(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.CanvasService.Create(r.Context(), body.Title)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.CanvasBoardRecord{"board": record})
+}
+
+func (h *Handler) getCanvasBoard(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	record, err := h.deps.CanvasService.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, canvas.ErrBoardNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.CanvasBoardRecord{"board": record})
+}
+
+func (h *Handler) saveCanvasBoard(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	var body struct {
+		Title    string          `json:"title"`
+		Scene    json.RawMessage `json:"scene"`
+		Revision int64           `json:"revision"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCanvasSceneBytes)).Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "canvas scene exceeds 16 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := h.deps.CanvasService.Save(r.Context(), chi.URLParam(r, "id"), canvas.SaveInput{
+		Title: body.Title, Scene: body.Scene, Revision: body.Revision,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, canvas.ErrBoardNotFound):
+			httpError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, canvas.ErrRevisionConflict):
+			httpError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, canvas.ErrInvalidScene):
+			httpError(w, http.StatusBadRequest, err.Error())
+		default:
+			httpError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.CanvasBoardRecord{"board": record})
+}
+
+func (h *Handler) deleteCanvasBoard(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	if err := h.deps.CanvasService.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
+		if errors.Is(err, canvas.ErrBoardNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) uploadCanvasAsset(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(multipartMemoryBytes); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpError(w, http.StatusRequestEntityTooLarge, "canvas asset exceeds 64 MiB")
+			return
+		}
+		httpError(w, http.StatusBadRequest, "invalid canvas asset upload")
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "missing file")
+		return
+	}
+	defer file.Close()
+	record, err := h.deps.CanvasService.UploadAsset(r.Context(), chi.URLParam(r, "id"), r.FormValue("canvas_file_id"), file, header)
+	if err != nil {
+		if errors.Is(err, canvas.ErrBoardNotFound) {
+			httpError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]domain.CanvasAssetRecord{"asset": record})
+}
+
+func (h *Handler) streamCanvasAsset(w http.ResponseWriter, r *http.Request) {
+	if h.deps.CanvasService == nil {
+		httpError(w, http.StatusServiceUnavailable, "canvas storage is not configured")
+		return
+	}
+	record, err := h.deps.CanvasService.GetAsset(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	file, err := os.Open(record.StoragePath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "canvas asset file not found")
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot inspect canvas asset")
+		return
+	}
+	w.Header().Set("Content-Type", record.MIMEType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": record.OriginalName}))
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	http.ServeContent(w, r, record.OriginalName, info.ModTime(), file)
 }
 
 func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {

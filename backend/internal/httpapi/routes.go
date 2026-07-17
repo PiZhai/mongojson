@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 
@@ -13,9 +14,12 @@ import (
 	"mongojson/backend/internal/config"
 	"mongojson/backend/internal/domain"
 	"mongojson/backend/internal/privilegebroker"
+	"mongojson/backend/internal/service/canvas"
 	"mongojson/backend/internal/service/filemeta"
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
+	"mongojson/backend/internal/service/memosync"
+	"mongojson/backend/internal/service/music"
 	"mongojson/backend/internal/service/presets"
 	"mongojson/backend/internal/service/steward"
 	"mongojson/backend/internal/service/watchsync"
@@ -24,6 +28,32 @@ import (
 type MemoStore interface {
 	GetOrCreate(context.Context, string) (domain.MemoRecord, error)
 	SaveMemo(context.Context, memo.SaveInput) (domain.MemoRecord, error)
+	CreateDocument(context.Context, string, string) (domain.MemoRecord, error)
+	ListDocuments(context.Context) ([]domain.MemoDocumentSummary, error)
+	GetDocument(context.Context, string) (domain.MemoRecord, error)
+	SaveDocument(context.Context, string, memo.DocumentSaveInput) (domain.MemoRecord, error)
+	DeleteDocument(context.Context, string) error
+	ListSideNotes(context.Context, string) ([]domain.MemoSideNoteRecord, error)
+	CreateSideNote(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
+	SaveSideNote(context.Context, string, memo.SideNoteInput) (domain.MemoSideNoteRecord, error)
+	DeleteSideNote(context.Context, string) (string, error)
+}
+
+type MusicStore interface {
+	SaveUpload(context.Context, music.UploadInput) (music.UploadResult, error)
+	List(context.Context, string, int) (music.Page, error)
+	GetByID(context.Context, string) (domain.MusicTrackRecord, error)
+	Delete(context.Context, string) error
+}
+
+type CanvasStore interface {
+	Create(context.Context, string) (domain.CanvasBoardRecord, error)
+	List(context.Context) ([]domain.CanvasBoardRecord, error)
+	Get(context.Context, string) (domain.CanvasBoardRecord, error)
+	Save(context.Context, string, canvas.SaveInput) (domain.CanvasBoardRecord, error)
+	Delete(context.Context, string) error
+	UploadAsset(context.Context, string, string, multipart.File, *multipart.FileHeader) (domain.CanvasAssetRecord, error)
+	GetAsset(context.Context, string) (domain.CanvasAssetRecord, error)
 }
 
 type StewardStore interface {
@@ -191,6 +221,9 @@ type Dependencies struct {
 	FileService    *filemeta.Service
 	JobService     *jobs.Service
 	MemoService    MemoStore
+	MemoSync       *memosync.Hub
+	MusicService   MusicStore
+	CanvasService  CanvasStore
 	PresetService  *presets.Service
 	StewardService StewardStore
 	WatchSync      *watchsync.Hub
@@ -221,6 +254,28 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/files/{id}/download", handler.downloadFile)
 		r.Get("/memo", handler.getMemo)
 		r.Put("/memo", handler.saveMemo)
+		r.Get("/memo/documents", handler.listMemoDocuments)
+		r.Post("/memo/documents", handler.createMemoDocument)
+		r.Get("/memo/documents/{slug}", handler.getMemoDocument)
+		r.Put("/memo/documents/{id}", handler.saveMemoDocument)
+		r.Get("/memo/documents/{id}/ws", handler.memoDocumentWebSocket)
+		r.Delete("/memo/documents/{id}", handler.deleteMemoDocument)
+		r.Get("/memo/documents/{id}/notes", handler.listMemoSideNotes)
+		r.Post("/memo/documents/{id}/notes", handler.createMemoSideNote)
+		r.Put("/memo/notes/{id}", handler.saveMemoSideNote)
+		r.Delete("/memo/notes/{id}", handler.deleteMemoSideNote)
+		r.Post("/music/tracks", handler.uploadMusicTrack)
+		r.Get("/music/tracks", handler.listMusicTracks)
+		r.Get("/music/tracks/{id}/content", handler.streamMusicTrack)
+		r.Get("/music/tracks/{id}/lyrics", handler.streamMusicLyrics)
+		r.Delete("/music/tracks/{id}", handler.deleteMusicTrack)
+		r.Get("/canvas/boards", handler.listCanvasBoards)
+		r.Post("/canvas/boards", handler.createCanvasBoard)
+		r.Get("/canvas/boards/{id}", handler.getCanvasBoard)
+		r.Put("/canvas/boards/{id}", handler.saveCanvasBoard)
+		r.Delete("/canvas/boards/{id}", handler.deleteCanvasBoard)
+		r.Post("/canvas/boards/{id}/assets", handler.uploadCanvasAsset)
+		r.Get("/canvas/assets/{id}/content", handler.streamCanvasAsset)
 		r.Post("/jobs", handler.createJob)
 		r.Get("/jobs/{id}", handler.getJob)
 		r.Get("/presets", handler.listPresets)

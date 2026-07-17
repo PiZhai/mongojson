@@ -1,4 +1,4 @@
-import type { ToolStatus } from '../../types/tooling'
+import type { ToolStatus } from '../../shared/ui/toolStatus'
 
 const classMap: Record<ToolStatus['kind'], string> = {
   idle: '',
