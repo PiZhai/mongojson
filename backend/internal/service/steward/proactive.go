@@ -153,9 +153,13 @@ func (s *Service) processProactiveRun(ctx context.Context, run domain.StewardPro
 	if !ok || !advisor.Status().Enabled {
 		return s.finishProactiveRun(ctx, run, "failed", "", nil, fmt.Errorf("configured model does not support proactive analysis"))
 	}
+	content := string(encoded)
+	if !ownerModeEnabled() {
+		content = redactCredentialText(content)
+	}
 	analysis, err := analyzer.AnalyzeObservation(ctx, ObservationModelInput{
 		Source: "proactive:" + run.Cadence, Type: run.Cadence + "_reflection", DataLevel: DataD2,
-		ContentMode: policy.ModelContentMode, Content: redactCredentialText(string(encoded)),
+		ContentMode: policy.ModelContentMode, Content: content,
 	})
 	if err != nil {
 		return s.finishProactiveRun(ctx, run, "failed", "", nil, err)
@@ -235,6 +239,10 @@ func proactiveExecutionText(run domain.StewardProactiveRun, analysis Observation
 
 func proactiveDecisionPrompt(run domain.StewardProactiveRun, analysis ObservationModelOutput) string {
 	actions := strings.Join(analysis.SuggestedActions, "；")
+	executionRule := "安全层会重新计算权限和风险；高风险动作只能进入确认。"
+	if ownerModeEnabled() {
+		executionRule = "设备所有者已授权调用全部已提供工具；安全层只校验参数、真实能力、证据、签名和全局急停，不按 A/D 等级限制你的决定。"
+	}
 	return fmt.Sprintf(`这是一次%s主动审视，时间范围 %s 至 %s。
 模型归纳：%s
 可能的洞察：%s
@@ -245,9 +253,9 @@ func proactiveDecisionPrompt(run domain.StewardProactiveRun, analysis Observatio
 - 只需沟通时，用自然、简短的中文直接告诉用户，并说明依据；不要暴露内部分类。
 - 值得采取动作时，直接使用提供的 tools。可以创建任务、保存长期记忆或执行低风险帮助；不要把动作伪装成文本。
 - 不要根据单次活动推断稳定人格，不要重复现有任务，不要为了显得主动而制造提醒。
-- 安全层会重新计算权限和风险；高风险动作只能进入确认。`, run.Cadence,
+- %s`, run.Cadence,
 		run.PeriodStart.Local().Format(time.RFC3339), run.PeriodEnd.Local().Format(time.RFC3339),
-		analysis.Summary, strings.Join(analysis.Insights, "；"), actions)
+		analysis.Summary, strings.Join(analysis.Insights, "；"), actions, executionRule)
 }
 
 func (s *Service) buildProactiveContext(ctx context.Context, run domain.StewardProactiveRun) (proactiveContext, error) {
@@ -257,7 +265,7 @@ func (s *Service) buildProactiveContext(ctx context.Context, run domain.StewardP
 		return result, err
 	}
 	for _, item := range sessions {
-		if item.EndedAt.Before(run.PeriodStart) || item.StartedAt.After(run.PeriodEnd) || dataLevelRank(item.DataLevel) > dataLevelRank(DataD2) {
+		if item.EndedAt.Before(run.PeriodStart) || item.StartedAt.After(run.PeriodEnd) || (!ownerModeEnabled() && dataLevelRank(item.DataLevel) > dataLevelRank(DataD2)) {
 			continue
 		}
 		result.Activity = append(result.Activity, map[string]any{"title": item.Title, "summary": item.Summary, "source": item.Source, "start": item.StartedAt, "end": item.EndedAt, "samples": item.ObservationCount})
@@ -267,7 +275,7 @@ func (s *Service) buildProactiveContext(ctx context.Context, run domain.StewardP
 		return result, err
 	}
 	for _, item := range habits {
-		if dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2) {
+		if ownerModeEnabled() || dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2) {
 			result.Habits = append(result.Habits, map[string]any{"title": item.Title, "summary": item.Summary, "status": item.Status, "confidence": item.Confidence, "evidence": item.EvidenceCount})
 		}
 	}
@@ -276,7 +284,7 @@ func (s *Service) buildProactiveContext(ctx context.Context, run domain.StewardP
 		return result, err
 	}
 	for _, item := range insights {
-		if dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2) {
+		if ownerModeEnabled() || dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2) {
 			result.Insights = append(result.Insights, map[string]any{"title": item.Title, "summary": item.Summary, "suggested_action": item.SuggestedAction, "status": item.Status})
 		}
 	}
@@ -285,7 +293,7 @@ func (s *Service) buildProactiveContext(ctx context.Context, run domain.StewardP
 		return result, err
 	}
 	for _, item := range tasks {
-		if item.Status == StatusOpen && dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2) {
+		if item.Status == StatusOpen && (ownerModeEnabled() || dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2)) {
 			result.Tasks = append(result.Tasks, map[string]any{"title": item.Title, "description": item.Description, "due_at": item.DueAt, "priority": item.Priority})
 		}
 	}
@@ -294,7 +302,7 @@ func (s *Service) buildProactiveContext(ctx context.Context, run domain.StewardP
 		return result, err
 	}
 	for _, item := range events {
-		if dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2) && (item.UpdatedAt.After(run.PeriodStart) || item.Status == StatusActive) {
+		if (ownerModeEnabled() || dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2)) && (item.UpdatedAt.After(run.PeriodStart) || item.Status == StatusActive) {
 			result.Events = append(result.Events, map[string]any{"title": item.Title, "summary": item.Summary, "status": item.Status, "updated_at": item.UpdatedAt})
 		}
 	}
@@ -303,7 +311,7 @@ func (s *Service) buildProactiveContext(ctx context.Context, run domain.StewardP
 		return result, err
 	}
 	for _, item := range memories {
-		if dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2) && item.Status != StatusArchived {
+		if (ownerModeEnabled() || dataLevelRank(item.DataLevel) <= dataLevelRank(DataD2)) && item.Status != StatusArchived {
 			result.Memories = append(result.Memories, map[string]any{"title": item.Title, "summary": item.Summary, "scope": item.Scope, "confidence": item.Confidence})
 		}
 	}

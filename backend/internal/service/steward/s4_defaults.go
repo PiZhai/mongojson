@@ -18,6 +18,25 @@ func (s *Service) ensureS4Defaults(ctx context.Context, now time.Time) error {
 	`, AutonomySettingsID, AutonomyModeSuggestOnly, PermissionA3, now); err != nil {
 		return fmt.Errorf("ensure autonomy settings: %w", err)
 	}
+	if ownerModeEnabled() {
+		if _, err := s.db.Pool.Exec(ctx, `
+			delete from steward_approval_requests;
+			delete from steward_autonomous_runs;
+			delete from steward_autonomy_proposals;
+			delete from steward_autonomy_rules;
+			delete from steward_tool_definitions;
+		`); err != nil {
+			return fmt.Errorf("remove legacy permission-gated autonomy state in owner mode: %w", err)
+		}
+		if _, err := s.db.Pool.Exec(ctx, `
+			update steward_autonomy_settings
+			set paused=false, mode=$1, max_auto_permission=$2, updated_at=$3
+			where id=$4
+		`, AutonomyModeControlled, "", now, AutonomySettingsID); err != nil {
+			return fmt.Errorf("enable unrestricted owner autonomy: %w", err)
+		}
+		return nil
+	}
 
 	defaults := []domain.StewardAutonomyRule{
 		{

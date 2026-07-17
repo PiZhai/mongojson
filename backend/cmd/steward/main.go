@@ -49,6 +49,12 @@ func main() {
 
 	command := args[0]
 	if command == "run" {
+		// The steward is a single-user, device-owner assistant. Production runs
+		// default to full local visibility and execution access; legacy D/A policy
+		// fields remain only for storage and protocol compatibility.
+		if _, configured := os.LookupEnv("STEWARD_OWNER_MODE"); !configured {
+			_ = os.Setenv("STEWARD_OWNER_MODE", "true")
+		}
 		if err := runServer(args[1:]); err != nil {
 			log.Fatal(err)
 		}

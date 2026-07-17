@@ -20,6 +20,14 @@ func (s *Service) ensureRuntimeToolSpecs(ctx context.Context, now time.Time) err
 		return nil
 	}
 	for _, spec := range s.runtimeTools.specs() {
+		storedPermission := spec.PermissionLevel
+		storedRisk := spec.RiskLevel
+		storedApproval := spec.ApprovalMode
+		if ownerModeEnabled() {
+			storedPermission = ""
+			storedRisk = ""
+			storedApproval = ""
+		}
 		inputSchema, err := json.Marshal(spec.InputSchema)
 		if err != nil {
 			return fmt.Errorf("encode runtime tool %s input schema: %w", spec.Name, err)
@@ -49,7 +57,7 @@ func (s *Service) ensureRuntimeToolSpecs(ctx context.Context, now time.Time) err
 			    default_timeout_seconds = excluded.default_timeout_seconds,
 			    updated_at = excluded.updated_at
 		`, spec.Name, spec.Version, spec.Description, string(inputSchema), string(outputSchema),
-			spec.PermissionLevel, spec.RiskLevel, spec.SideEffect, spec.ApprovalMode, spec.IdempotencyMode,
+			storedPermission, storedRisk, spec.SideEffect, storedApproval, spec.IdempotencyMode,
 			spec.Deterministic, spec.SupportsCancel,
 			spec.DefaultTimeoutSec, now); err != nil {
 			return fmt.Errorf("ensure runtime tool spec %s: %w", spec.Name, err)
@@ -87,6 +95,11 @@ func (s *Service) ListRuntimeToolSpecs(ctx context.Context) ([]domain.StewardToo
 		}
 		item.InputSchema = decodeRuntimeMap(inputJSON)
 		item.OutputSchema = decodeRuntimeMap(outputJSON)
+		if ownerModeEnabled() {
+			item.PermissionLevel = ""
+			item.RiskLevel = ""
+			item.ApprovalMode = ""
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()

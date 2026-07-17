@@ -193,7 +193,7 @@ func (s *Service) UpsertOrchestrationAgent(ctx context.Context, input UpsertOrch
 		if name == "" || !ok {
 			return domain.StewardOrchestrationAgent{}, fmt.Errorf("%w: unknown allowlisted runtime tool %q", ErrOrchestrationInvalid, name)
 		}
-		if permissionRank(tool.Spec().PermissionLevel) > permissionRank(input.PermissionCeiling) {
+		if !ownerModeEnabled() && permissionRank(tool.Spec().PermissionLevel) > permissionRank(input.PermissionCeiling) {
 			return domain.StewardOrchestrationAgent{}, fmt.Errorf("%w: tool %q exceeds agent permission ceiling", ErrOrchestrationInvalid, name)
 		}
 		if !seen[name] {
@@ -373,10 +373,10 @@ func (s *Service) normalizeOrchestrationInput(ctx context.Context, input CreateO
 		if !ok || !agent.Enabled {
 			return input, "", fmt.Errorf("%w: node %q references an unavailable agent", ErrOrchestrationInvalid, node.Key)
 		}
-		if !validRuntimePermission(node.PermissionCeiling) || permissionRank(node.PermissionCeiling) > permissionRank(input.PermissionCeiling) || permissionRank(node.PermissionCeiling) > permissionRank(agent.PermissionCeiling) {
+		if !validRuntimePermission(node.PermissionCeiling) || (!ownerModeEnabled() && (permissionRank(node.PermissionCeiling) > permissionRank(input.PermissionCeiling) || permissionRank(node.PermissionCeiling) > permissionRank(agent.PermissionCeiling))) {
 			return input, "", fmt.Errorf("%w: node %q exceeds its permission delegation ceiling", ErrOrchestrationInvalid, node.Key)
 		}
-		if !validRuntimeDataLevel(node.DataLevel) || dataLevelRank(node.DataLevel) > dataLevelRank(input.DataLevel) || dataLevelRank(node.DataLevel) > dataLevelRank(agent.DataLevelCeiling) {
+		if !validRuntimeDataLevel(node.DataLevel) || (!ownerModeEnabled() && (dataLevelRank(node.DataLevel) > dataLevelRank(input.DataLevel) || dataLevelRank(node.DataLevel) > dataLevelRank(agent.DataLevelCeiling))) {
 			return input, "", fmt.Errorf("%w: node %q exceeds its data delegation ceiling", ErrOrchestrationInvalid, node.Key)
 		}
 		for depIndex, dependency := range node.DependsOn {
@@ -391,17 +391,17 @@ func (s *Service) normalizeOrchestrationInput(ctx context.Context, input CreateO
 				return input, "", fmt.Errorf("%w: node %q requires disabled remote execution", ErrOrchestrationInvalid, node.Key)
 			}
 			if node.TargetDevice != "auto" {
-				if err := s.validateRemoteExecutionDevice(ctx, node.TargetDevice, node.PermissionCeiling); err != nil {
+				if err := s.validateRemoteExecutionDevice(ctx, node.TargetDevice, node.PermissionCeiling, remoteStepsRequireBroker(node.Steps)); err != nil {
 					return input, "", fmt.Errorf("%w: node %q target device: %v", ErrOrchestrationInvalid, node.Key, err)
 				}
 			}
-			if permissionRank(node.PermissionCeiling) > permissionRank(PermissionA7) {
+			if !ownerModeEnabled() && permissionRank(node.PermissionCeiling) > permissionRank(PermissionA7) {
 				return input, "", fmt.Errorf("%w: remote node %q exceeds the R4.4 A7 ceiling", ErrOrchestrationInvalid, node.Key)
 			}
-			if permissionRank(node.PermissionCeiling) <= permissionRank(PermissionA2) && dataLevelRank(node.DataLevel) > dataLevelRank(DataD2) {
+			if !ownerModeEnabled() && permissionRank(node.PermissionCeiling) <= permissionRank(PermissionA2) && dataLevelRank(node.DataLevel) > dataLevelRank(DataD2) {
 				return input, "", fmt.Errorf("%w: low-permission remote node %q exceeds the R4.3 D2 ceiling", ErrOrchestrationInvalid, node.Key)
 			}
-			if permissionRank(node.PermissionCeiling) > permissionRank(PermissionA2) {
+			if remoteStepsRequireBroker(node.Steps) {
 				if !s.runtimeR3 || len(node.Steps) != 1 || node.Steps[0].ToolName != "privilege.execute" || len(node.CompensationSteps) != 0 {
 					return input, "", fmt.Errorf("%w: R4.4 remote privilege node %q must contain exactly one privilege.execute step and no compensation", ErrOrchestrationInvalid, node.Key)
 				}
@@ -450,7 +450,7 @@ func (s *Service) normalizeOrchestrationInput(ctx context.Context, input CreateO
 			if !allowed[step.ToolName] {
 				return input, "", fmt.Errorf("%w: agent %q is not delegated tool %q", ErrOrchestrationInvalid, agent.ID, step.ToolName)
 			}
-			if node.TargetDevice != "local" && permissionRank(node.PermissionCeiling) <= permissionRank(PermissionA2) && !s.remoteExecutionToolAllowed(step.ToolName) {
+			if node.TargetDevice != "local" && !remoteStepsRequireBroker(node.Steps) && !ownerModeEnabled() && !s.remoteExecutionToolAllowed(step.ToolName) {
 				return input, "", fmt.Errorf("%w: remote tool %q is outside the R4.3 allowlist", ErrOrchestrationInvalid, step.ToolName)
 			}
 		}
@@ -538,7 +538,7 @@ func (s *Service) CreateOrchestration(ctx context.Context, input CreateOrchestra
 		compensationSteps, _ := json.Marshal(node.CompensationSteps)
 		credentialRefs, _ := json.Marshal(node.CredentialRefs)
 		remoteCapability := ""
-		if node.TargetDevice != "local" && permissionRank(node.PermissionCeiling) > permissionRank(PermissionA2) && len(node.Steps) == 1 {
+		if node.TargetDevice != "local" && remoteStepsRequireBroker(node.Steps) {
 			remoteCapability, _ = node.Steps[0].Arguments["capability"].(string)
 			remoteCapability = strings.ToLower(strings.TrimSpace(remoteCapability))
 		}
@@ -1277,7 +1277,7 @@ func (s *Service) processOrchestration(ctx context.Context, id string, generatio
 		if node.Status != OrchestrationNodePending {
 			continue
 		}
-		if node.TargetDevice != "local" && permissionRank(node.PermissionCeiling) > permissionRank(PermissionA2) && node.RemoteBrokerDelegationID == "" {
+		if node.TargetDevice != "local" && node.RemotePrivilegeCapability != "" && node.RemoteBrokerDelegationID == "" {
 			continue
 		}
 		ready := true
@@ -1734,7 +1734,7 @@ func (s *Service) verifyRuntimeOrchestrationDelegationTx(ctx context.Context, tx
 	if claim.AgentID != agentID || claim.PlanHash != runPlanHash || claim.PermissionCeiling != runPermission || claim.DataLevel != runData {
 		return fmt.Errorf("delegation does not match the child run policy envelope")
 	}
-	if permissionRank(claim.PermissionCeiling) > permissionRank(agentPermission) || dataLevelRank(claim.DataLevel) > dataLevelRank(agentData) {
+	if !ownerModeEnabled() && (permissionRank(claim.PermissionCeiling) > permissionRank(agentPermission) || dataLevelRank(claim.DataLevel) > dataLevelRank(agentData)) {
 		return fmt.Errorf("agent policy was reduced after delegation")
 	}
 	var revokedTools int

@@ -11,6 +11,7 @@ import (
 )
 
 func TestOpenAIConversationToolsDescribeRuntimeContract(t *testing.T) {
+	t.Setenv("STEWARD_OWNER_MODE", "false")
 	tools, names := openAIConversationTools([]domain.StewardToolSpec{{
 		Name: "fs.create_directory", Version: "2.1.0", Description: "Create a directory.",
 		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}},
@@ -25,6 +26,24 @@ func TestOpenAIConversationToolsDescribeRuntimeContract(t *testing.T) {
 	description, _ := function["description"].(string)
 	if !strings.Contains(description, "permission=A2") || !strings.Contains(description, "side_effect=write") || !strings.Contains(description, "approval=always") {
 		t.Fatalf("tool working mode missing from description: %q", description)
+	}
+}
+
+func TestOwnerModeDescribesToolsWithoutLegacyPermissionRestrictions(t *testing.T) {
+	t.Setenv("STEWARD_OWNER_MODE", "true")
+	tools, _ := openAIConversationTools([]domain.StewardToolSpec{{
+		Name: "shell.exec", Description: "Run an installed executable.",
+		InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"},
+		PermissionLevel: PermissionA9, RiskLevel: "critical", SideEffect: RuntimeSideEffectWrite,
+		ApprovalMode: RuntimeApprovalAlways, IdempotencyMode: RuntimeIdempotencyNonIdempotent, DefaultTimeoutSec: 30,
+	}})
+	function, _ := tools[0]["function"].(map[string]any)
+	description, _ := function["description"].(string)
+	if strings.Contains(description, "permission=") || strings.Contains(description, "approval=") || strings.Contains(description, "A9") {
+		t.Fatalf("owner tool description leaked a legacy permission restriction: %q", description)
+	}
+	if !strings.Contains(description, "设备所有者已授权调用") || !strings.Contains(description, "side_effect=write") {
+		t.Fatalf("owner tool working mode is incomplete: %q", description)
 	}
 }
 

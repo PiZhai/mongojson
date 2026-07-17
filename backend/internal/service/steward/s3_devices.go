@@ -15,6 +15,10 @@ import (
 func (s *Service) ensureS3Defaults(ctx context.Context, hostname string, platform string, now time.Time) error {
 	agentID := s.agentIDValue()
 	publicKey := syncDevicePublicKeyFromEnv()
+	permissionLevel := PermissionA3
+	if ownerModeEnabled() {
+		permissionLevel = ""
+	}
 	if _, err := s.db.Pool.Exec(ctx, `
 		insert into steward_devices (
 			id, device_name, platform, role, trust_status, sync_enabled, permission_level, public_key, api_base_url,
@@ -25,10 +29,11 @@ func (s *Service) ensureS3Defaults(ctx context.Context, hostname string, platfor
 		set device_name = excluded.device_name,
 		    platform = excluded.platform,
 		    role = excluded.role,
+		    permission_level = excluded.permission_level,
 		    public_key = case when excluded.public_key <> '' then excluded.public_key else steward_devices.public_key end,
 		    last_seen_at = excluded.last_seen_at,
 		    updated_at = excluded.updated_at
-	`, agentID, hostname, platform, DeviceRoleLocal, DeviceTrusted, PermissionA3, publicKey, now); err != nil {
+	`, agentID, hostname, platform, DeviceRoleLocal, DeviceTrusted, permissionLevel, publicKey, now); err != nil {
 		return fmt.Errorf("ensure local steward device: %w", err)
 	}
 	if _, err := s.db.Pool.Exec(ctx, `
@@ -60,6 +65,9 @@ func (s *Service) ListDevices(ctx context.Context) ([]domain.StewardDevice, erro
 		device, err := scanDevice(rows)
 		if err != nil {
 			return nil, err
+		}
+		if ownerModeEnabled() {
+			device.PermissionLevel = ""
 		}
 		devices = append(devices, device)
 	}

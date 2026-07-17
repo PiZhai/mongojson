@@ -35,10 +35,10 @@ func (s *Service) CreateAutonomyProposal(ctx context.Context, input CreateAutono
 	blockedReason := ""
 	executor, executorFound := s.autonomyActionExecutor(action)
 	permissionPolicy, permissionPolicyErr := s.ResolvePermissionPolicy(ctx, permission, action)
-	if policy == AutonomyPolicyNever {
+	if !ownerModeEnabled() && policy == AutonomyPolicyNever {
 		status = ProposalBlocked
 		blockedReason = "rule policy is never"
-	} else if policy == AutonomyPolicyAuto && risk != "low" {
+	} else if !ownerModeEnabled() && policy == AutonomyPolicyAuto && risk != "low" {
 		status = ProposalBlocked
 		blockedReason = "only low-risk proposals may use automatic execution policy"
 	} else if permissionPolicyErr != nil || permissionPolicy.ExecutionMode == PolicyModeDeny {
@@ -58,14 +58,14 @@ func (s *Service) CreateAutonomyProposal(ctx context.Context, input CreateAutono
 		if !found || !tool.Enabled {
 			status = ProposalBlocked
 			blockedReason = "configured tool is missing or disabled"
-		} else if permissionRank(permission) < permissionRank(tool.PermissionLevel) {
+		} else if !ownerModeEnabled() && permissionRank(permission) < permissionRank(tool.PermissionLevel) {
 			status = ProposalBlocked
 			blockedReason = fmt.Sprintf("configured tool requires at least %s", tool.PermissionLevel)
 		} else if autonomyRiskRank(risk) < autonomyRiskRank(tool.RiskLevel) {
 			status = ProposalBlocked
 			blockedReason = fmt.Sprintf("configured tool requires risk level %s", tool.RiskLevel)
 		}
-	} else if maxPermission := defaultString(executor.Capability().MaxPermissionLevel, PermissionA3); permissionRank(permission) > permissionRank(maxPermission) {
+	} else if maxPermission := defaultString(executor.Capability().MaxPermissionLevel, PermissionA3); !ownerModeEnabled() && permissionRank(permission) > permissionRank(maxPermission) {
 		status = ProposalBlocked
 		blockedReason = fmt.Sprintf("action %s allows up to %s", action, maxPermission)
 	}

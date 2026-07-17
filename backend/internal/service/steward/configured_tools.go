@@ -131,7 +131,7 @@ func normalizeToolDefinition(input UpsertToolDefinitionInput) (domain.StewardToo
 	if err != nil {
 		return domain.StewardToolDefinition{}, err
 	}
-	if permissionRank(permission) < permissionRank(PermissionA4) || permissionRank(permission) > permissionRank(PermissionA7) {
+	if !ownerModeEnabled() && (permissionRank(permission) < permissionRank(PermissionA4) || permissionRank(permission) > permissionRank(PermissionA7)) {
 		return domain.StewardToolDefinition{}, fmt.Errorf("R3.0 configured broker tools must use A4-A7; use R2 tools for A0-A3 and keep A8-A9 disabled")
 	}
 	risk, err := autonomyRiskValue(input.RiskLevel, "high")
@@ -293,7 +293,7 @@ func (e configuredToolAutonomyExecutor) authorizedTool(ctx context.Context, prop
 	if !strings.EqualFold(filepath.Base(tool.Executable), capability.ExecutableName) || len(tool.Arguments) != capability.ArgumentCount {
 		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("registered tool metadata does not match the broker-owned capability")
 	}
-	if permissionRank(proposal.PermissionLevel) < permissionRank(capability.PermissionLevel) {
+	if !ownerModeEnabled() && permissionRank(proposal.PermissionLevel) < permissionRank(capability.PermissionLevel) {
 		return domain.StewardToolDefinition{}, privilegebroker.PublicCapability{}, fmt.Errorf("configured tool %s requires at least %s", e.action, capability.PermissionLevel)
 	}
 	if autonomyRiskRank(proposal.RiskLevel) < autonomyRiskRank(capability.RiskLevel) {

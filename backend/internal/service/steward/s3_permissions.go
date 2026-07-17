@@ -34,6 +34,10 @@ var defaultSyncPermissions = []defaultDevicePermission{
 }
 
 func (s *Service) ensureDefaultDevicePermissions(ctx context.Context, deviceID string, now time.Time) error {
+	if ownerModeEnabled() {
+		_, err := s.db.Pool.Exec(ctx, `delete from steward_device_permissions`)
+		return err
+	}
 	permissions := append([]defaultDevicePermission{}, defaultSyncPermissions...)
 	permissions = append(permissions,
 		defaultDevicePermission{Capability: "remote.execute", Policy: "deny", MaxPermissionLevel: PermissionA3, ScopeSummary: "远程设备默认不能触发本机执行"},
@@ -127,6 +131,9 @@ func (s *Service) authorizeDeviceSyncChange(ctx context.Context, deviceID string
 	capability := strings.TrimSpace(adapter.SyncCapability())
 	if !validDeviceCapability(capability) {
 		return fmt.Errorf("%w: entity type %q declares unsupported capability %q", ErrSyncPermissionDenied, entityType, capability)
+	}
+	if ownerModeEnabled() {
+		return nil
 	}
 	var policy, maxPermission string
 	err = s.db.Pool.QueryRow(ctx, `

@@ -149,7 +149,6 @@ export function advisorStatusText(advisor?: StewardAutonomyAdvisorStatus | null)
     '模型建议器已启用',
     advisor.provider,
     advisor.model,
-    advisor.max_data_level ? `最高数据 ${advisor.max_data_level}` : '',
     advisor.consecutive_failures ? `连续失败 ${advisor.consecutive_failures}` : '',
   ]
     .filter(Boolean)

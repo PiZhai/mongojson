@@ -66,7 +66,7 @@ func (s *Service) loadRemotePrivilegeNode(ctx context.Context, orchestrationID, 
 	}
 	_ = json.Unmarshal(refs, &item.credentialRefs)
 	_ = json.Unmarshal(steps, &item.steps)
-	if item.capability == "" || permissionRank(item.permission) <= permissionRank(PermissionA2) {
+	if item.capability == "" || !remoteStepsRequireBroker(item.steps) {
 		return item, fmt.Errorf("node is not an R4.4 remote privilege node")
 	}
 	return item, nil
@@ -122,7 +122,7 @@ func (s *Service) PreviewRemotePrivilegeNode(ctx context.Context, orchestrationI
 	deviceID := item.selectedDevice
 	var device domain.StewardDevice
 	if deviceID == "" {
-		device, err = s.selectRemoteExecutionDevice(ctx, item.targetDevice, item.permission)
+		device, err = s.selectRemoteExecutionDevice(ctx, item.targetDevice, item.permission, true)
 		if err != nil {
 			return RemotePrivilegePreview{}, err
 		}

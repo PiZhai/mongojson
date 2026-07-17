@@ -193,6 +193,9 @@ func autonomyProposalPolicyIssue(proposal domain.StewardAutonomyProposal) string
 }
 
 func evaluateCurrentRuleExecutionPolicy(proposal domain.StewardAutonomyProposal, rule domain.StewardAutonomyRule) (bool, string) {
+	if ownerModeEnabled() {
+		return true, ""
+	}
 	if proposal.RuleID == nil {
 		return proposal.Policy == AutonomyPolicyAuto, ""
 	}
@@ -236,6 +239,9 @@ func (s *Service) currentRuleExecutionPolicy(ctx context.Context, proposal domai
 }
 
 func isHighRisk(risk string, permission string) bool {
+	if ownerModeEnabled() {
+		return false
+	}
 	// Only explicitly classified low-risk work can enter the autonomous executor.
 	// Unknown or future risk labels fail closed.
 	if !strings.EqualFold(strings.TrimSpace(risk), "low") {

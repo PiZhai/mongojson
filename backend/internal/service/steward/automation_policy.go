@@ -53,6 +53,15 @@ type UpsertPermissionPolicyInput struct {
 }
 
 func (s *Service) ensureAutomationPolicyDefaults(ctx context.Context, now time.Time) error {
+	if ownerModeEnabled() {
+		if _, err := s.db.Pool.Exec(ctx, `
+			delete from steward_data_policies;
+			delete from steward_permission_policies;
+		`); err != nil {
+			return fmt.Errorf("remove legacy D/A automation policies in owner mode: %w", err)
+		}
+		return nil
+	}
 	dataDefaults := []domain.StewardDataPolicy{
 		{DataLevel: DataD0, SourcePattern: "*", CollectMode: PolicyModeAuto, ModelMode: PolicyModeAuto, ModelContentMode: ModelContentRaw, AllowLocalPersistence: true, AllowSync: true, Description: "用户输入可采集并按模型策略处理"},
 		{DataLevel: DataD1, SourcePattern: "*", CollectMode: PolicyModeAuto, ModelMode: PolicyModeAuto, ModelContentMode: ModelContentSummary, AllowLocalPersistence: true, AllowSync: true, Description: "公开资料默认发送摘要"},
@@ -77,7 +86,6 @@ func (s *Service) ensureAutomationPolicyDefaults(ctx context.Context, now time.T
 			return fmt.Errorf("ensure %s data policy: %w", item.DataLevel, err)
 		}
 	}
-
 	for rank := 0; rank <= 9; rank++ {
 		level := fmt.Sprintf("A%d", rank)
 		mode := PolicyModeDeny
@@ -304,6 +312,14 @@ func (s *Service) ResolveDataPolicy(ctx context.Context, level, source string) (
 	if err != nil {
 		return domain.StewardDataPolicy{}, err
 	}
+	if ownerModeEnabled() {
+		return domain.StewardDataPolicy{
+			DataLevel: level, SourcePattern: "*", CollectMode: PolicyModeAuto,
+			ModelMode: PolicyModeAuto, ModelContentMode: ModelContentRaw,
+			AllowLocalPersistence: true, AllowSync: true,
+			Description: "设备所有者模式：完整本地数据可供模型和工具访问",
+		}, nil
+	}
 	items, err := s.ListDataPolicies(ctx)
 	if err != nil {
 		return domain.StewardDataPolicy{}, err
@@ -332,6 +348,12 @@ func (s *Service) ResolvePermissionPolicy(ctx context.Context, level, action str
 	level, err := autonomyPermissionValue(level, "")
 	if err != nil {
 		return domain.StewardPermissionPolicy{}, err
+	}
+	if ownerModeEnabled() {
+		return domain.StewardPermissionPolicy{
+			PermissionLevel: level, ActionPattern: "*", ExecutionMode: PolicyModeAuto,
+			MaxBatchSize: 10000, Description: "设备所有者模式：允许模型自主调用本机能力",
+		}, nil
 	}
 	items, err := s.ListPermissionPolicies(ctx)
 	if err != nil {

@@ -346,7 +346,7 @@ func (p *openAICompatibleRuntimePlanner) Plan(ctx context.Context, input Runtime
 	if !p.Status().Enabled {
 		return RuntimePlanDraft{}, fmt.Errorf("%w: %s", ErrRuntimePlannerUnsupported, p.Status().Reason)
 	}
-	if dataLevelRank(input.DataLevel) > dataLevelRank(p.maxDataLevel) {
+	if !ownerModeEnabled() && dataLevelRank(input.DataLevel) > dataLevelRank(p.maxDataLevel) {
 		return RuntimePlanDraft{}, fmt.Errorf("%w: data level %s exceeds planner max %s", ErrAdvisorDataLevelDenied, input.DataLevel, p.maxDataLevel)
 	}
 	toolsJSON, _ := json.Marshal(input.Tools)

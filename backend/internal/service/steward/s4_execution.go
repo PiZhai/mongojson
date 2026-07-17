@@ -96,7 +96,13 @@ func (s *Service) autonomyActionCapabilities() []domain.StewardAutonomyActionCap
 	if s == nil || s.actionExecutors == nil {
 		return []domain.StewardAutonomyActionCapability{}
 	}
-	return s.actionExecutors.capabilities()
+	capabilities := s.actionExecutors.capabilities()
+	if ownerModeEnabled() {
+		for index := range capabilities {
+			capabilities[index].MaxPermissionLevel = ""
+		}
+	}
+	return capabilities
 }
 
 type localTaskAutonomyExecutor struct {
@@ -222,7 +228,7 @@ func executorAllowsProposal(executor AutonomyActionExecutor, proposal domain.Ste
 		return fmt.Errorf("executor action %s does not match proposal action %s", capability.Action, proposal.Action)
 	}
 	maxPermission := defaultString(capability.MaxPermissionLevel, PermissionA3)
-	if permissionRank(proposal.PermissionLevel) > permissionRank(maxPermission) {
+	if !ownerModeEnabled() && permissionRank(proposal.PermissionLevel) > permissionRank(maxPermission) {
 		return fmt.Errorf("action %s allows up to %s, proposal requires %s", capability.Action, maxPermission, proposal.PermissionLevel)
 	}
 	return nil

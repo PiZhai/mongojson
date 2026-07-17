@@ -616,28 +616,6 @@ func (db *DB) Migrate(ctx context.Context) error {
 			timeout_seconds integer not null default 30,
 			updated_at timestamptz not null default now()
 		);`,
-		`create table if not exists steward_proactive_runs (
-			id uuid primary key,
-			cadence text not null,
-			period_key text not null,
-			period_start timestamptz not null,
-			period_end timestamptz not null,
-			status text not null default 'processing',
-			summary text not null default '',
-			analysis jsonb not null default '{}'::jsonb,
-			decision text not null default '',
-			conversation_id uuid references steward_conversations(id) on delete set null,
-			message_id uuid references steward_conversation_messages(id) on delete set null,
-			execution_id uuid references steward_conversation_executions(id) on delete set null,
-			provider text not null default '',
-			model text not null default '',
-			error_summary text not null default '',
-			audit_id uuid references steward_audit_logs(id) on delete set null,
-			created_at timestamptz not null default now(),
-			updated_at timestamptz not null default now(),
-			completed_at timestamptz,
-			unique(cadence, period_key)
-		);`,
 		`create table if not exists steward_autonomy_rules (
 			id uuid primary key,
 			name text not null unique,
@@ -1346,6 +1324,28 @@ func (db *DB) Migrate(ctx context.Context) error {
 			check ((kind='run' and run_id is not null and orchestration_id is null)
 				or (kind='orchestration' and orchestration_id is not null and run_id is null)
 				or (kind='question' and run_id is null and orchestration_id is null))
+		);`,
+		`create table if not exists steward_proactive_runs (
+			id uuid primary key,
+			cadence text not null,
+			period_key text not null,
+			period_start timestamptz not null,
+			period_end timestamptz not null,
+			status text not null default 'processing',
+			summary text not null default '',
+			analysis jsonb not null default '{}'::jsonb,
+			decision text not null default '',
+			conversation_id uuid references steward_conversations(id) on delete set null,
+			message_id uuid references steward_conversation_messages(id) on delete set null,
+			execution_id uuid references steward_conversation_executions(id) on delete set null,
+			provider text not null default '',
+			model text not null default '',
+			error_summary text not null default '',
+			audit_id uuid references steward_audit_logs(id) on delete set null,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			completed_at timestamptz,
+			unique(cadence, period_key)
 		);`,
 		`alter table steward_conversation_executions add column if not exists model_state jsonb not null default '{}'::jsonb;`,
 		`alter table steward_events

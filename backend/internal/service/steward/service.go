@@ -367,6 +367,7 @@ type UpdateCollectorInput struct {
 }
 
 func NewService(db *database.DB, options ...ServiceOption) *Service {
+	ownerMode := ownerModeEnabled()
 	service := &Service{
 		db:                         db,
 		agentID:                    envOrDefault("STEWARD_AGENT_ID", DefaultAgentID),
@@ -375,13 +376,13 @@ func NewService(db *database.DB, options ...ServiceOption) *Service {
 		proposalScorer:             NewRuleBasedAutonomyProposalScorer(),
 		retryPolicy:                autonomyRetryPolicyFromEnv(),
 		peerDiscovery:              disabledPeerDiscovery{},
-		runtimeV2:                  boolEnv("STEWARD_RUNTIME_V2", false),
-		runtimeR2:                  boolEnv("STEWARD_RUNTIME_R2", false),
+		runtimeV2:                  ownerMode || boolEnv("STEWARD_RUNTIME_V2", false),
+		runtimeR2:                  ownerMode || boolEnv("STEWARD_RUNTIME_R2", false),
 		runtimeR3:                  boolEnv("STEWARD_RUNTIME_R3", false),
-		orchestrationR4:            boolEnv("STEWARD_ORCHESTRATION_R4", false),
-		orchestrationWorkers:       boolEnv("STEWARD_ORCHESTRATION_WORKERS", false),
+		orchestrationR4:            ownerMode || boolEnv("STEWARD_ORCHESTRATION_R4", false),
+		orchestrationWorkers:       ownerMode || boolEnv("STEWARD_ORCHESTRATION_WORKERS", false),
 		orchestrationRemote:        boolEnv("STEWARD_ORCHESTRATION_REMOTE", false),
-		runtimeBrowserOpen:         boolEnv("STEWARD_RUNTIME_BROWSER_OPEN_ENABLED", false),
+		runtimeBrowserOpen:         ownerMode || boolEnv("STEWARD_RUNTIME_BROWSER_OPEN_ENABLED", false),
 		runtimeTools:               newRuntimeToolRegistry(newRuntimeEchoTool()),
 		runtimeWorkerID:            uuid.NewString(),
 		runtimeLeaseTTL:            durationEnv("STEWARD_RUNTIME_LEASE_TTL", 10*time.Second),
@@ -1555,6 +1556,10 @@ func boolEnv(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func ownerModeEnabled() bool {
+	return boolEnv("STEWARD_OWNER_MODE", false)
 }
 
 func normalizeTaskStatus(value string, fallback string) string {

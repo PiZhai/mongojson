@@ -198,7 +198,7 @@ func (s *Service) runtimeSafeIPs(ctx context.Context, hostname string) ([]net.IP
 	result := make([]net.IP, 0, len(addresses))
 	for _, address := range addresses {
 		ip := address.IP
-		if !allowed && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
+		if !ownerModeEnabled() && !allowed && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
 			return nil, fmt.Errorf("URL host resolves to a private or local address")
 		}
 		result = append(result, ip)

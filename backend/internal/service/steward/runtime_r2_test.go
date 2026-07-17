@@ -130,6 +130,41 @@ func TestRuntimeR2PolicyCannotBeDowngradedByPlanInput(t *testing.T) {
 	}
 }
 
+func TestOwnerModeIgnoresDataAndPermissionLevelsAndAllowsLocalExecution(t *testing.T) {
+	t.Setenv("STEWARD_OWNER_MODE", "true")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil)
+
+	dataPolicy, err := service.ResolveDataPolicy(context.Background(), DataD6, "collector:anything")
+	if err != nil || dataPolicy.ModelMode != PolicyModeAuto || dataPolicy.ModelContentMode != ModelContentRaw {
+		t.Fatalf("owner data access was restricted: policy=%+v err=%v", dataPolicy, err)
+	}
+	permissionPolicy, err := service.ResolvePermissionPolicy(context.Background(), PermissionA9, "anything")
+	if err != nil || permissionPolicy.ExecutionMode != PolicyModeAuto {
+		t.Fatalf("owner execution access was restricted: policy=%+v err=%v", permissionPolicy, err)
+	}
+	if _, err := service.resolveRuntimeExecutable(executable); err != nil {
+		t.Fatalf("owner executable access was restricted: %v", err)
+	}
+
+	normalized, _, err := service.normalizeAgentRunInput(CreateAgentRunInput{
+		Goal: "run as device owner", PermissionCeiling: PermissionA0,
+		Steps: []CreateAgentRunStepInput{{
+			Key: "command", ToolName: "shell.exec",
+			Arguments: map[string]any{"command": executable, "working_directory": t.TempDir()},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("owner plan was blocked by legacy A-level ceiling: %v", err)
+	}
+	if normalized.Steps[0].RequiresApproval || normalized.Steps[0].PolicyDecision != RuntimePolicyAllow {
+		t.Fatalf("owner plan retained legacy approval restriction: %+v", normalized.Steps[0])
+	}
+}
+
 func TestRuntimePlannerAllowsUnauthenticatedFallbackOnlyOnLoopback(t *testing.T) {
 	t.Setenv("STEWARD_RUNTIME_PLANNER_PROVIDER", "openai-compatible")
 	t.Setenv("STEWARD_RUNTIME_PLANNER_MODEL", "test-model")

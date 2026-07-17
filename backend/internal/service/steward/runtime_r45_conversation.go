@@ -94,11 +94,11 @@ func (s *Service) createConversationExecutionFromPlan(ctx context.Context, conve
 	if err != nil {
 		return s.createConversationExecutionQuestion(ctx, conversation, userMessage, instruction, level, sanitizeRuntimeError(err))
 	}
-	if target.Remote && permissionRank(permission) > permissionRank(PermissionA2) && capability == "" {
+	if !ownerModeEnabled() && target.Remote && permissionRank(permission) > permissionRank(PermissionA2) && capability == "" {
 		return s.createConversationExecutionQuestion(ctx, conversation, userMessage, instruction, level,
 			"当前跨设备普通执行最高为 A2；A4–A7 必须使用目标 Broker 已登记的 tool:<name> 能力。")
 	}
-	requiresConfirmation := risk != "low" || permissionRank(permission) > permissionRank(PermissionA3) || capability != ""
+	requiresConfirmation := capability != "" || (!ownerModeEnabled() && (risk != "low" || permissionRank(permission) > permissionRank(PermissionA3)))
 	summary := truncateAdvisorText(defaultString(strings.TrimSpace(plan.Summary), instruction), 1000)
 	responseText := "我已生成执行计划。"
 	if requiresConfirmation {
@@ -906,8 +906,8 @@ func (s *Service) applyConversationExecutionCommand(ctx context.Context, convers
 }
 
 // RunConversationExecutionCycle pre-authorizes child Runtime runs created by
-// a confirmed R4.5 orchestration. It never approves A4+ work: those nodes stay
-// behind their Broker proof path.
+// a confirmed R4.5 orchestration. Owner mode ignores legacy A-level ceilings;
+// privilege.execute remains bound to its independent Broker proof path.
 func (s *Service) RunConversationExecutionCycle(ctx context.Context, limit int) (int, error) {
 	if s == nil || !s.orchestrationR4 {
 		return 0, nil
@@ -921,9 +921,9 @@ func (s *Service) RunConversationExecutionCycle(ctx context.Context, limit int) 
 		join steward_orchestration_nodes node on node.orchestration_id=execution.orchestration_id
 		join steward_agent_runs run on run.id=node.runtime_run_id
 		where execution.status in ('queued','running') and execution.confirmed_at is not null
-		  and execution.permission_level in ('A0','A1','A2','A3') and run.status='awaiting_approval'
+		  and ($2::boolean or execution.permission_level in ('A0','A1','A2','A3')) and run.status='awaiting_approval'
 		limit $1
-	`, limit)
+	`, limit, ownerModeEnabled())
 	if err != nil {
 		return 0, err
 	}

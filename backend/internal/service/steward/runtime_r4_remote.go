@@ -95,7 +95,11 @@ func (s *Service) remoteExecutionEnabled() error {
 	return nil
 }
 
-func (s *Service) validateRemoteExecutionDevice(ctx context.Context, deviceID, permission string) error {
+func remoteStepsRequireBroker(steps []CreateAgentRunStepInput) bool {
+	return len(steps) == 1 && strings.TrimSpace(steps[0].ToolName) == "privilege.execute"
+}
+
+func (s *Service) validateRemoteExecutionDevice(ctx context.Context, deviceID, permission string, requireBroker bool) error {
 	device, err := s.getDevice(ctx, strings.TrimSpace(deviceID))
 	if err != nil {
 		return fmt.Errorf("device is not registered")
@@ -106,19 +110,19 @@ func (s *Service) validateRemoteExecutionDevice(ctx context.Context, deviceID, p
 	if strings.TrimSpace(device.PublicKey) == "" || strings.TrimSpace(device.APIBaseURL) == "" {
 		return fmt.Errorf("device requires a public key and Peer API address")
 	}
-	if permissionRank(permission) > permissionRank(device.PermissionLevel) {
+	if !ownerModeEnabled() && permissionRank(permission) > permissionRank(device.PermissionLevel) {
 		return fmt.Errorf("device permission ceiling %s is below %s", device.PermissionLevel, permission)
 	}
-	if permissionRank(permission) > permissionRank(PermissionA2) && (device.BrokerPublicKey == "" || device.BrokerKeyID == "") {
+	if requireBroker && (device.BrokerPublicKey == "" || device.BrokerKeyID == "") {
 		return fmt.Errorf("device requires a pinned Broker identity for R4.4")
 	}
 	return nil
 }
 
-func (s *Service) selectRemoteExecutionDevice(ctx context.Context, selector, permission string) (domain.StewardDevice, error) {
+func (s *Service) selectRemoteExecutionDevice(ctx context.Context, selector, permission string, requireBroker bool) (domain.StewardDevice, error) {
 	selector = strings.TrimSpace(selector)
 	if selector != "auto" {
-		if err := s.validateRemoteExecutionDevice(ctx, selector, permission); err != nil {
+		if err := s.validateRemoteExecutionDevice(ctx, selector, permission, requireBroker); err != nil {
 			return domain.StewardDevice{}, err
 		}
 		return s.getDevice(ctx, selector)
@@ -131,8 +135,8 @@ func (s *Service) selectRemoteExecutionDevice(ctx context.Context, selector, per
 	candidates := make([]domain.StewardDevice, 0, len(devices))
 	for _, device := range devices {
 		if device.ID == s.agentIDValue() || device.Role != DeviceRolePeer || device.TrustStatus != DeviceTrusted || !device.SyncEnabled ||
-			device.PublicKey == "" || device.APIBaseURL == "" || permissionRank(permission) > permissionRank(device.PermissionLevel) ||
-			(permissionRank(permission) > permissionRank(PermissionA2) && (device.BrokerPublicKey == "" || device.BrokerKeyID == "")) ||
+			device.PublicKey == "" || device.APIBaseURL == "" || (!ownerModeEnabled() && permissionRank(permission) > permissionRank(device.PermissionLevel)) ||
+			(requireBroker && (device.BrokerPublicKey == "" || device.BrokerKeyID == "")) ||
 			device.LastSeenAt == nil || now.Sub(device.LastSeenAt.UTC()) > 2*time.Minute {
 			continue
 		}
@@ -207,7 +211,8 @@ func (s *Service) dispatchRemoteOrchestrationNodeTx(ctx context.Context, tx pgx.
 	if node.SelectedDeviceID != "" {
 		selector = node.SelectedDeviceID
 	}
-	device, err := s.selectRemoteExecutionDevice(ctx, selector, node.PermissionCeiling)
+	requireBroker := remoteStepsRequireBroker(node.Steps)
+	device, err := s.selectRemoteExecutionDevice(ctx, selector, node.PermissionCeiling, requireBroker)
 	if err != nil {
 		return err
 	}
@@ -222,7 +227,7 @@ func (s *Service) dispatchRemoteOrchestrationNodeTx(ctx context.Context, tx pgx.
 		Goal: node.Goal, PermissionCeiling: node.PermissionCeiling, DataLevel: node.DataLevel,
 		ControlGeneration: generation, Steps: node.Steps, IssuedAt: now, ExpiresAt: expiresAt,
 	}
-	if permissionRank(node.PermissionCeiling) > permissionRank(PermissionA2) {
+	if requireBroker {
 		var delegation privilegebroker.SignedBrokerDelegation
 		if err := json.Unmarshal(node.RemoteBrokerDelegation, &delegation); err != nil || delegation.Claims.DelegationID == "" {
 			return fmt.Errorf("R4.4 Broker delegation is missing or invalid")
@@ -267,8 +272,8 @@ func (s *Service) AcceptRemoteExecution(ctx context.Context, envelope RemoteExec
 		!payload.ExpiresAt.After(now) || payload.IssuedAt.After(now.Add(5*time.Minute)) {
 		return RemoteExecutionStatusEnvelope{}, fmt.Errorf("invalid remote execution dispatch envelope")
 	}
-	highPrivilege := permissionRank(payload.PermissionCeiling) > permissionRank(PermissionA2)
-	if permissionRank(payload.PermissionCeiling) > permissionRank(PermissionA7) || (!highPrivilege && dataLevelRank(payload.DataLevel) > dataLevelRank(DataD2)) {
+	highPrivilege := remoteStepsRequireBroker(payload.Steps)
+	if !ownerModeEnabled() && (permissionRank(payload.PermissionCeiling) > permissionRank(PermissionA7) || (!highPrivilege && dataLevelRank(payload.DataLevel) > dataLevelRank(DataD2))) {
 		return RemoteExecutionStatusEnvelope{}, fmt.Errorf("remote execution exceeds its R4.3/R4.4 ceiling")
 	}
 	origin, err := s.requireAuthorizedSyncDevice(ctx, payload.OriginDeviceID)
@@ -297,11 +302,11 @@ func (s *Service) AcceptRemoteExecution(ctx context.Context, envelope RemoteExec
 			return RemoteExecutionStatusEnvelope{}, fmt.Errorf("low privilege dispatch must not contain a Broker delegation")
 		}
 		for _, step := range payload.Steps {
-			if !s.remoteExecutionToolAllowed(step.ToolName) {
+			if !ownerModeEnabled() && !s.remoteExecutionToolAllowed(step.ToolName) {
 				return RemoteExecutionStatusEnvelope{}, fmt.Errorf("remote tool %q is not allowed on this device", step.ToolName)
 			}
 			tool, ok := s.runtimeTools.get(step.ToolName)
-			if !ok || permissionRank(tool.Spec().PermissionLevel) > permissionRank(PermissionA2) {
+			if !ok || (!ownerModeEnabled() && permissionRank(tool.Spec().PermissionLevel) > permissionRank(PermissionA2)) {
 				return RemoteExecutionStatusEnvelope{}, fmt.Errorf("remote tool %q is unavailable or too privileged", step.ToolName)
 			}
 		}

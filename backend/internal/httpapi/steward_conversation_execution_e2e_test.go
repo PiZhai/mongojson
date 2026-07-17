@@ -137,6 +137,17 @@ func (r46ModelFirstAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInpu
 }
 
 func (a r46ModelFirstAdvisor) Converse(_ context.Context, input steward.ConversationAdvisorInput) (steward.ConversationAdvisorResponse, error) {
+	if strings.Contains(input.Message, "读取全部上下文") {
+		for _, item := range input.Context {
+			if strings.Contains(item.Title, "设备所有者上下文") || strings.Contains(item.Summary, "完整活动与记忆") {
+				return steward.ConversationAdvisorResponse{Intent: "answer", Confidence: 0.99, Reply: "模型已经读取完整活动与记忆。"}, nil
+			}
+		}
+		return steward.ConversationAdvisorResponse{Intent: "answer", Confidence: 0.99, Reply: "模型没有收到完整上下文。"}, nil
+	}
+	if strings.Contains(input.Message, "直接问模型") {
+		return steward.ConversationAdvisorResponse{Intent: "question", Confidence: 0.99, Reply: "这条手动消息已经直接交给模型。"}, nil
+	}
 	if strings.Contains(input.Message, "提醒") {
 		return steward.ConversationAdvisorResponse{
 			Intent: "execution", Confidence: 0.99, Reply: "创建提醒。",
@@ -223,6 +234,49 @@ func TestStewardR46ModelFirstConversationRoutesExecutionMemoryAndReminder(t *tes
 	tasks, err := node.service.Search(ctx, steward.SearchInput{Query: "检查模型优先链路", EntityType: "task", Limit: 10})
 	if err != nil || len(tasks) == 0 {
 		t.Fatalf("explicit reminder was not persisted as a task: tasks=%+v err=%v", tasks, err)
+	}
+}
+
+func TestStewardManualMessageDoesNotInheritConversationDataLevel(t *testing.T) {
+	t.Setenv("STEWARD_OWNER_MODE", "true")
+	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY_ID", "r46-manual-message-test")
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed manual message regression test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r46_manual_message"), "r46-manual-message",
+		steward.WithAutonomyAdvisor(r46ModelFirstAdvisor{}))
+	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "主动管家", DataLevel: "D2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "把这句话直接问模型"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Message.Content != "这条手动消息已经直接交给模型。" || result.Message.Model != "model-first-test" {
+		t.Fatalf("manual message was not handled by the model: %+v", result.Message)
+	}
+	if result.Message.DataLevel != "D0" {
+		t.Fatalf("manual message inherited conversation data level: got %s, want D0", result.Message.DataLevel)
+	}
+	confirmed := true
+	if _, err := node.service.CreateMemory(ctx, steward.CreateMemoryInput{
+		Type: "owner_context", Title: "设备所有者上下文", Summary: "完整活动与记忆", Content: "完整活动与记忆",
+		Scope: "global", Source: "activitywatch", DataLevel: "D2", UserConfirmed: &confirmed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	contextResult, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "读取全部上下文"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contextResult.Message.Content != "模型已经读取完整活动与记忆。" {
+		t.Fatalf("legacy D-level still hid owner context: %+v", contextResult.Message)
 	}
 }
 

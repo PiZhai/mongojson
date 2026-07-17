@@ -23,6 +23,9 @@ func splitRuntimeCSV(value string) []string {
 
 func runtimeAllowedRootsFromEnv(storageDir string) []string {
 	roots := splitRuntimeCSV(os.Getenv("STEWARD_RUNTIME_ALLOWED_ROOTS"))
+	if ownerModeEnabled() {
+		roots = append(roots, runtimeFilesystemRoots()...)
+	}
 	if len(roots) == 0 {
 		roots = append(roots, storageDir)
 	}
@@ -32,6 +35,20 @@ func runtimeAllowedRootsFromEnv(storageDir string) []string {
 		}
 	}
 	return normalizeRuntimeAllowedRoots(roots, storageDir)
+}
+
+func runtimeFilesystemRoots() []string {
+	if runtime.GOOS != "windows" {
+		return []string{string(os.PathSeparator)}
+	}
+	roots := []string{}
+	for drive := 'A'; drive <= 'Z'; drive++ {
+		root := string(drive) + `:\`
+		if info, err := os.Stat(root); err == nil && info.IsDir() {
+			roots = append(roots, root)
+		}
+	}
+	return roots
 }
 
 func runtimeKnownFolders() map[string]string {

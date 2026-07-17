@@ -164,12 +164,12 @@ func (s *Service) executeAutonomyProposal(ctx context.Context, id string, manual
 		}
 		automaticAllowed = ruleAutomatic && permissionPolicy.ExecutionMode == PolicyModeAuto
 	}
-	if proposal.Status != ProposalApproved && !automaticAllowed {
+	if !ownerModeEnabled() && proposal.Status != ProposalApproved && !automaticAllowed {
 		_, _ = s.createApprovalRequest(ctx, &proposal.ID, "approve autonomous execution", "proposal needs explicit approval", proposal.ImpactSummary)
 		return s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "approval required before execution", "approve proposal or change rule policy")
 	}
-	if proposal.Policy == AutonomyPolicyNever || permissionRank(proposal.PermissionLevel) > permissionRank(settings.MaxAutoPermission) {
+	if !ownerModeEnabled() && (proposal.Policy == AutonomyPolicyNever || permissionRank(proposal.PermissionLevel) > permissionRank(settings.MaxAutoPermission)) {
 		_, _ = s.createApprovalRequest(ctx, &proposal.ID, "manual high-risk review", proposal.RiskLevel, proposal.ImpactSummary)
 		run, runErr := s.recordAutonomousRun(ctx, &proposal.ID, proposal.RuleID, RunModeExecute, RunBlocked,
 			proposal.TriggerReason, "proposal exceeds the configured global permission ceiling", "raise max_auto_permission or lower the proposal permission")

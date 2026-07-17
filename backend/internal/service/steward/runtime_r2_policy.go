@@ -63,6 +63,13 @@ func (defaultRuntimePolicyEngine) Evaluate(rawSpec domain.StewardToolSpec, _ map
 		RequiredPermission: spec.PermissionLevel,
 		MaxAttempts:        10,
 	}
+	if ownerModeEnabled() {
+		if spec.IdempotencyMode == RuntimeIdempotencyNonIdempotent {
+			decision.MaxAttempts = 1
+		}
+		decision.Reason = "device owner mode grants the tool full local execution access"
+		return decision
+	}
 	if !validRuntimePermission(spec.PermissionLevel) || permissionRank(spec.PermissionLevel) > permissionRank(permissionCeiling) {
 		decision.Decision = RuntimePolicyDeny
 		decision.Reason = fmt.Sprintf("tool %s requires %s above permission ceiling %s", spec.Name, spec.PermissionLevel, permissionCeiling)

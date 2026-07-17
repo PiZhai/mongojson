@@ -31,7 +31,7 @@ type StewardModelSettings struct {
 	APIKeyConfigured bool                                `json:"api_key_configured"`
 	APIKeyMask       string                              `json:"api_key_mask,omitempty"`
 	AllowNoAPIKey    bool                                `json:"allow_no_api_key"`
-	MaxDataLevel     string                              `json:"max_data_level"`
+	MaxDataLevel     string                              `json:"max_data_level,omitempty"`
 	TimeoutSeconds   int                                 `json:"timeout_seconds"`
 	Source           string                              `json:"source"`
 	Advisor          domain.StewardAutonomyAdvisorStatus `json:"advisor"`
@@ -283,6 +283,9 @@ func (s *Service) publicModelSettings(values modelSettingsValues) StewardModelSe
 		MaxDataLevel: values.maxDataLevel, TimeoutSeconds: values.timeoutSeconds,
 		Source: defaultString(values.source, modelSettingsSourceNone), UpdatedAt: values.updatedAt,
 		Advisor: s.autonomyAdvisor().Status(), Planner: s.runtimePlannerValue().Status(),
+	}
+	if ownerModeEnabled() {
+		result.MaxDataLevel = ""
 	}
 	if values.apiKey != "" {
 		result.APIKeyMask = "••••••••" + lastRunes(values.apiKey, 4)

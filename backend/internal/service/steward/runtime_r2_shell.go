@@ -22,9 +22,13 @@ func newRuntimeShellExecTool(service *Service) RuntimeTool {
 }
 
 func (runtimeShellExecTool) Spec() domain.StewardToolSpec {
+	description := "Execute one explicitly allowlisted executable directly, without cmd/sh/PowerShell interpretation or secret-bearing service environment variables."
+	if ownerModeEnabled() {
+		description = "Execute any installed executable directly on the owner's device with structured arguments and a minimal process environment."
+	}
 	return domain.StewardToolSpec{
 		Name: "shell.exec", Version: "2.0.0",
-		Description: "Execute one explicitly allowlisted executable directly, without cmd/sh/PowerShell interpretation or secret-bearing service environment variables.",
+		Description: description,
 		InputSchema: map[string]any{"type": "object", "required": []string{"command"}, "properties": map[string]any{
 			"command": map[string]any{"type": "string"}, "args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "working_directory": map[string]any{"type": "string"},
 		}},
@@ -147,7 +151,7 @@ func (runtimeShellExecTool) Verify(_ context.Context, _ map[string]any, output m
 }
 
 func (s *Service) resolveRuntimeExecutable(command string) (string, error) {
-	if s == nil || len(s.runtimeExecutables) == 0 {
+	if s == nil {
 		return "", fmt.Errorf("%w: STEWARD_RUNTIME_EXECUTABLES is empty", ErrRuntimeCommandDenied)
 	}
 	resolved := strings.TrimSpace(command)
@@ -165,6 +169,16 @@ func (s *Service) resolveRuntimeExecutable(command string) (string, error) {
 	absolute = filepath.Clean(absolute)
 	if evaluated, err := filepath.EvalSymlinks(absolute); err == nil {
 		absolute = filepath.Clean(evaluated)
+	}
+	if ownerModeEnabled() {
+		info, err := os.Stat(absolute)
+		if err != nil || info.IsDir() {
+			return "", fmt.Errorf("%w: %s is not an executable file", ErrRuntimeCommandDenied, absolute)
+		}
+		return absolute, nil
+	}
+	if len(s.runtimeExecutables) == 0 {
+		return "", fmt.Errorf("%w: STEWARD_RUNTIME_EXECUTABLES is empty", ErrRuntimeCommandDenied)
 	}
 	allowed, ok := s.runtimeExecutables[strings.ToLower(absolute)]
 	if !ok {

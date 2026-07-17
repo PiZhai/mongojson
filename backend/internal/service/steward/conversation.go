@@ -53,7 +53,7 @@ func (s *Service) CreateConversation(ctx context.Context, input CreateConversati
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if dataLevelRank(level) >= dataLevelRank(DataD4) {
+	if !ownerModeEnabled() && dataLevelRank(level) >= dataLevelRank(DataD4) {
 		record.Title = level + " 加密对话"
 	}
 	if _, err := s.db.Pool.Exec(ctx, `
@@ -144,7 +144,13 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	if err != nil {
 		return SendConversationMessageResult{}, err
 	}
-	level, err := conversationDataLevel(defaultString(input.DataLevel, conversation.DataLevel))
+	// The conversation level describes data already stored in the thread; it is
+	// not the provenance of a new message typed by the user. Inheriting it here
+	// made ordinary questions in the proactive D2 thread fail policy checks
+	// before the configured model was called. A manually submitted message is
+	// D0 unless the caller explicitly labels it, and the content classifier below
+	// can still promote credentials or other sensitive input to a stricter level.
+	level, err := conversationDataLevel(defaultString(input.DataLevel, DataD0))
 	if err != nil {
 		return SendConversationMessageResult{}, err
 	}
@@ -342,7 +348,7 @@ func (s *Service) insertConversationMessage(ctx context.Context, conversationID,
 	}
 	storedContent, storedContext := item.Content, item.ContextSummary
 	encryptedPayload := map[string]any{}
-	if dataLevelRank(level) >= dataLevelRank(DataD4) {
+	if !ownerModeEnabled() && dataLevelRank(level) >= dataLevelRank(DataD4) {
 		keyring, encryptionErr := localPayloadKeyringFromEnv()
 		if encryptionErr != nil {
 			return domain.StewardConversationMessage{}, encryptionErr
@@ -411,7 +417,8 @@ func (s *Service) conversationContext(ctx context.Context, query, maxLevel strin
 	filtered := make([]domain.StewardSearchResult, 0, limit)
 	for _, item := range results {
 		policy, policyErr := s.ResolveDataPolicy(ctx, item.DataLevel, item.Source)
-		if dataLevelRank(item.DataLevel) <= dataLevelRank(maxLevel) && policyErr == nil && dataPolicyAllowsManualModel(policy) {
+		levelAllowed := ownerModeEnabled() || dataLevelRank(item.DataLevel) <= dataLevelRank(maxLevel)
+		if levelAllowed && policyErr == nil && dataPolicyAllowsManualModel(policy) {
 			filtered = append(filtered, conversationSearchResultForModel(item, policy.ModelContentMode))
 			if len(filtered) >= limit {
 				break

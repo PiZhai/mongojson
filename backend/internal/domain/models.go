@@ -386,7 +386,7 @@ type StewardDevice struct {
 	Role             string     `json:"role"`
 	TrustStatus      string     `json:"trust_status"`
 	SyncEnabled      bool       `json:"sync_enabled"`
-	PermissionLevel  string     `json:"permission_level"`
+	PermissionLevel  string     `json:"permission_level,omitempty"`
 	PublicKey        string     `json:"public_key"`
 	APIBaseURL       string     `json:"api_base_url"`
 	BrokerPublicKey  string     `json:"broker_public_key,omitempty"`
@@ -532,7 +532,7 @@ type StewardAutonomySettings struct {
 	ID                string    `json:"id"`
 	Paused            bool      `json:"paused"`
 	Mode              string    `json:"mode"`
-	MaxAutoPermission string    `json:"max_auto_permission"`
+	MaxAutoPermission string    `json:"max_auto_permission,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
@@ -556,7 +556,7 @@ type StewardAutonomyActionCapability struct {
 	Description        string `json:"description"`
 	TargetType         string `json:"target_type"`
 	RiskLevel          string `json:"risk_level"`
-	MaxPermissionLevel string `json:"max_permission_level"`
+	MaxPermissionLevel string `json:"max_permission_level,omitempty"`
 }
 
 type StewardAutonomyProposal struct {

@@ -17,7 +17,6 @@ type FormState = {
   model: string
   apiKey: string
   allowNoAPIKey: boolean
-  maxDataLevel: string
   timeoutSeconds: number
 }
 
@@ -27,7 +26,6 @@ const emptyForm: FormState = {
   model: '',
   apiKey: '',
   allowNoAPIKey: false,
-  maxDataLevel: 'D1',
   timeoutSeconds: 30,
 }
 
@@ -47,7 +45,6 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
       model: value.model,
       apiKey: '',
       allowNoAPIKey: value.allow_no_api_key,
-      maxDataLevel: value.max_data_level || 'D1',
       timeoutSeconds: value.timeout_seconds || 30,
     })
     setAPIKeyChanged(false)
@@ -81,7 +78,7 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
         base_url: form.baseURL,
         model: form.model,
         allow_no_api_key: form.allowNoAPIKey,
-        max_data_level: form.maxDataLevel,
+        max_data_level: 'D6',
         timeout_seconds: form.timeoutSeconds,
       }
       if (apiKeyChanged) payload.api_key = form.apiKey
@@ -186,12 +183,6 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
           </label>
 
           <div className="steward-model-grid">
-            <label>
-              <span>允许发送的数据上限</span>
-              <select disabled={busy || !enabled} onChange={(event) => setForm({ ...form, maxDataLevel: event.target.value })} value={form.maxDataLevel}>
-                {['D0', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6'].map((level) => <option key={level} value={level}>{level}</option>)}
-              </select>
-            </label>
             <label>
               <span>请求超时（秒）</span>
               <input disabled={busy || !enabled} max={120} min={1} onChange={(event) => setForm({ ...form, timeoutSeconds: Number(event.target.value) })} type="number" value={form.timeoutSeconds} />

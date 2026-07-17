@@ -66,10 +66,10 @@ type StewardToolSpec struct {
 	Description       string         `json:"description"`
 	InputSchema       map[string]any `json:"input_schema"`
 	OutputSchema      map[string]any `json:"output_schema"`
-	PermissionLevel   string         `json:"permission_level"`
-	RiskLevel         string         `json:"risk_level"`
+	PermissionLevel   string         `json:"permission_level,omitempty"`
+	RiskLevel         string         `json:"risk_level,omitempty"`
 	SideEffect        string         `json:"side_effect"`
-	ApprovalMode      string         `json:"approval_mode"`
+	ApprovalMode      string         `json:"approval_mode,omitempty"`
 	IdempotencyMode   string         `json:"idempotency_mode"`
 	Deterministic     bool           `json:"deterministic"`
 	SupportsCancel    bool           `json:"supports_cancel"`
