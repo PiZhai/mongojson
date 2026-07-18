@@ -28,6 +28,10 @@ import (
 )
 
 func main() {
+	logFile := configureCompanionLogging()
+	if logFile != nil {
+		defer logFile.Close()
+	}
 	dataDir, err := os.UserConfigDir()
 	if err != nil {
 		log.Fatal(err)
@@ -136,6 +140,33 @@ func main() {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": result.Output, "evidence": evidence})
 	})
+	mux.HandleFunc("POST /notifications", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		payload, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "invalid notification request", http.StatusBadRequest)
+			return
+		}
+		if err := verifyCompanionSignedPayload(key, r, payload); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		var input systemNotification
+		if err := json.Unmarshal(payload, &input); err != nil {
+			http.Error(w, "invalid notification JSON", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(input.Title) == "" || strings.TrimSpace(input.Body) == "" {
+			http.Error(w, "notification title and body are required", http.StatusBadRequest)
+			return
+		}
+		providerID, err := showSystemNotification(r.Context(), input)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error(), "recovery": "确认登录会话允许系统通知，并检查 Session Companion 日志。"})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "provider_message_id": providerID})
+	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	listener, err := companionPipeListener(*pipe)
@@ -185,6 +216,23 @@ func main() {
 	}
 }
 
+func configureCompanionLogging() *os.File {
+	root, err := os.UserCacheDir()
+	if err != nil || strings.TrimSpace(root) == "" {
+		return nil
+	}
+	directory := filepath.Join(root, "MongojsonSteward", "logs")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil
+	}
+	file, err := os.OpenFile(filepath.Join(directory, "companion.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil
+	}
+	log.SetOutput(file)
+	return file
+}
+
 func companionKey() ([]byte, error) {
 	value := strings.TrimSpace(os.Getenv("STEWARD_LOCAL_ENCRYPTION_KEY"))
 	if value == "" {
@@ -203,6 +251,20 @@ func companionPayloadSignature(key []byte, timestamp string, payload []byte) str
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func verifyCompanionSignedPayload(key []byte, request *http.Request, payload []byte) error {
+	timestamp := strings.TrimSpace(request.Header.Get("X-Steward-Tool-Timestamp"))
+	unix, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil || time.Since(time.Unix(unix, 0)).Abs() > 60*time.Second {
+		return fmt.Errorf("stale companion request")
+	}
+	expected, _ := hex.DecodeString(companionPayloadSignature(key, timestamp, payload))
+	provided, err := hex.DecodeString(strings.TrimSpace(request.Header.Get("X-Steward-Tool-Signature")))
+	if err != nil || !hmac.Equal(provided, expected) {
+		return fmt.Errorf("invalid companion request signature")
+	}
+	return nil
 }
 
 func validateLoopbackListen(value string) error {

@@ -439,8 +439,8 @@ func (s *Service) normalizeOrchestrationInput(ctx context.Context, input CreateO
 			runtimeBudget += step.TimeoutSeconds * step.MaxAttempts
 			attemptBudget += step.MaxAttempts
 		}
-		if runtimeBudget > agent.MaxRuntimeSeconds || attemptBudget > agent.MaxAttempts {
-			return input, "", fmt.Errorf("%w: node %q exceeds Agent runtime or attempt quota", ErrOrchestrationInvalid, node.Key)
+		if quotaErr := orchestrationNodeQuotaError(node.Key, runtimeBudget, attemptBudget, agent.MaxRuntimeSeconds, agent.MaxAttempts); quotaErr != nil {
+			return input, "", quotaErr
 		}
 		allowed := make(map[string]bool, len(agent.ToolAllowlist))
 		for _, name := range agent.ToolAllowlist {
@@ -482,6 +482,24 @@ func (s *Service) normalizeOrchestrationInput(ctx context.Context, input CreateO
 	}
 	digest := sha256.Sum256(payload)
 	return input, hex.EncodeToString(digest[:]), nil
+}
+
+func orchestrationNodeQuotaError(nodeKey string, runtimeBudget, attemptBudget, maxRuntimeSeconds, maxAttempts int) error {
+	runtimeExceeded := runtimeBudget > maxRuntimeSeconds
+	attemptsExceeded := attemptBudget > maxAttempts
+	switch {
+	case runtimeExceeded && attemptsExceeded:
+		return fmt.Errorf("%w: node %q requests runtime budget %ds and %d attempts; Agent quotas are %ds and %d attempts",
+			ErrOrchestrationInvalid, nodeKey, runtimeBudget, attemptBudget, maxRuntimeSeconds, maxAttempts)
+	case runtimeExceeded:
+		return fmt.Errorf("%w: node %q requests runtime budget %ds (sum of timeout_seconds x max_attempts), exceeding the Agent quota of %ds",
+			ErrOrchestrationInvalid, nodeKey, runtimeBudget, maxRuntimeSeconds)
+	case attemptsExceeded:
+		return fmt.Errorf("%w: node %q requests %d attempts, exceeding the Agent quota of %d attempts",
+			ErrOrchestrationInvalid, nodeKey, attemptBudget, maxAttempts)
+	default:
+		return nil
+	}
 }
 
 func (s *Service) CreateOrchestration(ctx context.Context, input CreateOrchestrationInput) (domain.StewardOrchestration, error) {
@@ -1068,6 +1086,11 @@ func (s *Service) processOrchestration(ctx context.Context, id string, generatio
 		return false, nil
 	}
 	now := time.Now().UTC()
+	if s.orchestrationWorkers {
+		if err := s.recoverUnavailableOrchestrationWorkersTx(ctx, tx, id, now); err != nil {
+			return false, err
+		}
+	}
 	if deadline != nil && !deadline.After(now) {
 		if err := s.cancelOrchestrationChildrenTx(ctx, tx, id, now, "orchestration deadline exceeded"); err != nil {
 			return false, err
@@ -1511,7 +1534,14 @@ func (s *Service) dispatchOrchestrationNodeTx(ctx context.Context, tx pgx.Tx, or
 			break
 		}
 	}
+	useWorker := false
 	if s.orchestrationWorkers && childStatus == RuntimeRunQueued {
+		useWorker, err = s.hasLiveOrchestrationWorkerTx(ctx, tx, node.AgentID, now)
+		if err != nil {
+			return err
+		}
+	}
+	if useWorker {
 		childStatus = RuntimeRunDraft
 	}
 	command, err := tx.Exec(ctx, `
@@ -1539,7 +1569,7 @@ func (s *Service) dispatchOrchestrationNodeTx(ctx context.Context, tx pgx.Tx, or
 		}); err != nil {
 		return err
 	}
-	if s.orchestrationWorkers {
+	if useWorker {
 		var maxRuntime, maxAttempts, maxEvidence int
 		if err := tx.QueryRow(ctx, `
 			select max_runtime_seconds, max_attempts, max_evidence_bytes
@@ -1566,6 +1596,86 @@ func (s *Service) dispatchOrchestrationNodeTx(ctx context.Context, tx pgx.Tx, or
 		"node materialized as a standard Runtime V2 child run", map[string]any{
 			"runtime_run_id": child.ID, "agent_id": node.AgentID, "delegation_id": claim.ID, "node_kind": node.Kind,
 		})
+}
+
+func (s *Service) orchestrationWorkerFreshnessWindow() time.Duration {
+	window := 2 * s.orchestrationMessageLease
+	if window < 30*time.Second {
+		window = 30 * time.Second
+	}
+	return window
+}
+
+func (s *Service) hasLiveOrchestrationWorkerTx(ctx context.Context, tx pgx.Tx, agentID string, now time.Time) (bool, error) {
+	var live bool
+	err := tx.QueryRow(ctx, `
+		select exists (
+			select 1 from steward_agent_workers
+			where agent_id=$1 and status='running' and heartbeat_at >= $2
+		)
+	`, agentID, now.Add(-s.orchestrationWorkerFreshnessWindow())).Scan(&live)
+	return live, err
+}
+
+// recoverUnavailableOrchestrationWorkersTx prevents an enabled-but-undeployed
+// Worker plane from leaving local child runs in draft forever. Healthy workers
+// retain mailbox ownership; only drafts with no fresh worker fall back to the
+// standard local Runtime V2 queue.
+func (s *Service) recoverUnavailableOrchestrationWorkersTx(ctx context.Context, tx pgx.Tx, orchestrationID string, now time.Time) error {
+	cutoff := now.Add(-s.orchestrationWorkerFreshnessWindow())
+	rows, err := tx.Query(ctx, `
+		select run.id::text, node.id::text, message.id::text, node.agent_id
+		from steward_orchestration_nodes node
+		join steward_agent_runs run on run.id=node.runtime_run_id
+		join steward_agent_messages message on message.node_id=node.id and message.type='execute'
+		where node.orchestration_id=$1 and node.status='dispatched' and run.status='draft'
+		  and message.status in ('pending','leased')
+		  and not exists (
+			select 1 from steward_agent_workers worker
+			where worker.agent_id=node.agent_id and worker.status='running' and worker.heartbeat_at >= $2
+		  )
+		for update of node, run, message
+	`, orchestrationID, cutoff)
+	if err != nil {
+		return err
+	}
+	type fallback struct{ runID, nodeID, messageID, agentID string }
+	items := []fallback{}
+	for rows.Next() {
+		var item fallback
+		if err := rows.Scan(&item.runID, &item.nodeID, &item.messageID, &item.agentID); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if _, err := tx.Exec(ctx, `update steward_agent_runs set status='queued',updated_at=$2 where id=$1 and status='draft'`, item.runID, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `update steward_agent_messages set status='dead',lease_owner='',lease_expires_at=null,
+			last_error='no healthy Agent worker; execution fell back to local Runtime V2',acknowledged_at=$2,updated_at=$2
+			where id=$1 and status in ('pending','leased')`, item.messageID, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `update steward_agent_workers set status='stopped',current_message_id=null,stopped_at=$2,heartbeat_at=$2
+			where agent_id=$1 and status='running' and heartbeat_at < $3`, item.agentID, now, cutoff); err != nil {
+			return err
+		}
+		if err := appendRuntimeEvent(ctx, tx, item.runID, nil, "run.worker_fallback", RuntimeRunQueued,
+			"no healthy Agent worker was available; queued in local Runtime V2", map[string]any{"agent_id": item.agentID}); err != nil {
+			return err
+		}
+		if err := appendOrchestrationEvent(ctx, tx, orchestrationID, item.nodeID, "node.worker_fallback", OrchestrationNodeDispatched,
+			"no healthy Agent worker was available; child run fell back to local Runtime V2", map[string]any{"agent_id": item.agentID, "runtime_run_id": item.runID}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) signDelegationClaim(orchestrationID string, claim domain.StewardDelegationClaim) string {

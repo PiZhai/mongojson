@@ -1181,3 +1181,32 @@ export async function streamStewardAgentRunEvents(
     if (done) break
   }
 }
+
+export async function getStewardNotifications(status = '', limit = 100) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (status) params.set('status', status)
+  return request<{ notifications: import('./types').StewardNotification[] }>(`${API_BASE}/steward/notifications?${params.toString()}`)
+}
+
+export async function decideStewardNotification(id: string, decision: 'acknowledge' | 'snooze' | 'cancel' | 'resend', snoozeSeconds = 0) {
+  return request<{ notification: import('./types').StewardNotification }>(`${API_BASE}/steward/notifications/${encodeURIComponent(id)}/decision`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, snooze_seconds: snoozeSeconds }),
+  })
+}
+
+export async function getStewardNotificationEndpoints() {
+  return request<{ endpoints: import('./types').StewardNotificationEndpoint[] }>(`${API_BASE}/steward/notification-endpoints`)
+}
+
+export async function saveStewardNotificationEndpoint(payload: {
+  channel: 'system' | 'linux_desktop' | 'ntfy' | 'email'; name: string; enabled: boolean;
+  config: Record<string, unknown>; secret?: Record<string, unknown>;
+}) {
+  return request<{ endpoint: import('./types').StewardNotificationEndpoint }>(`${API_BASE}/steward/notification-endpoints`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+export async function testStewardNotificationEndpoint(id: string) {
+  return request<{ endpoint: import('./types').StewardNotificationEndpoint }>(`${API_BASE}/steward/notification-endpoints/${encodeURIComponent(id)}/test`, { method: 'POST' })
+}

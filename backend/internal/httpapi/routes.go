@@ -134,6 +134,12 @@ type StewardStore interface {
 	ListAutonomousRuns(context.Context, int) ([]domain.StewardAutonomousRun, error)
 	RunProactiveCycle(context.Context, steward.RunProactiveInput) ([]domain.StewardProactiveRun, error)
 	ListProactiveRuns(context.Context, int) ([]domain.StewardProactiveRun, error)
+	ListNotifications(context.Context, string, int) ([]domain.StewardNotification, error)
+	CreateNotification(context.Context, steward.CreateNotificationInput) (domain.StewardNotification, error)
+	DecideNotification(context.Context, string, steward.NotificationDecisionInput) (domain.StewardNotification, error)
+	ListNotificationEndpoints(context.Context) ([]domain.StewardNotificationEndpoint, error)
+	UpsertNotificationEndpoint(context.Context, steward.UpdateNotificationEndpointInput) (domain.StewardNotificationEndpoint, error)
+	TestNotificationEndpoint(context.Context, string) (domain.StewardNotificationEndpoint, error)
 }
 
 type StewardPeerStore interface {
@@ -435,6 +441,12 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/steward/autonomy/runs", handler.listStewardAutonomousRuns)
 		r.Get("/steward/proactive/runs", handler.listStewardProactiveRuns)
 		r.Post("/steward/proactive/run", handler.runStewardProactiveCycle)
+		r.Get("/steward/notifications", handler.listStewardNotifications)
+		r.Post("/steward/notifications", handler.createStewardNotification)
+		r.Post("/steward/notifications/{id}/decision", handler.decideStewardNotification)
+		r.Get("/steward/notification-endpoints", handler.listStewardNotificationEndpoints)
+		r.Put("/steward/notification-endpoints", handler.upsertStewardNotificationEndpoint)
+		r.Post("/steward/notification-endpoints/{id}/test", handler.testStewardNotificationEndpoint)
 	})
 }
 

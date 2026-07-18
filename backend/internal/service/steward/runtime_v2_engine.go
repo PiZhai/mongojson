@@ -68,7 +68,17 @@ func (s *Service) claimQueuedAgentRun(ctx context.Context, excludedRunIDs []stri
 			where id = 'global' and paused
 		  )
 		  and (cardinality($2::text[]) = 0 or id::text <> all($2::text[]))
-		  and (not $3 or orchestration_id is null)
+		  and (
+			not $3 or orchestration_id is null or not exists (
+				select 1 from steward_agent_messages message
+				where message.runtime_run_id=steward_agent_runs.id
+			) or exists (
+				select 1 from steward_agent_messages message
+				where message.runtime_run_id=steward_agent_runs.id
+				  and message.status='dead'
+				  and message.last_error='no healthy Agent worker; execution fell back to local Runtime V2'
+			)
+		  )
 		order by updated_at, created_at
 		for update skip locked limit 1
 	`, RuntimeRunQueued, excludedRunIDs, s.orchestrationWorkers).Scan(&runID)

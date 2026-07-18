@@ -61,6 +61,35 @@ func (s *Service) recordDaemonLoopResult(ctx context.Context, name string, start
 	return nil
 }
 
+func (s *Service) daemonLoopInitialDelay(ctx context.Context, name string, interval time.Duration, now time.Time) (time.Duration, error) {
+	var lastCompletedAt *time.Time
+	err := s.db.Pool.QueryRow(ctx, `
+		select last_completed_at
+		from steward_daemon_loop_status
+		where agent_id = $1 and name = $2
+	`, s.agentIDValue(), strings.TrimSpace(name)).Scan(&lastCompletedAt)
+	if err != nil {
+		return 0, fmt.Errorf("read daemon loop %s schedule: %w", name, err)
+	}
+	return persistedLoopDelay(lastCompletedAt, now, interval), nil
+}
+
+func persistedLoopDelay(lastCompletedAt *time.Time, now time.Time, interval time.Duration) time.Duration {
+	if lastCompletedAt == nil || interval <= 0 {
+		return 0
+	}
+	elapsed := now.Sub(lastCompletedAt.UTC())
+	if elapsed >= interval {
+		return 0
+	}
+	if elapsed < 0 {
+		// A clock correction must not postpone the loop for longer than one
+		// configured interval.
+		return interval
+	}
+	return interval - elapsed
+}
+
 func sanitizeDaemonLoopError(err error) string {
 	if err == nil {
 		return ""

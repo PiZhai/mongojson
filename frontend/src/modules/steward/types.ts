@@ -1626,3 +1626,54 @@ export type StewardOverview = {
   autonomy?: StewardAutonomyOverview | null;
   counts: Record<string, number>;
 };
+
+export type StewardNotificationAction = {
+  id: string;
+  label: string;
+  kind: string;
+  value?: string;
+};
+
+export type StewardNotificationDelivery = {
+  id: string;
+  notification_id: string;
+  endpoint_id?: string | null;
+  channel: string;
+  status: string;
+  attempt_count: number;
+  max_attempts: number;
+  next_attempt_at: string;
+  provider_message_id?: string;
+  last_error?: string;
+  accepted_at?: string | null;
+};
+
+export type StewardNotification = {
+  id: string;
+  source_type: string;
+  source_id?: string;
+  title: string;
+  body: string;
+  category: string;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  status: string;
+  scheduled_at: string;
+  expires_at?: string | null;
+  actions: StewardNotificationAction[];
+  deliveries: StewardNotificationDelivery[];
+  acknowledged_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardNotificationEndpoint = {
+  id: string;
+  channel: 'system' | 'linux_desktop' | 'ntfy' | 'email';
+  name: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  secret_set: boolean;
+  last_success_at?: string | null;
+  last_error?: string;
+  updated_at: string;
+};

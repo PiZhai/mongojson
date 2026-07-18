@@ -107,7 +107,13 @@ function Invoke-CompanionGoBuild {
     $env:CGO_ENABLED = "0"
     $env:GOOS = $GOOSValue
     $env:GOARCH = $GOARCHValue
-    go build -buildvcs=false -trimpath -ldflags "-s -w" -o $OutputPath ./cmd/steward-companion
+    $ldflags = "-s -w"
+    if ($GOOSValue -eq "windows") {
+      # Session Companion is a background desktop helper. Building it as a GUI
+      # subsystem executable prevents Windows Terminal from appearing at logon.
+      $ldflags += " -H windowsgui"
+    }
+    go build -buildvcs=false -trimpath -ldflags $ldflags -o $OutputPath ./cmd/steward-companion
     if ($LASTEXITCODE -ne 0) {
       throw "go build steward-companion failed for $GOOSValue/$GOARCHValue with exit code $LASTEXITCODE"
     }
@@ -116,6 +122,28 @@ function Invoke-CompanionGoBuild {
     $env:GOOS = $oldGOOS
     $env:GOARCH = $oldGOARCH
   }
+}
+
+function Invoke-WindowsNotifierBuild {
+  param([string]$OutputDirectory)
+  Require-Command "dotnet"
+  $project = Join-Path $backendDir "cmd\steward-windows-notifier\Steward.WindowsNotifier.csproj"
+  # Keep the .NET runtime framework-dependent and publish the Windows App SDK
+  # files beside the helper. A fully self-contained single executable is over
+  # 200 MB and provides no operational benefit inside the Steward artifact.
+  $publishDir = Join-Path $OutputDirectory "windows-notifier"
+  if (Test-Path -LiteralPath $publishDir) {
+    Remove-Item -LiteralPath $publishDir -Recurse -Force
+  }
+  dotnet publish $project -c Release -r win-x64 --self-contained false -p:PublishSingleFile=false -p:RestoreLockedMode=true -o $publishDir | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "steward Windows notifier build failed with exit code $LASTEXITCODE"
+  }
+  $source = Join-Path $publishDir "steward-windows-notifier.exe"
+  if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+    throw "steward Windows notifier output is missing: $source"
+  }
+  return $publishDir
 }
 
 Require-Command "go"
@@ -209,6 +237,11 @@ try {
     Invoke-GoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $binaryPath -BuildVersion $safeVersion -BuildCommit $buildCommit -BuildDate $buildDate
     Write-Host "[steward] Building companion $target -> $companionPath"
     Invoke-CompanionGoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $companionPath
+	$notifierDirectory = $null
+	if ($goos -eq "windows" -and $goarch -eq "amd64") {
+	  Write-Host "[steward] Building Windows App SDK notification helper"
+	  $notifierDirectory = Invoke-WindowsNotifierBuild -OutputDirectory $artifactDir
+	}
 
     $uiRelativePath = $null
     if (-not $SkipUI) {
@@ -220,6 +253,9 @@ try {
 
     $artifactFiles = @()
     $paths = @($binaryPath, $companionPath)
+    if ($null -ne $notifierDirectory) {
+	  $paths += @(Get-ChildItem -LiteralPath $notifierDirectory -Recurse -File | Select-Object -ExpandProperty FullName)
+	}
     if (-not $SkipUI) {
       $paths += @(Get-ChildItem -LiteralPath (Join-Path $artifactDir "ui") -Recurse -File | Select-Object -ExpandProperty FullName)
     }

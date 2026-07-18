@@ -778,6 +778,63 @@ type StewardOverview struct {
 	Counts           map[string]int           `json:"counts"`
 }
 
+type StewardNotificationAction struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"`
+	Value string `json:"value,omitempty"`
+}
+
+type StewardNotificationDelivery struct {
+	ID                string     `json:"id"`
+	NotificationID    string     `json:"notification_id"`
+	EndpointID        *string    `json:"endpoint_id,omitempty"`
+	Channel           string     `json:"channel"`
+	Status            string     `json:"status"`
+	AttemptCount      int        `json:"attempt_count"`
+	MaxAttempts       int        `json:"max_attempts"`
+	NextAttemptAt     time.Time  `json:"next_attempt_at"`
+	ProviderMessageID string     `json:"provider_message_id,omitempty"`
+	LastError         string     `json:"last_error,omitempty"`
+	AcceptedAt        *time.Time `json:"accepted_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+type StewardNotification struct {
+	ID             string                        `json:"id"`
+	SourceType     string                        `json:"source_type"`
+	SourceID       string                        `json:"source_id,omitempty"`
+	Title          string                        `json:"title"`
+	Body           string                        `json:"body"`
+	Category       string                        `json:"category"`
+	Priority       string                        `json:"priority"`
+	Status         string                        `json:"status"`
+	ScheduledAt    time.Time                     `json:"scheduled_at"`
+	ExpiresAt      *time.Time                    `json:"expires_at,omitempty"`
+	DedupeKey      string                        `json:"dedupe_key,omitempty"`
+	Actions        []StewardNotificationAction   `json:"actions"`
+	Metadata       map[string]any                `json:"metadata"`
+	AcknowledgedAt *time.Time                    `json:"acknowledged_at,omitempty"`
+	CancelledAt    *time.Time                    `json:"cancelled_at,omitempty"`
+	Deliveries     []StewardNotificationDelivery `json:"deliveries"`
+	CreatedAt      time.Time                     `json:"created_at"`
+	UpdatedAt      time.Time                     `json:"updated_at"`
+}
+
+type StewardNotificationEndpoint struct {
+	ID            string         `json:"id"`
+	Channel       string         `json:"channel"`
+	Name          string         `json:"name"`
+	Enabled       bool           `json:"enabled"`
+	Config        map[string]any `json:"config"`
+	SecretSet     bool           `json:"secret_set"`
+	LastSuccessAt *time.Time     `json:"last_success_at,omitempty"`
+	LastError     string         `json:"last_error,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
 type MemoSideNoteRecord struct {
 	ID            string          `json:"id"`
 	DocumentID    string          `json:"document_id"`

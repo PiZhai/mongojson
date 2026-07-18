@@ -645,7 +645,18 @@ func (s *Service) failAgentEpisode(ctx context.Context, id string, cause error) 
 	if err != nil {
 		return err
 	}
-	return s.finishAgentEpisodeWithText(ctx, episode, "Agent 运行失败："+sanitizeRuntimeError(cause), agentEpisodeFailed)
+	failure := "Agent 运行失败：" + sanitizeRuntimeError(cause)
+	if episode.TriggerKind == "proactive_toolsmith" {
+		// Tool catalog maintenance is background infrastructure. Keep its full
+		// failure in the Episode and daemon status without injecting repetitive
+		// terminal messages into the user's normal conversation.
+		now := time.Now().UTC()
+		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status=$2,failure_summary=$3,
+			completed_at=$4,updated_at=$4,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`,
+			episode.ID, agentEpisodeFailed, failure, now)
+		return err
+	}
+	return s.finishAgentEpisodeWithText(ctx, episode, failure, agentEpisodeFailed)
 }
 
 func (s *Service) recordAgentEpisodeMemory(ctx context.Context, id string) error {

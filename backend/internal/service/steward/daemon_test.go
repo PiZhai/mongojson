@@ -83,3 +83,18 @@ func TestAgentAllowsBackgroundWorkOnlyWhenRunning(t *testing.T) {
 		}
 	}
 }
+
+func TestPersistedLoopDelayPreservesCadenceAcrossRestart(t *testing.T) {
+	now := time.Date(2026, 7, 18, 15, 0, 0, 0, time.UTC)
+	last := now.Add(-5 * time.Minute)
+	if got := persistedLoopDelay(&last, now, 30*time.Minute); got != 25*time.Minute {
+		t.Fatalf("persisted delay = %s, want 25m", got)
+	}
+	last = now.Add(-31 * time.Minute)
+	if got := persistedLoopDelay(&last, now, 30*time.Minute); got != 0 {
+		t.Fatalf("overdue persisted delay = %s, want immediate", got)
+	}
+	if got := persistedLoopDelay(nil, now, 30*time.Minute); got != 0 {
+		t.Fatalf("new loop delay = %s, want immediate", got)
+	}
+}

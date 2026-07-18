@@ -52,17 +52,26 @@ func (t *runtimeToolsmithTool) Spec() domain.StewardToolSpec {
 		required = []string{"name"}
 	}
 	sideEffect, approval, idempotency := RuntimeSideEffectNone, RuntimeApprovalNever, RuntimeIdempotencyInherent
+	timeoutSeconds := 30
 	if t.action != "tool.search" && t.action != "tool.describe" {
 		// ApprovalMode is retained as legacy registration metadata. Owner mode
 		// bypasses the old approval policy and executes Toolsmith calls directly.
 		sideEffect, approval, idempotency = RuntimeSideEffectWrite, RuntimeApprovalAlways, RuntimeIdempotencyNonIdempotent
+	}
+	switch t.action {
+	case "tool.create", "tool.update", "tool.test":
+		// Dependency preparation and real contract tests may install packages or
+		// launch external runtimes, so these operations retain the long budget.
+		timeoutSeconds = 1800
+	case "tool.enable", "tool.disable", "tool.rollback", "tool.delete":
+		timeoutSeconds = 120
 	}
 	return domain.StewardToolSpec{
 		Name: t.action, Version: "1.0.0", Description: description,
 		InputSchema:  map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false},
 		OutputSchema: map[string]any{"type": "object"}, PermissionLevel: PermissionA0, RiskLevel: "low",
 		SideEffect: sideEffect, ApprovalMode: approval, IdempotencyMode: idempotency,
-		SupportsCancel: true, DefaultTimeoutSec: 1800,
+		SupportsCancel: true, DefaultTimeoutSec: timeoutSeconds,
 	}
 }
 

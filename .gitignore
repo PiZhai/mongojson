@@ -13,6 +13,8 @@ backend/.env
 backend/data/
 backend/bin/
 backend/dist/
+backend/cmd/steward-windows-notifier/bin/
+backend/cmd/steward-windows-notifier/obj/
 
 # Local runtime
 *.log

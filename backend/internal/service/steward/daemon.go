@@ -20,6 +20,7 @@ const (
 	DefaultModelDispatchInterval      = time.Minute
 	DefaultRuntimeInterval            = time.Second
 	DefaultRuntimeWatchdogInterval    = 2 * time.Second
+	DefaultNotificationInterval       = 5 * time.Second
 )
 
 type DaemonOptions struct {
@@ -37,6 +38,8 @@ type DaemonOptions struct {
 	RuntimeLimit               int
 	RuntimeWatchdogInterval    time.Duration
 	RuntimeWatchdogLimit       int
+	NotificationInterval       time.Duration
+	NotificationLimit          int
 }
 
 type Daemon struct {
@@ -72,6 +75,8 @@ func DaemonOptionsFromEnv() DaemonOptions {
 		RuntimeLimit:               intEnv("STEWARD_RUNTIME_LIMIT", 10),
 		RuntimeWatchdogInterval:    durationEnv("STEWARD_RUNTIME_WATCHDOG_INTERVAL", DefaultRuntimeWatchdogInterval),
 		RuntimeWatchdogLimit:       intEnv("STEWARD_RUNTIME_WATCHDOG_LIMIT", 20),
+		NotificationInterval:       durationEnv("STEWARD_NOTIFICATION_INTERVAL", DefaultNotificationInterval),
+		NotificationLimit:          intEnv("STEWARD_NOTIFICATION_LIMIT", 40),
 	})
 }
 
@@ -108,6 +113,7 @@ func (d *Daemon) Start(parent context.Context) {
 		{name: "model-dispatch", interval: d.options.ModelDispatchInterval},
 		{name: "runtime-v2", interval: runtimeInterval},
 		{name: "runtime-watchdog", interval: runtimeWatchdogInterval},
+		{name: "notifications", interval: d.options.NotificationInterval},
 	} {
 		if err := d.service.configureDaemonLoop(ctx, loop.name, loop.interval, loop.interval > 0); err != nil {
 			log.Printf("steward daemon %s loop status initialization failed: %v", loop.name, err)
@@ -145,7 +151,7 @@ func (d *Daemon) Start(parent context.Context) {
 		_, err = d.service.RunProactiveCycle(ctx, RunProactiveInput{})
 		return err
 	}) || started
-	started = d.startLoop(ctx, "proactive-toolsmith", d.options.ProactiveToolsmithInterval, func(ctx context.Context) error {
+	started = d.startPersistedLoop(ctx, "proactive-toolsmith", d.options.ProactiveToolsmithInterval, func(ctx context.Context) error {
 		enabled, err := d.service.BackgroundWorkEnabled(ctx)
 		if err != nil || !enabled {
 			return err
@@ -187,6 +193,14 @@ func (d *Daemon) Start(parent context.Context) {
 	}) || started
 	started = d.startLoop(ctx, "runtime-watchdog", runtimeWatchdogInterval, func(ctx context.Context) error {
 		_, err := d.service.RunAgentRuntimeWatchdog(ctx, d.options.RuntimeWatchdogLimit)
+		return err
+	}) || started
+	started = d.startLoop(ctx, "notifications", d.options.NotificationInterval, func(ctx context.Context) error {
+		enabled, err := d.service.BackgroundWorkEnabled(ctx)
+		if err != nil || !enabled {
+			return err
+		}
+		_, err = d.service.RunNotificationDeliveryCycle(ctx, d.options.NotificationLimit)
 		return err
 	}) || started
 	started = d.startLoop(ctx, "runtime-v2", runtimeInterval, func(ctx context.Context) error {
@@ -301,6 +315,36 @@ func (d *Daemon) startLoop(ctx context.Context, name string, interval time.Durat
 	return true
 }
 
+// startPersistedLoop preserves the cadence across service restarts. This is
+// used for expensive model-driven maintenance so deployments do not trigger a
+// duplicate run and an unnecessary model call on every restart.
+func (d *Daemon) startPersistedLoop(ctx context.Context, name string, interval time.Duration, run func(context.Context) error) bool {
+	if interval <= 0 || run == nil {
+		return false
+	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		delay, err := d.service.daemonLoopInitialDelay(ctx, name, interval, time.Now().UTC())
+		if err != nil {
+			log.Printf("steward daemon %s persisted schedule unavailable; running now: %v", name, err)
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				d.runOnce(ctx, name, run)
+				timer.Reset(interval)
+			}
+		}
+	}()
+	return true
+}
+
 func (d *Daemon) runOnce(ctx context.Context, name string, run func(context.Context) error) {
 	startedAt := time.Now().UTC()
 	err := run(ctx)
@@ -381,6 +425,15 @@ func normalizeDaemonOptions(input DaemonOptions) DaemonOptions {
 	}
 	if out.RuntimeWatchdogLimit <= 0 || out.RuntimeWatchdogLimit > 100 {
 		out.RuntimeWatchdogLimit = 20
+	}
+	if out.NotificationInterval < 0 {
+		out.NotificationInterval = 0
+	}
+	if out.NotificationInterval == 0 {
+		out.NotificationInterval = DefaultNotificationInterval
+	}
+	if out.NotificationLimit <= 0 || out.NotificationLimit > 200 {
+		out.NotificationLimit = 40
 	}
 	return out
 }

@@ -3965,6 +3965,32 @@
 
 .steward-status-actions { display: flex; gap: 8px; }
 .steward-tool-dialog { width: min(1120px, 100%); max-height: calc(100dvh - 40px); overflow: hidden; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; box-shadow: 0 24px 70px rgba(15,23,42,.28); }
+
+.steward-notification-dialog { width: min(1180px, 100%); max-height: calc(100dvh - 40px); overflow: hidden; border: 1px solid #cbd5e1; border-radius: 14px; background: #fff; box-shadow: 0 24px 70px rgba(15,23,42,.28); }
+.steward-notification-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, .75fr); gap: 18px; padding: 18px 22px 24px; max-height: calc(100dvh - 130px); overflow: auto; background: #f8fafc; }
+.steward-notification-layout h3 { margin: 0 0 12px; color: #0f172a; }
+.steward-notification-history { display: grid; align-content: start; gap: 10px; }
+.steward-notification-history article { border: 1px solid #dbe4f0; border-left: 4px solid #64748b; border-radius: 10px; padding: 13px 14px; background: #fff; }
+.steward-notification-history article.is-high { border-left-color: #f59e0b; }
+.steward-notification-history article.is-urgent { border-left-color: #ef4444; }
+.steward-notification-history article header { display: flex; justify-content: space-between; gap: 14px; }
+.steward-notification-history article header div { display: grid; gap: 3px; }
+.steward-notification-history article header small, .steward-notification-endpoint small { color: #64748b; }
+.steward-notification-history article p { margin: 10px 0; white-space: pre-wrap; color: #334155; }
+.steward-notification-deliveries { display: flex; flex-wrap: wrap; gap: 6px; }
+.steward-notification-deliveries span { padding: 3px 8px; border-radius: 999px; background: #e2e8f0; color: #475569; font-size: 12px; }
+.steward-notification-deliveries span.is-ok { background: #dcfce7; color: #166534; }
+.steward-notification-deliveries span.is-error, .steward-notification-endpoint .is-error { background: #fee2e2; color: #b91c1c; }
+.steward-notification-history footer { display: flex; gap: 8px; margin-top: 10px; }
+.steward-notification-history button, .steward-notification-endpoint button, .steward-notification-form button { border: 1px solid #cbd5e1; border-radius: 7px; padding: 6px 10px; background: #fff; color: #1d4ed8; cursor: pointer; }
+.steward-notification-endpoints { display: grid; align-content: start; gap: 10px; }
+.steward-notification-endpoint { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; padding: 12px; border: 1px solid #dbe4f0; border-radius: 9px; background: #fff; }
+.steward-notification-endpoint > div { display: grid; gap: 3px; }
+.steward-notification-endpoint p { grid-column: 1 / -1; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.steward-notification-form { display: grid; gap: 8px; padding: 13px; border: 1px solid #dbe4f0; border-radius: 9px; background: #fff; }
+.steward-notification-form h4 { margin: 0 0 2px; }
+.steward-notification-form input { min-width: 0; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px 9px; }
+@media (max-width: 880px) { .steward-notification-layout { grid-template-columns: 1fr; } }
 .steward-tool-search { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; }
 .steward-tool-search input { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; }
 .steward-tool-hosts { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 8px 16px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; color: #475569; font-size: 12px; }

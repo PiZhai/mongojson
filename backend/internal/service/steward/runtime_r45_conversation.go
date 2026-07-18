@@ -147,6 +147,8 @@ func (s *Service) createConversationExecutionFromPlanLinked(ctx context.Context,
 			SourceInstruction: instruction, PlanSummary: summary,
 		})
 		if createErr != nil {
+			s.discardUnlinkedConversationMessage(ctx, assistant.ID)
+			assistant = domain.StewardConversationMessage{}
 			return assistant, execution, createErr
 		}
 		execution.Kind, execution.RunID, execution.PlanHash = conversationExecutionRun, run.ID, run.PlanHash
@@ -162,6 +164,8 @@ func (s *Service) createConversationExecutionFromPlanLinked(ctx context.Context,
 		idempotencyKey := defaultString(link.IdempotencyKey, "conversation:"+userMessage.ID)
 		orchestration, createErr := s.createConversationOrchestration(ctx, idempotencyKey, summary, level, permission, target, plan.Steps, link.StepTargets)
 		if createErr != nil {
+			s.discardUnlinkedConversationMessage(ctx, assistant.ID)
+			assistant = domain.StewardConversationMessage{}
 			return assistant, execution, createErr
 		}
 		execution.Kind, execution.OrchestrationID, execution.PlanHash = conversationExecutionOrchestration, orchestration.ID, orchestration.PlanHash
@@ -195,6 +199,21 @@ func (s *Service) createConversationExecutionFromPlanLinked(ctx context.Context,
 	}
 	assistant.Executions = []domain.StewardConversationExecution{execution}
 	return assistant, execution, nil
+}
+
+func (s *Service) discardUnlinkedConversationMessage(ctx context.Context, messageID string) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return
+	}
+	_, _ = s.db.Pool.Exec(ctx, `
+		delete from steward_conversation_messages message
+		where message.id = $1
+		  and not exists (
+			select 1 from steward_conversation_executions execution
+			where execution.message_id = message.id
+		  )
+	`, messageID)
 }
 
 func (s *Service) createConversationExecutionQuestion(ctx context.Context, conversation domain.StewardConversation, userMessage domain.StewardConversationMessage, instruction, level, question string) (domain.StewardConversationMessage, domain.StewardConversationExecution, error) {
@@ -339,6 +358,8 @@ func conversationConfirmationReason(permission, risk string, remote bool, capabi
 type conversationAgentProfile struct {
 	ID, Name, Role, Permission string
 	Tools                      []string
+	MaxRuntimeSeconds          int
+	MaxAttempts                int
 }
 
 func conversationAgentGroup(tool string) (string, string, string) {
@@ -370,19 +391,30 @@ func (s *Service) createConversationOrchestration(ctx context.Context, idempoten
 			profile.Tools = append(profile.Tools, step.ToolName)
 		}
 		tool, _ := s.runtimeTools.get(step.ToolName)
-		if tool != nil && permissionRank(tool.Spec().PermissionLevel) > permissionRank(profile.Permission) {
-			profile.Permission = tool.Spec().PermissionLevel
+		if tool != nil {
+			spec := normalizeRuntimeToolSpec(tool.Spec())
+			if permissionRank(spec.PermissionLevel) > permissionRank(profile.Permission) {
+				profile.Permission = spec.PermissionLevel
+			}
+			attempts := step.MaxAttempts
+			if attempts <= 0 {
+				attempts = 1
+			}
+			profile.MaxRuntimeSeconds = max(profile.MaxRuntimeSeconds, spec.DefaultTimeoutSec*attempts)
+			profile.MaxAttempts = max(profile.MaxAttempts, attempts)
 		}
 		stepAgents[step.Key] = id
 	}
 	for _, profile := range profiles {
 		sort.Strings(profile.Tools)
 		enabled := true
+		maxRuntimeSeconds := max(900, profile.MaxRuntimeSeconds)
+		maxAttempts := max(20, profile.MaxAttempts)
 		if _, err := s.UpsertOrchestrationAgent(ctx, UpsertOrchestrationAgentInput{
 			ID: profile.ID, Name: profile.Name, Role: profile.Role,
 			Description: "R4.5 对话路由生成的最小权限执行角色", PermissionCeiling: profile.Permission,
 			DataLevelCeiling: level, ToolAllowlist: profile.Tools, MaxConcurrency: 2,
-			MaxRuntimeSeconds: 900, MaxAttempts: 20, MaxEvidenceBytes: 262144, Enabled: &enabled,
+			MaxRuntimeSeconds: maxRuntimeSeconds, MaxAttempts: maxAttempts, MaxEvidenceBytes: 262144, Enabled: &enabled,
 		}); err != nil {
 			return domain.StewardOrchestration{}, err
 		}

@@ -1559,6 +1559,73 @@ func (db *DB) Migrate(ctx context.Context) error {
 			add column if not exists inference_status text not null default 'confirmed',
 			add column if not exists evidence_count integer not null default 0,
 			add column if not exists last_verified_at timestamptz;`,
+		`create table if not exists steward_notification_endpoints (
+			id uuid primary key,
+			channel text not null,
+			name text not null,
+			enabled boolean not null default true,
+			config jsonb not null default '{}'::jsonb,
+			secret_encrypted jsonb not null default '{}'::jsonb,
+			last_success_at timestamptz,
+			last_error text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique(channel, name)
+		);`,
+		`create table if not exists steward_notifications (
+			id uuid primary key,
+			source_type text not null default 'agent',
+			source_id text not null default '',
+			title text not null,
+			body text not null,
+			category text not null default 'general',
+			priority text not null default 'normal',
+			status text not null default 'queued',
+			scheduled_at timestamptz not null default now(),
+			expires_at timestamptz,
+			dedupe_key text not null default '',
+			actions jsonb not null default '[]'::jsonb,
+			metadata jsonb not null default '{}'::jsonb,
+			acknowledged_at timestamptz,
+			cancelled_at timestamptz,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists steward_notification_deliveries (
+			id uuid primary key,
+			notification_id uuid not null references steward_notifications(id) on delete cascade,
+			endpoint_id uuid references steward_notification_endpoints(id) on delete set null,
+			channel text not null,
+			status text not null default 'queued',
+			attempt_count integer not null default 0,
+			max_attempts integer not null default 6,
+			next_attempt_at timestamptz not null default now(),
+			lease_owner text not null default '',
+			lease_expires_at timestamptz,
+			provider_message_id text not null default '',
+			last_error text not null default '',
+			accepted_at timestamptz,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique(notification_id, channel, endpoint_id)
+		);`,
+		`create table if not exists steward_notification_interactions (
+			id uuid primary key,
+			notification_id uuid not null references steward_notifications(id) on delete cascade,
+			action text not null,
+			device_id text not null default '',
+			metadata jsonb not null default '{}'::jsonb,
+			created_at timestamptz not null default now()
+		);`,
+		`create unique index if not exists idx_steward_notifications_dedupe
+		on steward_notifications(dedupe_key) where dedupe_key <> '';`,
+		`create index if not exists idx_steward_notifications_status
+		on steward_notifications(status, scheduled_at desc);`,
+		`create index if not exists idx_steward_notification_deliveries_queue
+		on steward_notification_deliveries(status, next_attempt_at)
+		where status in ('queued','retrying','sending');`,
+		`create index if not exists idx_steward_notification_interactions_notification
+		on steward_notification_interactions(notification_id, created_at desc);`,
 		`create index if not exists idx_steward_events_created_at on steward_events(created_at desc);`,
 		`create index if not exists idx_steward_events_status on steward_events(status);`,
 		`create index if not exists idx_steward_tasks_updated_at on steward_tasks(updated_at desc);`,
