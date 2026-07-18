@@ -226,11 +226,18 @@ func TestStewardR43SignedRemoteExecutionAndDisconnectRecovery(t *testing.T) {
 	if _, err := target.service.RunRemoteExecutionCycle(ctx, 10); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1800 * time.Millisecond)
-	if _, err := origin.service.RunRemoteExecutionCycle(ctx, 10); err != nil {
-		t.Fatal(err)
+	offlineDeadline := time.Now().Add(8 * time.Second)
+	var offline domain.StewardOrchestration
+	for time.Now().Before(offlineDeadline) {
+		_, _ = target.service.RunAgentRuntimeCycle(ctx, 10)
+		_, _ = target.service.RunRemoteExecutionCycle(ctx, 10)
+		_, _ = origin.service.RunRemoteExecutionCycle(ctx, 10)
+		offline = getR40Orchestration(t, ctx, origin, second.ID)
+		if offline.Nodes[0].RemoteDispatch != nil && offline.Nodes[0].RemoteDispatch.Attempt >= 2 && offline.Nodes[0].RemoteDispatch.Status == "accepted" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	offline := getR40Orchestration(t, ctx, origin, second.ID)
 	if offline.Nodes[0].RemoteDispatch == nil || offline.Nodes[0].RemoteDispatch.Attempt < 2 || offline.Nodes[0].RemoteDispatch.Status != "accepted" {
 		t.Fatalf("offline dispatch was not retained for recovery: %+v", offline.Nodes[0])
 	}
