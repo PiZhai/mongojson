@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +49,18 @@ func (s *Service) CreateToolPackage(ctx context.Context, input CreateToolPackage
 		return domain.StewardTool{}, err
 	}
 	if versionExists {
-		return domain.StewardTool{}, fmt.Errorf("tool version %s@%s is immutable and already exists", manifest.Name, manifest.Version)
+		existingVersions := []string{}
+		if rows, queryErr := s.db.Pool.Query(ctx, `select version from steward_tool_versions where tool_name=$1`, manifest.Name); queryErr == nil {
+			for rows.Next() {
+				var version string
+				if rows.Scan(&version) == nil {
+					existingVersions = append(existingVersions, version)
+				}
+			}
+			rows.Close()
+		}
+		suggested := suggestNextToolVersion(manifest.Version, existingVersions)
+		return domain.StewardTool{}, fmt.Errorf("tool version %s@%s is immutable and already exists; retiring or deleting a tool preserves version history, so publish the repair with tool.update and a new version such as %s@%s", manifest.Name, manifest.Version, manifest.Name, suggested)
 	}
 
 	root := s.toolRootDir()
@@ -186,10 +198,12 @@ func buildToolProvenance(manifest ToolPackageManifest, digest string, input Crea
 
 func (s *Service) failToolPackage(ctx context.Context, manifest ToolPackageManifest, packagePath string, cause error) (domain.StewardTool, error) {
 	summary := truncateAdvisorText(cause.Error(), 2000)
-	_, _ = s.db.Pool.Exec(ctx, `
-		update steward_tool_versions set status='failed',validation_summary=$3 where tool_name=$1 and version=$2;
-		update steward_tools set health_status='failed',health_summary=$3,updated_at=now() where name=$1
-	`, manifest.Name, manifest.Version, summary)
+	if _, err := s.db.Pool.Exec(ctx, `update steward_tool_versions set status='failed',validation_summary=$3 where tool_name=$1 and version=$2`, manifest.Name, manifest.Version, summary); err != nil {
+		cause = fmt.Errorf("%w; additionally failed to persist failed version status: %v", cause, err)
+	}
+	if _, err := s.db.Pool.Exec(ctx, `update steward_tools set health_status='failed',health_summary=$2,updated_at=now() where name=$1`, manifest.Name, summary); err != nil {
+		cause = fmt.Errorf("%w; additionally failed to persist failed tool health: %v", cause, err)
+	}
 	_ = s.recordToolCatalogEvent(ctx, manifest.Name, manifest.Version, "validation_failed", "toolsmith", summary, map[string]any{"package_path": packagePath})
 	tool, _ := s.GetTool(ctx, manifest.Name)
 	return tool, cause
@@ -457,3 +471,50 @@ func toolVersionExists(ctx context.Context, query func(context.Context, string, 
 }
 
 func bytesString(buffer *bytes.Buffer) string { return buffer.String() }
+
+func suggestNextToolVersion(requested string, existing []string) string {
+	best, ok := parseToolVersionCore(requested)
+	if !ok {
+		return requested
+	}
+	for _, version := range existing {
+		candidate, valid := parseToolVersionCore(version)
+		if valid && compareToolVersionCore(candidate, best) > 0 {
+			best = candidate
+		}
+	}
+	best[2]++
+	return fmt.Sprintf("%d.%d.%d", best[0], best[1], best[2])
+}
+
+func parseToolVersionCore(version string) ([3]int, bool) {
+	var result [3]int
+	core := version
+	if index := strings.IndexAny(core, "-+"); index >= 0 {
+		core = core[:index]
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != len(result) {
+		return result, false
+	}
+	for index, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 {
+			return result, false
+		}
+		result[index] = value
+	}
+	return result, true
+}
+
+func compareToolVersionCore(left, right [3]int) int {
+	for index := range left {
+		if left[index] < right[index] {
+			return -1
+		}
+		if left[index] > right[index] {
+			return 1
+		}
+	}
+	return 0
+}

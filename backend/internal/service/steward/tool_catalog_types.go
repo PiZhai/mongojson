@@ -174,6 +174,9 @@ func normalizeToolPackageManifest(manifest ToolPackageManifest) (ToolPackageMani
 	if schemaType, _ := manifest.InputSchema["type"].(string); schemaType != "object" {
 		return manifest, fmt.Errorf("input_schema.type must be object")
 	}
+	if schemaType, _ := manifest.OutputSchema["type"].(string); schemaType != "object" {
+		return manifest, fmt.Errorf("output_schema.type must be object")
+	}
 	if _, err := json.Marshal(manifest.OutputSchema); err != nil {
 		return manifest, fmt.Errorf("invalid output_schema: %w", err)
 	}
@@ -256,6 +259,25 @@ func normalizeToolPackageManifest(manifest ToolPackageManifest) (ToolPackageMani
 	}
 	for index := range manifest.Tags {
 		manifest.Tags[index] = strings.ToLower(strings.TrimSpace(manifest.Tags[index]))
+	}
+	inputProperties, _ := manifest.InputSchema["properties"].(map[string]any)
+	for index := range manifest.Tests {
+		test := &manifest.Tests[index]
+		test.Name = strings.TrimSpace(test.Name)
+		if test.Name == "" {
+			return manifest, fmt.Errorf("every executable test requires a non-empty name")
+		}
+		if test.Input == nil {
+			test.Input = map[string]any{}
+		}
+		if _, wrapped := test.Input["arguments"]; wrapped {
+			if _, explicitlyDeclared := inputProperties["arguments"]; !explicitlyDeclared {
+				return manifest, fmt.Errorf("test %q input must contain tool arguments directly, not a nested \"arguments\" object; the Tool Host adds the steward-tool/1 envelope automatically", test.Name)
+			}
+		}
+		if err := validateToolInputSchema(manifest.InputSchema, test.Input); err != nil {
+			return manifest, fmt.Errorf("test %q input does not match input_schema: %w", test.Name, err)
+		}
 	}
 	sort.Strings(manifest.Tags)
 	return manifest, nil

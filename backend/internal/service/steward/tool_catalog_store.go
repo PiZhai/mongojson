@@ -23,6 +23,9 @@ func (s *Service) ensureToolCatalog(ctx context.Context, now time.Time) error {
 	if err := s.migrateLegacyToolDefinitions(ctx, now); err != nil {
 		return err
 	}
+	if err := s.reconcileInterruptedToolValidations(ctx); err != nil {
+		return err
+	}
 	for _, spec := range s.runtimeTools.specs() {
 		if registered, ok := s.runtimeTools.get(spec.Name); ok {
 			if _, dynamic := registered.(*packageRuntimeTool); dynamic {
@@ -61,6 +64,35 @@ func (s *Service) ensureToolCatalog(ctx context.Context, now time.Time) error {
 		}
 	}
 	return s.reloadDynamicTools(ctx)
+}
+
+func (s *Service) reconcileInterruptedToolValidations(ctx context.Context) error {
+	if _, err := s.db.Pool.Exec(ctx, `
+		update steward_tool_versions version set
+			status='failed',
+			validation_summary=coalesce((
+				select nullif(test.error_summary,'') from steward_tool_test_runs test
+				where test.tool_name=version.tool_name and test.tool_version=version.version and test.status='failed'
+				order by test.started_at desc limit 1
+			),nullif(version.validation_summary,'package validation in progress'),'tool validation was interrupted before publication')
+		where version.status='validating'
+	`); err != nil {
+		return fmt.Errorf("reconcile interrupted tool versions: %w", err)
+	}
+	if _, err := s.db.Pool.Exec(ctx, `
+		update steward_tools tool set
+			health_status='failed',
+			health_summary=coalesce((
+				select nullif(version.validation_summary,'') from steward_tool_versions version
+				where version.tool_name=tool.name and version.status='failed'
+				order by version.created_at desc limit 1
+			),'generated tool validation failed'),
+			updated_at=now()
+		where tool.origin='model' and tool.enabled=false and tool.active_version='' and tool.health_status<>'retired'
+	`); err != nil {
+		return fmt.Errorf("reconcile interrupted tool health: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) migrateLegacyToolDefinitions(ctx context.Context, now time.Time) error {

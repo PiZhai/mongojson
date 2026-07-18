@@ -32,6 +32,7 @@ func (s *Service) RunProactiveToolsmithCycle(ctx context.Context) error {
 	prompt := strings.Join([]string{
 		"这是后台 proactive_toolsmith 检查。请结合完整工具目录、近期失败和当前设备状态，自主判断是否需要创建、更新、合并、停用或删除工具。",
 		"先判断能否复用或组合已有工具；依赖方案按原生 API、组合、标准库、工具内隔离、隔离 CLI、共享依赖、机器全局的顺序比较。",
+		"创建脚本工具时必须遵守 tool.create 中的 steward-tool/1 精确协议：测试 input 直接填写业务参数，stdout 最后一行返回 ok/output/evidence 外壳；PowerShell 不得把自动变量 $args 当作业务参数对象。",
 		"如果没有值得采取的动作，单独调用 steward.stay_silent。不要为了制造活动而创建重复工具。",
 		"近期失败：" + string(recentFailures),
 	}, "\n")

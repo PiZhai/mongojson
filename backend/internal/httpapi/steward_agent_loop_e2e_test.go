@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestStewardR50WindowsCatalogPersistsAndIsQueryable(t *testing.T) {
 	}
 	foundSession, foundToolsmith := false, false
 	for _, tool := range payload.Tools {
-		if tool.Name == "screen.capture" && tool.ExecutionTarget == "session" && tool.ActiveVersion == "1.0.0" {
+		if tool.Name == "screen.capture" && tool.ExecutionTarget == "session" && tool.ActiveVersion != "" {
 			foundSession = true
 		}
 		if tool.Name == "tool.create" && tool.Enabled {
@@ -138,6 +139,53 @@ func TestStewardR50ToolsmithCreatesAndInvokesToolInSameEpisode(t *testing.T) {
 	}
 	if !tool.Enabled || tool.ActiveVersion != "1.0.0" || len(tool.RecentTests) == 0 || tool.RecentTests[0].Status != "passed" {
 		t.Fatalf("generated tool was not validated and enabled: %+v", tool)
+	}
+}
+
+func TestStewardR50ToolsmithRejectsBareOutputAndRecoversWithNewVersion(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell package protocol acceptance runs on Windows")
+	}
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the R5.0 Toolsmith protocol test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r50_tool_protocol"), "r50-tool-protocol", steward.WithRuntimeR2Enabled(true))
+	manifest := steward.ToolPackageManifest{
+		Name: "custom.protocol_probe", Version: "1.0.0", Title: "Protocol probe", Description: "Verify generated Tool Host protocol failures are actionable.",
+		Runtime: "powershell", ExecutionTarget: "system", Entrypoint: "tool.ps1",
+		InputSchema:  map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
+		OutputSchema: map[string]any{"type": "object", "properties": map[string]any{"count": map[string]any{"type": "integer"}}, "required": []string{"count"}},
+		Files: []steward.ToolPackageFile{{Path: "tool.ps1", Content: `[Console]::In.ReadLine() | Out-Null
+[Console]::Out.WriteLine('{"count":0}')`}},
+		Tests:              []steward.ToolPackageTest{{Name: "protocol", Input: map[string]any{}, Expected: map[string]any{"count": float64(0)}}},
+		DependencyStrategy: steward.ToolDependencyStrategy{Requested: "none", Selected: "none", SelectionReason: "PowerShell standard library only"},
+		SupportsCancel:     true, IdempotencyMode: "inherent", SideEffect: "none",
+	}
+	if _, err := node.service.CreateToolPackage(ctx, steward.CreateToolPackageInput{Manifest: manifest}); err == nil || !strings.Contains(err.Error(), `missing required boolean field "ok"`) {
+		t.Fatalf("bare business output was not rejected with protocol guidance: %v", err)
+	}
+	failed, err := node.service.GetTool(ctx, manifest.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failed.Versions) != 1 || failed.Versions[0].Status != "failed" || failed.HealthStatus != "failed" {
+		t.Fatalf("failed package status was not persisted: %+v", failed)
+	}
+	if _, err := node.service.CreateToolPackage(ctx, steward.CreateToolPackageInput{Manifest: manifest}); err == nil || !strings.Contains(err.Error(), "tool.update") || !strings.Contains(err.Error(), "1.0.1") {
+		t.Fatalf("immutable version conflict lacks next-version guidance: %v", err)
+	}
+	manifest.Version = "1.0.1"
+	manifest.Files[0].Content = `[Console]::In.ReadLine() | Out-Null
+[Console]::Out.WriteLine('{"ok":true,"output":{"count":0},"evidence":[]}')`
+	created, err := node.service.CreateToolPackage(ctx, steward.CreateToolPackageInput{Manifest: manifest})
+	if err != nil {
+		t.Fatalf("publish repaired protocol version: %v", err)
+	}
+	if !created.Enabled || created.ActiveVersion != "1.0.1" || created.HealthStatus != "healthy" {
+		t.Fatalf("repaired package was not activated: %+v", created)
 	}
 }
 

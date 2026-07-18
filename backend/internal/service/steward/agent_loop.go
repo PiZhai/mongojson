@@ -385,16 +385,28 @@ func (s *Service) completeAgentEpisodeExecution(ctx context.Context, execution d
 		}
 		results = append(results, result)
 	}
-	callsJSON, _ := json.Marshal(turn.ToolCalls)
 	resultsJSON, _ := json.Marshal(results)
-	callFingerprint := agentFingerprint(callsJSON)
-	resultFingerprint := agentFingerprint(resultsJSON)
+	toolsmithFailure := episode.TriggerKind == "proactive_toolsmith" && allAgentToolResultsFailed(results)
+	callFingerprint := agentToolCallProgressFingerprint(turn.ToolCalls, toolsmithFailure)
+	resultFingerprint := agentToolResultProgressFingerprint(results)
 	noProgress := 1
-	_ = s.db.Pool.QueryRow(ctx, `
-		select case when call_fingerprint=$3 and result_fingerprint=$4 then $5+1 else 1 end
-		from steward_agent_turns where episode_id=$1 and round_index<$2 and status='tools_complete'
-		order by round_index desc limit 1
-	`, episode.ID, turn.RoundIndex, callFingerprint, resultFingerprint, episode.NoProgressCount).Scan(&noProgress)
+	if toolsmithFailure {
+		var previousMatches int
+		_ = s.db.Pool.QueryRow(ctx, `
+			select count(*) from (
+				select call_fingerprint,result_fingerprint from steward_agent_turns
+				where episode_id=$1 and round_index<$2 and status='tools_complete'
+				order by round_index desc limit 8
+			) recent where call_fingerprint=$3 and result_fingerprint=$4
+		`, episode.ID, turn.RoundIndex, callFingerprint, resultFingerprint).Scan(&previousMatches)
+		noProgress = previousMatches + 1
+	} else {
+		_ = s.db.Pool.QueryRow(ctx, `
+			select case when call_fingerprint=$3 and result_fingerprint=$4 then $5+1 else 1 end
+			from steward_agent_turns where episode_id=$1 and round_index<$2 and status='tools_complete'
+			order by round_index desc limit 1
+		`, episode.ID, turn.RoundIndex, callFingerprint, resultFingerprint, episode.NoProgressCount).Scan(&noProgress)
+	}
 	now := time.Now().UTC()
 	summary := summarizeAgentResults(results)
 	_, err = s.db.Pool.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,call_fingerprint=$3,
@@ -437,6 +449,72 @@ func compactAgentToolOutput(output, evidence map[string]any) map[string]any {
 func agentFingerprint(value []byte) string {
 	hash := sha256.Sum256(value)
 	return hex.EncodeToString(hash[:])
+}
+
+func agentToolCallProgressFingerprint(calls []domain.StewardAgentToolCall, failureClassOnly bool) string {
+	canonical := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		item := map[string]any{"tool_name": call.ToolName}
+		if !failureClassOnly {
+			item["arguments"] = call.Arguments
+			item["target_device_id"] = call.TargetDeviceID
+		}
+		canonical = append(canonical, item)
+	}
+	encoded, _ := json.Marshal(canonical)
+	return agentFingerprint(encoded)
+}
+
+func agentToolResultProgressFingerprint(results []domain.StewardAgentToolResult) string {
+	canonical := make([]map[string]any, 0, len(results))
+	for _, result := range results {
+		item := map[string]any{"tool_name": result.ToolName}
+		if result.Error != "" {
+			item["error"] = normalizeAgentProgressError(result.Error)
+		} else {
+			item["output"] = result.Output
+		}
+		canonical = append(canonical, item)
+	}
+	encoded, _ := json.Marshal(canonical)
+	return agentFingerprint(encoded)
+}
+
+func allAgentToolResultsFailed(results []domain.StewardAgentToolResult) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, result := range results {
+		if strings.TrimSpace(result.Error) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeAgentProgressError(value string) string {
+	value = strings.TrimSpace(value)
+	for _, marker := range []string{
+		"invalid steward-tool/1 response:",
+		"invalid steward-tool/1 response JSON:",
+	} {
+		if index := strings.Index(value, marker); index >= 0 {
+			return value[index:]
+		}
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.Contains(lower, "is immutable and already exists"):
+		return "tool version is immutable and already exists"
+	case strings.Contains(lower, "generated tools require at least one executable test"):
+		return "generated tool has no executable test"
+	case strings.Contains(lower, "tool title and description are required"):
+		return "generated tool title or description is missing"
+	case strings.Contains(lower, "input must contain tool arguments directly"), strings.Contains(lower, "input does not match input_schema"):
+		return "generated tool test input does not match input_schema"
+	default:
+		return truncateAdvisorText(value, 1000)
+	}
 }
 
 func summarizeAgentResults(results []domain.StewardAgentToolResult) string {

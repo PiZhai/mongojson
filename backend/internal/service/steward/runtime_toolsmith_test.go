@@ -25,6 +25,31 @@ func TestToolsmithTimeoutsMatchOperationCost(t *testing.T) {
 	}
 }
 
+func TestToolsmithCreateExposesCompleteHostProtocolAndManifestSchema(t *testing.T) {
+	spec := newRuntimeToolsmithTool(NewService(nil), "tool.create").Spec()
+	for _, expected := range []string{"steward-tool/1", `{"ok":true,"output":{...},"evidence":[]}`, `never nest test input under "arguments"`, "$toolArguments"} {
+		if !strings.Contains(spec.Description, expected) {
+			t.Fatalf("tool.create description is missing %q", expected)
+		}
+	}
+	parameters, err := normalizeOpenAIToolParameters(spec.InputSchema)
+	if err != nil {
+		t.Fatalf("tool.create schema is not provider-compatible: %v", err)
+	}
+	properties := parameters["properties"].(map[string]any)
+	manifest := properties["manifest"].(map[string]any)
+	manifestProperties := manifest["properties"].(map[string]any)
+	for _, name := range []string{"name", "version", "title", "description", "runtime", "execution_target", "input_schema", "output_schema", "files", "dependency_strategy", "tests", "transaction"} {
+		if _, ok := manifestProperties[name]; !ok {
+			t.Fatalf("tool.create manifest schema is missing %s", name)
+		}
+	}
+	tests := manifestProperties["tests"].(map[string]any)
+	if !strings.Contains(tests["description"].(string), "At least one executable test") {
+		t.Fatalf("tests schema lacks executable-test guidance: %#v", tests)
+	}
+}
+
 func TestOrchestrationQuotaErrorIdentifiesExceededResource(t *testing.T) {
 	err := orchestrationNodeQuotaError("tool_1", 1800, 1, 900, 20)
 	if !errors.Is(err, ErrOrchestrationInvalid) || !strings.Contains(err.Error(), "runtime budget 1800s") || strings.Contains(err.Error(), "exceeding the Agent quota of 20 attempts") {

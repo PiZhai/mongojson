@@ -277,13 +277,47 @@ func decodeToolHostResponse(payload []byte) (toolHostResponse, error) {
 		return response, err
 	}
 	if len(last) == 0 {
-		return response, fmt.Errorf("empty stdout")
+		return response, fmt.Errorf("invalid steward-tool/1 response: stdout is empty; the final stdout line must be a JSON object such as {\"ok\":true,\"output\":{},\"evidence\":[]}")
 	}
-	if err := json.Unmarshal(last, &response); err != nil {
-		return response, err
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(last, &fields); err != nil {
+		return response, fmt.Errorf("invalid steward-tool/1 response JSON: %w", err)
 	}
-	if response.Output == nil {
+	if fields == nil {
+		return response, fmt.Errorf("invalid steward-tool/1 response: final stdout line must be a JSON object")
+	}
+	okJSON, exists := fields["ok"]
+	if !exists {
+		return response, fmt.Errorf("invalid steward-tool/1 response: missing required boolean field \"ok\"; wrap business results as {\"ok\":true,\"output\":{...},\"evidence\":[]}")
+	}
+	if err := json.Unmarshal(okJSON, &response.OK); err != nil {
+		return response, fmt.Errorf("invalid steward-tool/1 response: field \"ok\" must be boolean")
+	}
+	if errorJSON, exists := fields["error"]; exists {
+		if err := json.Unmarshal(errorJSON, &response.Error); err != nil {
+			return response, fmt.Errorf("invalid steward-tool/1 response: field \"error\" must be a string")
+		}
+	}
+	if response.OK {
+		outputJSON, exists := fields["output"]
+		if !exists || bytes.Equal(bytes.TrimSpace(outputJSON), []byte("null")) {
+			return response, fmt.Errorf("invalid steward-tool/1 response: successful responses require an object field \"output\"")
+		}
+		if err := json.Unmarshal(outputJSON, &response.Output); err != nil || response.Output == nil {
+			return response, fmt.Errorf("invalid steward-tool/1 response: field \"output\" must be an object when ok=true")
+		}
+	} else {
+		if strings.TrimSpace(response.Error) == "" {
+			return response, fmt.Errorf("invalid steward-tool/1 response: failed responses require a non-empty string field \"error\"")
+		}
 		response.Output = map[string]any{}
+	}
+	evidenceJSON, exists := fields["evidence"]
+	if !exists {
+		return response, fmt.Errorf("invalid steward-tool/1 response: missing required array field \"evidence\"; use an empty array when there is no tool-supplied evidence")
+	}
+	if err := json.Unmarshal(evidenceJSON, &response.Evidence); err != nil || response.Evidence == nil {
+		return response, fmt.Errorf("invalid steward-tool/1 response: field \"evidence\" must be an array")
 	}
 	return response, nil
 }

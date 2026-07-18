@@ -9,6 +9,8 @@ import (
 	"mongojson/backend/internal/domain"
 )
 
+const toolHostProtocolGuide = `Script tools use NDJSON protocol steward-tool/1. Read one request object from stdin: {"protocol":"steward-tool/1","invocation_id":"...","arguments":{},"context":{...}}. The final non-empty stdout line MUST be exactly one response envelope. Success: {"ok":true,"output":{...},"evidence":[]}. Failure: {"ok":false,"error":"actionable message","evidence":[]}. Do not print a bare business result. Tests pass the manifest input arguments directly; never nest test input under "arguments", because the Tool Host creates that envelope. In PowerShell use a variable such as $toolArguments, not the automatic $args variable, and treat null request.arguments as an empty object.`
+
 type runtimeToolsmithTool struct {
 	service *Service
 	action  string
@@ -31,7 +33,7 @@ func (t *runtimeToolsmithTool) Spec() domain.StewardToolSpec {
 		"tool.delete":   "Retire a generated tool while retaining its catalog and execution evidence.",
 	}[t.action]
 	if t.action == "tool.create" || t.action == "tool.update" {
-		description += " Follow Steward Tool Authoring Standard 1.1: search and compose first; prefer native APIs, standard libraries, then package-local locked dependencies; global installation is allowed only when it is the best governed choice and rejected isolated alternatives are recorded. Python isolated packages require a hash-locked requirements.lock; Node isolated packages require package-lock.json and npm ci. Mutating script tools should declare transaction.mode=automatic with package-local snapshot, verification, and rollback entrypoints; verification must reread real system state and rollback must preserve unrelated concurrent changes."
+		description += " Follow Steward Tool Authoring Standard 1.1: search and compose first; prefer native APIs, standard libraries, then package-local locked dependencies; global installation is allowed only when it is the best governed choice and rejected isolated alternatives are recorded. Python isolated packages require a hash-locked requirements.lock; Node isolated packages require package-lock.json and npm ci. Mutating script tools should declare transaction.mode=automatic with package-local snapshot, verification, and rollback entrypoints; verification must reread real system state and rollback must preserve unrelated concurrent changes. " + toolHostProtocolGuide
 	}
 	properties := map[string]any{}
 	required := []string{}
@@ -43,7 +45,7 @@ func (t *runtimeToolsmithTool) Spec() domain.StewardToolSpec {
 		required = []string{"name"}
 	case "tool.create", "tool.update":
 		properties = map[string]any{
-			"manifest":    map[string]any{"type": "object", "description": "ToolPackageManifest including source files, exact dependencies, dependency strategy, schemas, executable tests, and for mutating scripts an automatic transaction contract with snapshot/verification/rollback entrypoints."},
+			"manifest":    toolPackageManifestToolSchema(),
 			"auto_enable": map[string]any{"type": "boolean"},
 		}
 		required = []string{"manifest"}
@@ -72,6 +74,66 @@ func (t *runtimeToolsmithTool) Spec() domain.StewardToolSpec {
 		OutputSchema: map[string]any{"type": "object"}, PermissionLevel: PermissionA0, RiskLevel: "low",
 		SideEffect: sideEffect, ApprovalMode: approval, IdempotencyMode: idempotency,
 		SupportsCancel: true, DefaultTimeoutSec: timeoutSeconds,
+	}
+}
+
+func toolPackageManifestToolSchema() map[string]any {
+	objectSchema := func(description string) map[string]any {
+		return map[string]any{"type": "object", "description": description, "additionalProperties": true}
+	}
+	return map[string]any{
+		"type": "object", "additionalProperties": false,
+		"description": "Immutable generated tool package. " + toolHostProtocolGuide,
+		"properties": map[string]any{
+			"name":             map[string]any{"type": "string", "description": "Namespaced lowercase tool name such as windows.startup_list."},
+			"version":          map[string]any{"type": "string", "description": "New semantic version x.y.z. Published and failed versions are immutable; tool.update must use a version that has never existed."},
+			"title":            map[string]any{"type": "string"},
+			"description":      map[string]any{"type": "string"},
+			"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"runtime":          map[string]any{"type": "string", "enum": []string{toolRuntimePowerShell, toolRuntimePython, toolRuntimeNode, toolRuntimeComposite}},
+			"execution_target": map[string]any{"type": "string", "enum": []string{toolTargetSystem, toolTargetSession, toolTargetAuto}},
+			"entrypoint":       map[string]any{"type": "string", "description": "Entrypoint file for script runtimes."},
+			"input_schema":     objectSchema("JSON Schema for the business arguments found inside the Tool Host request's arguments field."),
+			"output_schema":    objectSchema("JSON Schema for the business object placed inside the Tool Host response's output field."),
+			"files": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"path":    map[string]any{"type": "string"},
+					"content": map[string]any{"type": "string", "description": toolHostProtocolGuide},
+				}, "required": []string{"path", "content"},
+			}},
+			"dependencies": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"ecosystem": map[string]any{"type": "string", "enum": []string{"pip", "pipx", "npm", "powershell", "winget"}},
+					"name":      map[string]any{"type": "string"}, "version": map[string]any{"type": "string"},
+					"scope": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"}, "sha256": map[string]any{"type": "string"},
+				}, "required": []string{"ecosystem", "name", "version"},
+			}},
+			"dependency_strategy": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"requested": map[string]any{"type": "string"}, "selected": map[string]any{"type": "string"}, "selection_reason": map[string]any{"type": "string"},
+					"alternatives": map[string]any{"type": "array", "items": objectSchema("Rejected dependency strategy and reason.")},
+				}, "required": []string{"requested", "selected", "selection_reason"},
+			},
+			"tests": map[string]any{"type": "array", "description": "At least one executable test is required.", "items": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"name":     map[string]any{"type": "string"},
+					"input":    objectSchema("Business arguments passed directly to the tool. Do not add an arguments wrapper."),
+					"expected": objectSchema("Optional expected subset of the business output object."),
+				}, "required": []string{"name", "input"},
+			}},
+			"composite_steps":         map[string]any{"type": "array", "items": objectSchema("Composite DAG step.")},
+			"default_timeout_seconds": map[string]any{"type": "integer"},
+			"output_limit_bytes":      map[string]any{"type": "integer"},
+			"supports_cancel":         map[string]any{"type": "boolean"},
+			"idempotency_mode":        map[string]any{"type": "string"},
+			"side_effect":             map[string]any{"type": "string"},
+			"transaction":             objectSchema("Use mode=automatic plus snapshot_entrypoint, verification_entrypoint, and rollback_entrypoint for mutating script tools; otherwise mode=none."),
+		},
+		"required": []string{"name", "version", "title", "description", "runtime", "execution_target", "input_schema", "output_schema", "dependency_strategy", "tests", "supports_cancel", "side_effect"},
 	}
 }
 
