@@ -20,6 +20,8 @@ The Windows release contains the main service, Broker, approval helper, Companio
 
 ## Installation
 
+For a clean machine, follow the step-by-step [full Windows production deployment guide](windows-fresh-production-deployment.md). This document describes the isolation contract; it is not a replacement for the full host, Docker PostgreSQL, model configuration, cold-start and reboot-acceptance procedure.
+
 Prepare PostgreSQL on a loopback-only address. The installer generates a protected policy, Broker request key, independent resume key, signing identity and separate approval key automatically:
 
 ```powershell

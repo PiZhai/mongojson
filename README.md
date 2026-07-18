@@ -1,6 +1,6 @@
 # Personal Tooling Platform
 
-Windows 管家生产隔离、LocalService 主服务、独立 LocalSystem Broker 和完整安装生命周期见 [R5.1 Windows 生产部署](docs/steward-r5.1-windows-production-isolation.md)。
+全新 Windows 电脑的完整安装顺序见 [全新 Windows 主机完整生产部署指南](docs/windows-fresh-production-deployment.md)；LocalService 主服务、独立 LocalSystem Broker、Session Companion 和 DACL 的实现原理见 [R5.1 Windows 生产隔离](docs/steward-r5.1-windows-production-isolation.md)。
 
 一个浏览器访问的个人工具平台，首期聚焦：
 
@@ -81,7 +81,7 @@ go run ./cmd/server
 
 默认本地管理地址是 `http://127.0.0.1:18080`，工作台入口是 `http://127.0.0.1:18080/tools/steward`。二进制会自动托管同级 `ui/`，仍需要可用的 PostgreSQL `DATABASE_URL`。从构建发布包到三台真实设备安装、配对和 24 小时验收的完整步骤见 [三端打包、安装与验证教程](docs/personal-ai-steward-three-platform-deployment-guide.md)；自动记录、证据关系和清理规则见 [自动记录、关联记忆与信息生命周期](docs/personal-ai-steward-activity-memory-lifecycle.md)；协议和验收字段定义见 [S3/S4 运行与验证基线](docs/personal-ai-steward-s3-s4-runtime.md)。
 
-工作台支持本机持久化对话，以及 D0-D6 数据策略和 A0-A9 操作策略矩阵。每个数据等级可按来源独立设置禁止、手动或自动采集，独立设置是否发送模型及 `metadata/summary/redacted/raw` 内容形态；每个权限等级可按动作独立设置执行模式、模拟、回滚、批量和冷却。D4-D6 观察、对话和候选使用本地 AES-GCM 加密。D5 凭据检测会先把伪装成低等级的内容提升为 D5；默认仍拒绝，只有 companion 白名单、中央数据策略、A6 模型外发策略和模型最高等级同时允许时才可保存或外发。高权限执行只接受已登记的结构化工具，不把模型文本作为 shell 命令。
+工作台使用设备所有者模式：普通对话直接进入模型，模型结合长期记忆、活动、设备状态和完整工具目录决定回答或调用工具；底层仍校验工具是否存在、参数是否合法、目标设备是否可用，并保留 Broker 签名、进程隔离、Watchdog、证据、暂停、取消和全局急停等技术完整性边界。高权限执行只接受已登记的结构化工具，不把模型文本直接当作 shell 命令。
 
 目标主机安装先用受保护的服务环境 JSON 做无写入计划；确认后必须从管理员/root 终端显式执行真实安装：
 
@@ -102,6 +102,8 @@ go run ./cmd/server
 inventory 可从 `deploy/steward-s3s4-final-system.example.json` 开始填写，不应包含任何密钥。协调脚本对三个来源包分别验证平台、agent、system service、advisor 身份和 24 小时 watch，复制时记录 SHA-256，再调用 `s3s4-final-system` preset 生成统一 manifest。
 
 ## Docker Compose
+
+> 本节是完整容器化的开发/演示模式。Windows 原生智能管家生产安装与它互斥：生产模式只在 Docker 中运行 PostgreSQL，完整后端和 UI 由原生 `MongojsonSteward` 服务承载。详见 [全新 Windows 主机完整生产部署指南](docs/windows-fresh-production-deployment.md)。
 
 ```bash
 docker compose up --build

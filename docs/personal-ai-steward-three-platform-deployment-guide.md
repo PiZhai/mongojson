@@ -1,5 +1,7 @@
 # 私人智能管家三端打包、安装与验证教程
 
+> Windows 的当前生产安装已经升级为 LocalService 主服务、独立 LocalSystem Broker 和登录会话 Companion。Windows 全新机器应先按 [全新 Windows 主机完整生产部署指南](windows-fresh-production-deployment.md) 安装；本文保留的旧 Windows 单服务命令只用于理解历史跨平台流程，不能替代当前生产安装器。
+
 本文给出 Windows、macOS 和 Linux 三台真实设备的完整部署路径，适用于当前仓库中的 `steward` CLI、后台服务和 Web 工作台。命令以仓库根目录为起点；Windows 使用 PowerShell，macOS/Linux 使用 PowerShell 7 (`pwsh`) 运行仓库提供的 `.ps1` 脚本。
 
 > 当前发布物是“可移植目录包 + 原生系统服务注册”，不是带安装向导的 MSI、PKG、DMG、DEB 或 RPM。目录包内同时包含 `steward` 二进制和 `ui/`。真实安装会分别注册 Windows Service、macOS LaunchDaemon 或 Linux systemd system unit。

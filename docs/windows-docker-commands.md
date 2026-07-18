@@ -1,5 +1,7 @@
 # Windows Docker 启动、重启与发版命令
 
+> **范围警告：本文只适用于完整容器化的开发/演示模式。** 安装 Windows 原生 `MongojsonSteward`、`MongojsonStewardBroker` 和 Session Companion 后，不要按本文启动容器 `backend/frontend/nginx`，否则会争用 `18080` 并运行第二套 Agent/Daemon。全新 Windows 生产安装只使用 Docker 运行 PostgreSQL，步骤见 [全新 Windows 主机完整生产部署指南](windows-fresh-production-deployment.md)。
+
 这份文档用于在 Windows 本机随时查看 `mongojson` 项目的 Docker 操作命令。
 
 默认项目目录：
