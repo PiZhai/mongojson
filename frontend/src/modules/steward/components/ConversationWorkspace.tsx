@@ -22,6 +22,7 @@ import { formatDate } from './model'
 import { authorityMatchesOrigin, issueWebAuthnApprovalProof } from './webauthnApproval'
 import { ModelSettingsDialog } from './ModelSettingsDialog'
 import { ArchivedConversationsDialog } from './ArchivedConversationsDialog'
+import { isConversationNearBottom } from './conversationScroll'
 
 type Props = {
   onDataChanged: () => Promise<void>
@@ -41,9 +42,57 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
   const [archiveBusyId, setArchiveBusyId] = useState('')
   const [archiveError, setArchiveError] = useState('')
   const [agentProgressDetail, setAgentProgressDetail] = useState('compact')
-  const messageEndRef = useRef<HTMLDivElement | null>(null)
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false)
+  const messagesRef = useRef<HTMLDivElement | null>(null)
+  const followLatestRef = useRef(true)
+  const scrollingToLatestRef = useRef(false)
+  const nextScrollBehaviorRef = useRef<ScrollBehavior>('auto')
+  const scrollCompletionTimerRef = useRef<number | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const archiveTriggerRef = useRef<HTMLButtonElement | null>(null)
+
+  const prepareToFollowLatest = useCallback((behavior: ScrollBehavior = 'auto') => {
+    followLatestRef.current = true
+    nextScrollBehaviorRef.current = behavior
+    setShowScrollToLatest(false)
+  }, [])
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const container = messagesRef.current
+    if (!container) return
+    if (scrollCompletionTimerRef.current !== null) {
+      window.clearTimeout(scrollCompletionTimerRef.current)
+    }
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const resolvedBehavior = reducedMotion ? 'auto' : behavior
+    scrollingToLatestRef.current = true
+    followLatestRef.current = true
+    setShowScrollToLatest(false)
+    container.scrollTo({ top: container.scrollHeight, behavior: resolvedBehavior })
+    scrollCompletionTimerRef.current = window.setTimeout(() => {
+      scrollingToLatestRef.current = false
+      const isAtBottom = isConversationNearBottom(container)
+      followLatestRef.current = isAtBottom
+      setShowScrollToLatest(!isAtBottom)
+      scrollCompletionTimerRef.current = null
+    }, resolvedBehavior === 'smooth' ? 500 : 0)
+  }, [])
+
+  const handleMessageScroll = useCallback(() => {
+    const container = messagesRef.current
+    if (!container) return
+    const isAtBottom = isConversationNearBottom(container)
+    if (scrollingToLatestRef.current) {
+      if (isAtBottom) {
+        scrollingToLatestRef.current = false
+        followLatestRef.current = true
+        setShowScrollToLatest(false)
+      }
+      return
+    }
+    followLatestRef.current = isAtBottom
+    setShowScrollToLatest(!isAtBottom)
+  }, [])
 
   const loadConversations = async (preferredId?: string) => {
     const result = await getStewardConversations()
@@ -52,9 +101,11 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     const nextId = result.conversations.some((item) => item.id === requestedId)
       ? requestedId
       : result.conversations[0]?.id || ''
+    const conversationChanged = nextId !== activeId
     setActiveId(nextId)
     if (nextId) {
       const messageResult = await getStewardConversationMessages(nextId)
+      if (conversationChanged) prepareToFollowLatest('auto')
       setMessages(messageResult.messages)
     } else {
       setMessages([])
@@ -71,7 +122,10 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
         setActiveId(nextId)
         if (nextId) {
           const messageResult = await getStewardConversationMessages(nextId)
-          if (alive) setMessages(messageResult.messages)
+          if (alive) {
+            prepareToFollowLatest('auto')
+            setMessages(messageResult.messages)
+          }
         }
       })
       .catch((reason: unknown) => {
@@ -80,15 +134,25 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     return () => {
       alive = false
     }
-  }, [])
+  }, [prepareToFollowLatest])
 
   useEffect(() => {
     void getStewardModelSettings().then(({ settings }) => setAgentProgressDetail(settings.agent_progress_detail || 'compact')).catch(() => undefined)
   }, [modelSettingsOpen])
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-  }, [messages, busy])
+    if (!followLatestRef.current) return
+    if (!messages.length && !busy) return
+    const behavior = nextScrollBehaviorRef.current
+    nextScrollBehaviorRef.current = 'smooth'
+    scrollToLatest(behavior)
+  }, [messages, busy, scrollToLatest])
+
+  useEffect(() => () => {
+    if (scrollCompletionTimerRef.current !== null) {
+      window.clearTimeout(scrollCompletionTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     const composer = composerRef.current
@@ -108,11 +172,13 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
   }, [activeId])
 
   const selectConversation = async (id: string) => {
+    prepareToFollowLatest('auto')
     setActiveId(id)
     setBusy(true)
     setError('')
     try {
       const result = await getStewardConversationMessages(id)
+      prepareToFollowLatest('auto')
       setMessages(result.messages)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '加载消息失败')
@@ -122,6 +188,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
   }
 
   const createConversation = async () => {
+    prepareToFollowLatest('auto')
     setBusy(true)
     setError('')
     try {
@@ -139,6 +206,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     event.preventDefault()
     const content = draft.trim()
     if (!content || busy) return
+    prepareToFollowLatest('smooth')
     setBusy(true)
     setError('')
     try {
@@ -218,6 +286,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
 
   const sendControlCommand = async (command: '继续' | '换到另一台电脑') => {
     if (!activeId) return
+    prepareToFollowLatest('smooth')
     setBusy(true)
     setError('')
     try {
@@ -332,7 +401,14 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
       </aside>
 
       <div className="steward-conversation-main">
-        <div className="steward-conversation-messages" aria-busy={busy} aria-live="polite">
+        <div className="steward-conversation-message-stage">
+          <div
+            className="steward-conversation-messages"
+            aria-busy={busy}
+            aria-live="polite"
+            onScroll={handleMessageScroll}
+            ref={messagesRef}
+          >
           {messages.length === 0 ? (
             <div className="steward-conversation-welcome">
               <strong>私人管家</strong>
@@ -458,7 +534,20 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
               <span>管家正在思考并检查可用工具</span>
             </div>
           ) : null}
-          <div ref={messageEndRef} />
+          </div>
+          {showScrollToLatest ? (
+            <button
+              aria-label="回到最新消息"
+              className="steward-scroll-to-latest"
+              onClick={() => scrollToLatest('smooth')}
+              title="回到最新消息"
+              type="button"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </button>
+          ) : null}
         </div>
         {error ? <div className="steward-conversation-error" role="alert">{error}</div> : null}
         <form className="steward-conversation-composer" onSubmit={submit}>

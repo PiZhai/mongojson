@@ -1012,14 +1012,63 @@
   overflow: hidden;
 }
 
+.steward-conversation-message-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .steward-conversation-messages {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  height: 100%;
   min-height: 0;
   padding: 18px;
   overflow: auto;
   background: #fff;
+}
+
+.steward-scroll-to-latest {
+  position: absolute;
+  z-index: 3;
+  right: 22px;
+  bottom: 18px;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  color: #334155;
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.steward-scroll-to-latest:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 10px 28px rgba(37, 99, 235, 0.2);
+  color: #2563eb;
+  transform: translateY(1px);
+}
+
+.steward-scroll-to-latest:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.2);
+  outline-offset: 2px;
+}
+
+.steward-scroll-to-latest svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .steward-conversation-welcome {
@@ -3945,6 +3994,11 @@
   .steward-conversation-workspace .steward-conversation-actions small {
     display: none;
   }
+
+  .steward-scroll-to-latest {
+    right: 14px;
+    bottom: 14px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3958,7 +4012,8 @@
   }
 
   .steward-conversation-entry,
-  .steward-conversation-archive-action {
+  .steward-conversation-archive-action,
+  .steward-scroll-to-latest {
     transition: none;
   }
 }
