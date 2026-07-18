@@ -205,6 +205,8 @@ func windowsFoundationToolDefinitions() []windowsFoundationToolDefinition {
 
 const windowsFoundationPowerShell = `
 $ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 function A([string]$Name, $Default = $null) { if ($null -ne $script:a.PSObject.Properties[$Name]) { return $script:a.$Name }; return $Default }
 function Obj($Value) { if ($null -eq $Value) { return @{} }; return $Value }
 function WindowNative {

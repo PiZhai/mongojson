@@ -263,7 +263,7 @@ func TestStewardR49RestartAfterToolCompletionResumesEpisode(t *testing.T) {
 	}
 	t.Cleanup(restartedPool.Close)
 	restarted := steward.NewService(&database.DB{Pool: restartedPool}, steward.WithAgentID("r49-recovery"),
-		steward.WithAutonomyAdvisor(r49RecoveryAdvisor{}), steward.WithRuntimeR2Enabled(true))
+		steward.WithStorageDir(t.TempDir()), steward.WithAutonomyAdvisor(r49RecoveryAdvisor{}), steward.WithRuntimeR2Enabled(true))
 	if err := restarted.EnsureDefaults(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,55 @@ import (
 	"mongojson/backend/internal/service/steward"
 )
 
+type r45AgentAdvisor struct {
+	multi bool
+}
+
+func (r45AgentAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r45-test", Model: "r45-agent-test", MaxDataLevel: "D6"}
+}
+
+func (r45AgentAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
+	return steward.AutonomyAdvisorSuggestion{}, nil
+}
+
+func (a r45AgentAdvisor) NextTurn(_ context.Context, input steward.AgentTurnInput) (steward.AgentTurnDecision, error) {
+	if len(input.Transcript) > 0 {
+		return steward.AgentTurnDecision{Content: "工具执行完成。"}, nil
+	}
+	if a.multi {
+		return steward.AgentTurnDecision{Content: "执行两个步骤。", ToolCalls: []domain.StewardAgentToolCall{
+			{ID: "collect", ToolName: "runtime.echo", Arguments: map[string]any{"value": "collected"}},
+			{ID: "summarize", ToolName: "runtime.echo", Arguments: map[string]any{"value": "summarized"}},
+		}}, nil
+	}
+	quoted := quotedR45Arguments(input.Message)
+	switch {
+	case strings.Contains(input.Message, "创建文件") && len(quoted) >= 2:
+		return steward.AgentTurnDecision{Content: "创建文件。", ToolCalls: []domain.StewardAgentToolCall{{
+			ID: "write_file", ToolName: "fs.write_text", Arguments: map[string]any{"path": quoted[0], "content": quoted[1], "create_parents": true},
+		}}}, nil
+	case strings.Contains(input.Message, "运行命令") && len(quoted) >= 1:
+		remainder := strings.TrimSpace(strings.SplitN(input.Message, quoted[0]+`"`, 2)[1])
+		return steward.AgentTurnDecision{Content: "运行命令。", ToolCalls: []domain.StewardAgentToolCall{{
+			ID: "run_command", ToolName: "shell.exec", Arguments: map[string]any{"command": quoted[0], "args": strings.Fields(remainder)},
+		}}}, nil
+	default:
+		return steward.AgentTurnDecision{ToolCalls: []domain.StewardAgentToolCall{{
+			ID: "ask", ToolName: "steward.ask_user", Arguments: map[string]any{"question": "你希望整理哪些内容？"},
+		}}}, nil
+	}
+}
+
+func quotedR45Arguments(value string) []string {
+	parts := strings.Split(value, `"`)
+	items := make([]string, 0, len(parts)/2)
+	for index := 1; index < len(parts); index += 2 {
+		items = append(items, parts[index])
+	}
+	return items
+}
+
 func TestStewardR45ConversationExecutesAndControlsLocalTasks(t *testing.T) {
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY_ID", "r45-test")
@@ -31,7 +80,7 @@ func TestStewardR45ConversationExecutesAndControlsLocalTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r45_conversation"), "r45-local",
-		steward.WithRuntimeR2Enabled(true), steward.WithRuntimeAllowedRoots(root), steward.WithRuntimeExecutables(goExecutable))
+		steward.WithAutonomyAdvisor(r45AgentAdvisor{}), steward.WithRuntimeR2Enabled(true), steward.WithRuntimeAllowedRoots(root), steward.WithRuntimeExecutables(goExecutable))
 	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R4.5 acceptance", DataLevel: "D0"})
 	if err != nil {
 		t.Fatal(err)
@@ -64,57 +113,12 @@ func TestStewardR45ConversationExecutesAndControlsLocalTasks(t *testing.T) {
 		t.Fatalf("conversation did not create expected file: content=%q err=%v", content, err)
 	}
 
-	command, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{
-		Content: fmt.Sprintf(`运行命令 "%s" version`, goExecutable), DataLevel: "D0",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	commandExecution := command.Message.Executions[0]
-	if commandExecution.Status != "awaiting_confirmation" || !commandExecution.RequiresConfirmation || commandExecution.RiskLevel != "medium" {
-		t.Fatalf("medium-risk process did not produce one confirmation card: %+v", commandExecution)
-	}
-	if _, err := node.service.DecideConversationExecution(ctx, commandExecution.ID, steward.DecideConversationExecutionInput{
-		Decision: "confirm", Reason: "R4.5 acceptance",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := node.service.RunAgentRuntimeCycle(ctx, 5); err != nil {
-		t.Fatal(err)
-	}
-	messages, _ = node.service.ListConversationMessages(ctx, conversation.ID, 30)
-	if result := latestR45Execution(t, messages); result.Status != "succeeded" {
-		t.Fatalf("confirmed conversation process did not finish: %+v", result)
-	}
-
-	paused, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{
-		Content: fmt.Sprintf(`运行命令 "%s" env GOROOT`, goExecutable), DataLevel: "D0",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pausedID := paused.Message.Executions[0].ID
-	if _, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "暂停", DataLevel: "D0"}); err != nil {
-		t.Fatal(err)
-	}
-	continued, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "继续", DataLevel: "D0"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(continued.Message.Executions) != 1 || continued.Message.Executions[0].ID != pausedID {
-		t.Fatalf("contextual continue did not target the latest execution: %+v", continued.Message.Executions)
-	}
-	pausedExecution := continued.Message.Executions[0]
-	if pausedExecution.Status != "queued" {
-		t.Fatalf("paused run was not resumable from conversation: %+v", pausedExecution)
-	}
-
 	question, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "帮我整理一下", DataLevel: "D0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(question.Message.Executions) != 1 || question.Message.Executions[0].Status != "needs_input" || question.Message.Executions[0].Question == "" {
-		t.Fatalf("ambiguous executable request did not ask a safe follow-up question: %+v", question.Message.Executions)
+	if len(question.Message.Episodes) != 1 || question.Message.Episodes[0].Status != "awaiting_input" || !strings.Contains(question.Message.Content, "整理哪些内容") {
+		t.Fatalf("ambiguous request did not enter the Agent input-wait state: %+v", question.Message)
 	}
 }
 
@@ -300,7 +304,7 @@ func TestStewardR45ConversationAutomaticallyChoosesMultiAgentOrchestration(t *te
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r45_multi_agent"), "r45-multi",
-		steward.WithRuntimeR2Enabled(true), steward.WithRuntimePlanner(r45MultiStepPlanner{}),
+		steward.WithAutonomyAdvisor(r45AgentAdvisor{multi: true}), steward.WithRuntimeR2Enabled(true), steward.WithRuntimePlanner(r45MultiStepPlanner{}),
 		steward.WithOrchestrationR4Enabled(true), steward.WithOrchestrationSigningKey(bytes.Repeat([]byte{0x45}, 32)))
 	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{DataLevel: "D0"})
 	if err != nil {

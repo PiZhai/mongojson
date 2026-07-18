@@ -1594,7 +1594,8 @@ func TestStewardAutonomyAutomaticFailureBacksOffAndManualRetryRecovers(t *testin
 		t.Fatal("event follow-up rule not found")
 	}
 	autoPolicy := steward.AutonomyPolicyAuto
-	if _, err := node.service.UpdateAutonomyRule(ctx, rule.ID, steward.UpdateAutonomyRuleInput{Policy: &autoPolicy}); err != nil {
+	enabled := true
+	if _, err := node.service.UpdateAutonomyRule(ctx, rule.ID, steward.UpdateAutonomyRuleInput{Policy: &autoPolicy, Enabled: &enabled}); err != nil {
 		t.Fatalf("enable automatic rule: %v", err)
 	}
 	if _, err := node.service.UpdateAutonomySettings(ctx, steward.UpdateAutonomySettingsInput{Mode: steward.AutonomyModeControlled}); err != nil {
@@ -2075,7 +2076,8 @@ func TestStewardAutonomyExecutionRevalidatesCurrentRule(t *testing.T) {
 		t.Fatalf("follow-up autonomy rule is missing")
 	}
 	auto := steward.AutonomyPolicyAuto
-	if _, err := node.service.UpdateAutonomyRule(ctx, followUpRule.ID, steward.UpdateAutonomyRuleInput{Policy: &auto}); err != nil {
+	enabled := true
+	if _, err := node.service.UpdateAutonomyRule(ctx, followUpRule.ID, steward.UpdateAutonomyRuleInput{Policy: &auto, Enabled: &enabled}); err != nil {
 		t.Fatalf("enable automatic follow-up rule: %v", err)
 	}
 	event, err := node.service.CreateEvent(ctx, steward.CreateEventInput{
@@ -2258,13 +2260,14 @@ func TestStewardControlledAutonomyExecutesOnlyPreapprovedLowRiskRules(t *testing
 		t.Fatalf("list autonomy rules: %v", err)
 	}
 	auto := steward.AutonomyPolicyAuto
+	enabled := true
 	summaryRuleID := ""
 	for _, name := range []string{"event-knowledge-summary", "due-task-reminder"} {
 		rule := findAutonomyRuleByName(rules, name)
 		if rule == nil {
 			t.Fatalf("default autonomy rule %s is missing: %+v", name, rules)
 		}
-		if _, err := node.service.UpdateAutonomyRule(ctx, rule.ID, steward.UpdateAutonomyRuleInput{Policy: &auto}); err != nil {
+		if _, err := node.service.UpdateAutonomyRule(ctx, rule.ID, steward.UpdateAutonomyRuleInput{Policy: &auto, Enabled: &enabled}); err != nil {
 			t.Fatalf("preapprove autonomy rule %s: %v", name, err)
 		}
 		if name == "event-knowledge-summary" {
@@ -2381,7 +2384,7 @@ func TestStewardControlledAutonomyExecutesOnlyPreapprovedLowRiskRules(t *testing
 		t.Fatalf("disabled rule still authorized background execution: %+v", suggestOnlyProposal)
 	}
 
-	enabled := true
+	enabled = true
 	if _, err := node.service.UpdateAutonomyRule(ctx, summaryRuleID, steward.UpdateAutonomyRuleInput{Enabled: &enabled}); err != nil {
 		t.Fatalf("re-enable summary rule for idempotent recovery: %v", err)
 	}

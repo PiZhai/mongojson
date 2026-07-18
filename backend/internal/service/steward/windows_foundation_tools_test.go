@@ -76,6 +76,35 @@ func TestWindowsFoundationExecutesFileProbe(t *testing.T) {
 	}
 }
 
+func TestWindowsFoundationWritesUnicodeText(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell adapter is Windows-specific")
+	}
+	packageDir := filepath.Join(t.TempDir(), "tools", "fs.write_text", "1.0.0")
+	if err := os.MkdirAll(packageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entrypoint := filepath.Join(packageDir, "tool.ps1")
+	if err := os.WriteFile(entrypoint, []byte(windowsFoundationPowerShell), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "管家", "proof.txt")
+	manifest := ToolPackageManifest{
+		Name: "fs.write_text", Version: "1.0.0", Title: "fs.write_text", Description: "test Unicode file write", Runtime: toolRuntimePowerShell,
+		ExecutionTarget: toolTargetAuto, Entrypoint: "tool.ps1", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}, "create_parents": map[string]any{"type": "boolean"}}, "required": []string{"path", "content"}},
+		OutputSchema: map[string]any{"type": "object"}, Files: []ToolPackageFile{{Path: "tool.ps1", Content: windowsFoundationPowerShell}},
+		DependencyStrategy: ToolDependencyStrategy{Requested: "none", Selected: "none", SelectionReason: "test"}, DefaultTimeoutSec: 30, OutputLimitBytes: 1 << 20,
+	}
+	result, err := ExecuteCompanionToolPackage(context.Background(), manifest, packageDir, map[string]any{"path": target, "content": "由普通对话真实执行", "create_parents": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, readErr := os.ReadFile(target)
+	if readErr != nil || string(content) != "由普通对话真实执行" {
+		t.Fatalf("Unicode write mismatch: output=%#v content=%q err=%v", result.Output, content, readErr)
+	}
+}
+
 func escapePowerShellTestPath(path string) string {
 	return strings.ReplaceAll(path, "'", "''")
 }

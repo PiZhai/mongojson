@@ -176,6 +176,25 @@ func TestStewardR43SignedRemoteExecutionAndDisconnectRecovery(t *testing.T) {
 		t.Fatalf("remote dispatch did not reach %s: %+v", expected, item)
 		return domain.StewardOrchestration{}
 	}
+	driveRemoteToTerminal := func(orchestrationID, orchestrationStatus, dispatchStatus string, driveTarget bool) domain.StewardOrchestration {
+		deadline := time.Now().Add(8 * time.Second)
+		var item domain.StewardOrchestration
+		for time.Now().Before(deadline) {
+			if driveTarget {
+				_, _ = target.service.RunAgentRuntimeCycle(ctx, 10)
+				_, _ = target.service.RunRemoteExecutionCycle(ctx, 10)
+			}
+			_, _ = origin.service.RunRemoteExecutionCycle(ctx, 10)
+			_, _ = origin.service.RunOrchestrationCycle(ctx, 10)
+			item = getR40Orchestration(t, ctx, origin, orchestrationID)
+			if item.Status == orchestrationStatus && len(item.Nodes) == 1 && item.Nodes[0].RemoteDispatch != nil && item.Nodes[0].RemoteDispatch.Status == dispatchStatus {
+				return item
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("remote orchestration did not reach %s/%s: %+v", orchestrationStatus, dispatchStatus, item)
+		return domain.StewardOrchestration{}
+	}
 	first := createRemote("signed remote execution")
 	if _, err := origin.service.RunOrchestrationCycle(ctx, 10); err != nil {
 		t.Fatal(err)
@@ -185,20 +204,7 @@ func TestStewardR43SignedRemoteExecutionAndDisconnectRecovery(t *testing.T) {
 		accepted.Nodes[0].RemoteDispatch.Status != "accepted" || accepted.Nodes[0].RemoteDispatch.HeartbeatAt == nil {
 		t.Fatalf("remote placement or signed heartbeat missing: node=%+v dispatch=%+v", accepted.Nodes[0], accepted.Nodes[0].RemoteDispatch)
 	}
-	if _, err := target.service.RunAgentRuntimeCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := target.service.RunRemoteExecutionCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(1800 * time.Millisecond)
-	if _, err := origin.service.RunRemoteExecutionCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := origin.service.RunOrchestrationCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	completed := getR40Orchestration(t, ctx, origin, first.ID)
+	completed := driveRemoteToTerminal(first.ID, steward.OrchestrationSucceeded, "succeeded", true)
 	if completed.Status != steward.OrchestrationSucceeded || completed.Nodes[0].RemoteDispatch == nil ||
 		completed.Nodes[0].RemoteDispatch.Status != "succeeded" || completed.Nodes[0].RemoteDispatch.ResultSignature == "" ||
 		completed.Evidence.ChildRunCount != 1 || completed.Evidence.ArtifactCount == 0 {
@@ -233,14 +239,7 @@ func TestStewardR43SignedRemoteExecutionAndDisconnectRecovery(t *testing.T) {
 	restartedPeer := httptest.NewServer(peerRouter)
 	defer restartedPeer.Close()
 	registerR43Peer(origin, "r43-target", "R43 Target", restartedPeer.URL+"/api", base64.StdEncoding.EncodeToString(targetPublic))
-	time.Sleep(2100 * time.Millisecond)
-	if _, err := origin.service.RunRemoteExecutionCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := origin.service.RunOrchestrationCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	recovered := getR40Orchestration(t, ctx, origin, second.ID)
+	recovered := driveRemoteToTerminal(second.ID, steward.OrchestrationSucceeded, "succeeded", false)
 	if recovered.Status != steward.OrchestrationSucceeded || recovered.Nodes[0].RemoteDispatch.Attempt < 2 {
 		t.Fatalf("remote dispatch did not recover after reconnect: %+v", recovered)
 	}
@@ -256,10 +255,7 @@ func TestStewardR43SignedRemoteExecutionAndDisconnectRecovery(t *testing.T) {
 	if _, err := origin.service.CancelOrchestration(ctx, third.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := origin.service.RunRemoteExecutionCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	cancelled := getR40Orchestration(t, ctx, origin, third.ID)
+	cancelled := driveRemoteToTerminal(third.ID, steward.OrchestrationCancelled, "cancelled", false)
 	if cancelled.Status != steward.OrchestrationCancelled || cancelled.Nodes[0].RemoteDispatch.Status != "cancelled" {
 		t.Fatalf("parent cancellation did not reach target device: %+v", cancelled)
 	}
@@ -277,10 +273,7 @@ func TestStewardR43SignedRemoteExecutionAndDisconnectRecovery(t *testing.T) {
 	if _, err := origin.service.CancelOrchestration(ctx, crashWindow.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := origin.service.RunRemoteExecutionCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	crashWindowCancelled := getR40Orchestration(t, ctx, origin, crashWindow.ID)
+	crashWindowCancelled := driveRemoteToTerminal(crashWindow.ID, steward.OrchestrationCancelled, "cancelled", false)
 	if crashWindowCancelled.Status != steward.OrchestrationCancelled ||
 		crashWindowCancelled.Nodes[0].RemoteDispatch == nil ||
 		crashWindowCancelled.Nodes[0].RemoteDispatch.Status != "cancelled" {
