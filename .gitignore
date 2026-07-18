@@ -1,6 +1,9 @@
 .DS_Store
 .idea/
 .codex/
+.env
+.env.*
+!.env.example
 
 # Frontend
 frontend/node_modules/

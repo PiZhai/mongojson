@@ -9,6 +9,8 @@ REPO_URL="${REPO_URL:-}"
 BASIC_AUTH_USER="${BASIC_AUTH_USER:-admin}"
 BASIC_AUTH_PASSWORD="${BASIC_AUTH_PASSWORD:-}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+STEWARD_MANAGEMENT_AUTH_TOKEN="${STEWARD_MANAGEMENT_AUTH_TOKEN:-}"
+STEWARD_PUBLIC_ORIGIN="${STEWARD_PUBLIC_ORIGIN:-}"
 BACKEND_IMAGE="${BACKEND_IMAGE:-}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-}"
 
@@ -34,7 +36,23 @@ ensure_compose_assets
 
 if [[ ! -f "$ENV_FILE" ]]; then
   cp "$APP_DIR/deploy/.env.prod.example" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
   log "Created env file: $ENV_FILE"
+fi
+
+if env_has_placeholder_value "STEWARD_MANAGEMENT_AUTH_TOKEN" "replace_with_random_32_character_management_token"; then
+  if [[ -z "$STEWARD_MANAGEMENT_AUTH_TOKEN" ]]; then
+    STEWARD_MANAGEMENT_AUTH_TOKEN="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+  [[ ${#STEWARD_MANAGEMENT_AUTH_TOKEN} -ge 32 ]] || die "STEWARD_MANAGEMENT_AUTH_TOKEN must contain at least 32 characters."
+  replace_env_value "STEWARD_MANAGEMENT_AUTH_TOKEN" "$STEWARD_MANAGEMENT_AUTH_TOKEN"
+  log "Generated and stored STEWARD_MANAGEMENT_AUTH_TOKEN in the protected env file"
+fi
+
+if env_has_placeholder_value "STEWARD_PUBLIC_ORIGIN" "https://steward.example.com"; then
+  [[ "$STEWARD_PUBLIC_ORIGIN" =~ ^https://[^/?#[:space:]]+$ ]] || die "Set STEWARD_PUBLIC_ORIGIN to the public HTTPS origin, for example https://steward.your-company.com."
+  replace_env_value "STEWARD_PUBLIC_ORIGIN" "$STEWARD_PUBLIC_ORIGIN"
+  log "Stored STEWARD_PUBLIC_ORIGIN in $ENV_FILE"
 fi
 
 if env_has_placeholder_password; then
@@ -62,6 +80,7 @@ if [[ ! -f "$HTPASSWD_FILE" ]]; then
 fi
 
 ensure_image_env
+ensure_runtime_files
 compose pull backend frontend nginx postgres
 compose up -d
 restart_nginx_gateway

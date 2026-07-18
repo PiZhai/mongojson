@@ -29,7 +29,7 @@
 部署采用单机 Docker Compose 架构：
 
 - `nginx`
-  - 公网入口
+  - HTTPS 公网入口（HTTP 只做健康检查和跳转）
   - 转发前端页面
   - 转发 `/api`
   - Basic Auth 访问控制
@@ -222,17 +222,22 @@ vi /opt/personal-tooling/env/prod.env
 
 ```dotenv
 POSTGRES_PASSWORD=replace_with_your_strong_password
+STEWARD_MANAGEMENT_AUTH_TOKEN=replace_with_random_32_character_management_token
+STEWARD_PUBLIC_ORIGIN=https://steward.example.com
 BACKEND_IMAGE=registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-backend:20260627-001
 FRONTEND_IMAGE=registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-frontend:20260627-001
 ```
 
-请把 `replace_with_your_strong_password` 替换为强密码，例如 20 位以上随机字符串。`BACKEND_IMAGE` 和 `FRONTEND_IMAGE` 替换为本地或 CI 构建并推送后的真实镜像标签。
+请把 `replace_with_your_strong_password` 替换为强密码，例如 20 位以上随机字符串；把 `STEWARD_MANAGEMENT_AUTH_TOKEN` 替换为至少 32 字符的独立随机值（例如 `openssl rand -hex 32`）；把 `STEWARD_PUBLIC_ORIGIN` 改成浏览器实际访问的 HTTPS 源（包含非默认端口，例如 `https://steward.example.com:8443`）。`BACKEND_IMAGE` 和 `FRONTEND_IMAGE` 替换为本地或 CI 构建并推送后的真实镜像标签。
 
-### 6.3 查看环境文件
+### 6.3 检查环境文件（不输出秘密）
 
 ```bash
-cat /opt/personal-tooling/env/prod.env
+stat -c '%a %U:%G %n' /opt/personal-tooling/env/prod.env
+awk -F= '/^(STEWARD_PUBLIC_ORIGIN|BACKEND_IMAGE|FRONTEND_IMAGE)=/{print $1"="$2} /^(POSTGRES_PASSWORD|STEWARD_MANAGEMENT_AUTH_TOKEN)=/{print $1"=<configured>"}' /opt/personal-tooling/env/prod.env
 ```
+
+权限应为 `600`。不要执行 `cat prod.env`，也不要把它粘贴到工单或聊天中。
 
 ---
 
@@ -254,9 +259,22 @@ htpasswd -bc /opt/personal-tooling/env/.htpasswd admin YourStrongBasicAuthPasswo
 验证文件存在：
 
 ```bash
-ls -lah /opt/personal-tooling/env/.htpasswd
-cat /opt/personal-tooling/env/.htpasswd
+stat -c '%a %U:%G %n' /opt/personal-tooling/env/.htpasswd
 ```
+
+### 7.1 准备浏览器信任的 TLS 证书
+
+远程管理依赖浏览器安全上下文；公网 HTTP 会暴露认证数据，而且 Service Worker 在不安全上下文中不可用。因此生产配置强制 HTTPS，不能用 HTTP 作为正式入口。
+
+将与 `STEWARD_PUBLIC_ORIGIN` 主机名匹配、且被浏览器信任的证书放到固定位置：
+
+```bash
+mkdir -p /opt/personal-tooling/env/tls
+install -m 0644 /path/to/fullchain.pem /opt/personal-tooling/env/tls/fullchain.pem
+install -m 0600 /path/to/privkey.pem /opt/personal-tooling/env/tls/privkey.pem
+```
+
+可以使用 Certbot、云厂商证书服务或组织内部 CA 取得证书。若使用 Certbot，续期后的 deploy hook 必须重新复制这两个文件并执行 `docker compose ... restart nginx`。自签名证书只有在客户端已安装并信任对应根证书时才适用。
 
 ---
 
@@ -274,6 +292,10 @@ cat /opt/personal-tooling/env/.htpasswd
 
 ```dotenv
 POSTGRES_PASSWORD=replace_with_strong_password
+STEWARD_MANAGEMENT_AUTH_TOKEN=replace_with_random_32_character_management_token
+STEWARD_PUBLIC_ORIGIN=https://steward.example.com
+BACKEND_IMAGE=replace_with_backend_image
+FRONTEND_IMAGE=replace_with_frontend_image
 ```
 
 ### 8.2 `deploy/docker-compose.prod.yml`
@@ -309,6 +331,10 @@ services:
         condition: service_healthy
     environment:
       HTTP_ADDR: :8080
+      STEWARD_ALLOW_REMOTE_MANAGEMENT: "true"
+      STEWARD_MANAGEMENT_AUTH_REQUIRED: "true"
+      STEWARD_MANAGEMENT_AUTH_TOKEN: ${STEWARD_MANAGEMENT_AUTH_TOKEN:?set STEWARD_MANAGEMENT_AUTH_TOKEN}
+      STEWARD_MANAGEMENT_ALLOWED_ORIGINS: ${STEWARD_PUBLIC_ORIGIN:?set STEWARD_PUBLIC_ORIGIN to the public https origin}
       DATABASE_URL: postgres://tooling_app:${POSTGRES_PASSWORD}@postgres:5432/mongojson?sslmode=disable
       STORAGE_DIR: /app/data
       FILE_RETENTION_HOURS: 24
@@ -329,9 +355,11 @@ services:
       - backend
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - /opt/personal-tooling/env/.htpasswd:/etc/nginx/conf.d/.htpasswd:ro
+      - /opt/personal-tooling/env/tls:/etc/nginx/tls:ro
 ```
 
 ### 8.3 `backend/Dockerfile`
@@ -412,6 +440,12 @@ http {
 
   sendfile on;
   keepalive_timeout 65;
+  server_tokens off;
+
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+  }
 
   upstream frontend_upstream {
     server frontend:80;
@@ -425,49 +459,70 @@ http {
     listen 80;
     server_name _;
 
+    location = /healthz {
+      proxy_pass http://backend_upstream/healthz;
+      proxy_http_version 1.1;
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Host $http_host;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /readyz {
+      proxy_pass http://backend_upstream/readyz;
+      proxy_http_version 1.1;
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Host $http_host;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+      return 308 https://$host$request_uri;
+    }
+  }
+
+  server {
+    listen 443 ssl;
+    http2 on;
+    server_name _;
+
+    ssl_certificate /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:StewardTLS:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
     client_max_body_size 64m;
 
     auth_basic "Private Tooling";
     auth_basic_user_file /etc/nginx/conf.d/.htpasswd;
 
+    add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy no-referrer-when-downgrade always;
-
-    location = /healthz {
-      auth_basic off;
-      proxy_pass http://backend_upstream/healthz;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location = /readyz {
-      auth_basic off;
-      proxy_pass http://backend_upstream/readyz;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
-    }
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
 
     location /api/ {
       proxy_pass http://backend_upstream;
       proxy_http_version 1.1;
-      proxy_set_header Host $host;
+      proxy_set_header Host $http_host;
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Host $http_host;
       proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
       proxy_read_timeout 300s;
     }
 
     location / {
       proxy_pass http://frontend_upstream;
       proxy_http_version 1.1;
-      proxy_set_header Host $host;
+      proxy_set_header Host $http_host;
     }
   }
 }
@@ -550,18 +605,19 @@ echo "Backup created: ${output_file}.gz"
 ### 9.1 检查环境文件和认证文件
 
 ```bash
-ls -lah /opt/personal-tooling/env/
-cat /opt/personal-tooling/env/prod.env
+stat -c '%a %U:%G %n' /opt/personal-tooling/env/prod.env /opt/personal-tooling/env/.htpasswd /opt/personal-tooling/env/tls/privkey.pem
+test -s /opt/personal-tooling/env/tls/fullchain.pem
+test -s /opt/personal-tooling/env/tls/privkey.pem
 ```
 
 ### 9.2 检查 Compose 配置能否展开
 
 ```bash
 cd /opt/personal-tooling/app
-docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml config
+docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml config --quiet
 ```
 
-如果能正常输出完整配置，说明环境变量和 Compose 文件没问题。
+命令无输出且退出码为 `0`，说明环境变量和 Compose 文件能正常展开。不要在生产终端使用不带 `--quiet` 的 `config`，否则展开后的数据库密码和管理密钥可能进入终端记录或日志。
 
 ### 9.3 检查镜像标签
 
@@ -633,15 +689,14 @@ curl http://127.0.0.1/readyz
 
 预期：
 
-- `curl -I http://127.0.0.1` 返回 `HTTP/1.1 401 Unauthorized`
-  - 这是正常的，因为配置了 Basic Auth
+- `curl -I http://127.0.0.1` 返回 `308 Permanent Redirect` 并跳转到 HTTPS
 - `/healthz` 返回 `{"status":"ok"}`
 - `/readyz` 返回 `{"status":"ready"}`
 
 ### 11.3 带认证访问首页
 
 ```bash
-curl -u admin:YourStrongBasicAuthPassword -I http://127.0.0.1
+curl -u admin:YourStrongBasicAuthPassword -I https://steward.example.com
 ```
 
 ### 11.4 浏览器页面验收
@@ -649,14 +704,10 @@ curl -u admin:YourStrongBasicAuthPassword -I http://127.0.0.1
 在浏览器中打开：
 
 ```text
-http://你的服务器公网IP/
+https://steward.example.com/
 ```
 
-或：
-
-```text
-http://你的域名/
-```
+必须使用与证书及 `STEWARD_PUBLIC_ORIGIN` 相同的主机名和端口。不要使用公网 IP 的 HTTP 地址绕过 HTTPS。
 
 登录 Basic Auth 后，至少检查以下页面：
 
@@ -821,17 +872,9 @@ docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-co
 
 ---
 
-## 16. 可选的 HTTPS 方向
+## 16. HTTPS 续期与上游代理
 
-如果你后续绑定域名，推荐下一步补 HTTPS。当前文档先以 HTTP + Basic Auth 为主。
-
-后续 HTTPS 方案可以选：
-
-1. 继续用 Nginx 容器，挂载证书文件
-2. 宿主机统一做证书签发，再把证书挂载进容器
-3. 如果后面接 CDN/SLB，也可由上游终止 TLS
-
-在没有域名之前，不建议优先折腾 HTTPS，先把服务稳定跑起来更重要。
+HTTPS 是远程管理的强制前提，不是可选优化。证书续期后需要原子替换 `/opt/personal-tooling/env/tls/fullchain.pem` 和 `privkey.pem`，然后重启 Nginx。若使用 CDN、SLB 或宿主机反向代理，仍应让其通过 HTTPS 连接本项目的 Nginx 443 端口；不要重新暴露容器 80 端口作为公网业务入口。代理必须保留原始 `Host`（含非默认端口）并设置正确的 `X-Forwarded-Proto` 和 `X-Forwarded-Host`。
 
 ---
 
@@ -864,11 +907,15 @@ vi /opt/personal-tooling/env/prod.env
 
 htpasswd -bc /opt/personal-tooling/env/.htpasswd admin YourStrongBasicAuthPassword
 
+mkdir -p /opt/personal-tooling/env/tls
+install -m 0644 /path/to/fullchain.pem /opt/personal-tooling/env/tls/fullchain.pem
+install -m 0600 /path/to/privkey.pem /opt/personal-tooling/env/tls/privkey.pem
+
 chmod +x /opt/personal-tooling/app/deploy/deploy-prod.sh
 chmod +x /opt/personal-tooling/app/deploy/backup-postgres.sh
 
 cd /opt/personal-tooling/app
-docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml config
+docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml config --quiet
 /opt/personal-tooling/app/deploy/deploy-prod.sh
 
 docker compose --env-file /opt/personal-tooling/env/prod.env -f deploy/docker-compose.prod.yml ps

@@ -15,6 +15,20 @@ import (
 	"testing"
 )
 
+func windowsHardenedServiceInstallTestArgs(t *testing.T) []string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	root := t.TempDir()
+	return []string{
+		"--windows-hardened",
+		"--windows-install-dir", filepath.Join(root, "install"),
+		"--windows-private-environment-file", filepath.Join(root, "config", "service-secrets.json"),
+		"--management-auth-token", strings.Repeat("m", 32),
+	}
+}
+
 func TestAutonomyRulePolicyResolvesRuleName(t *testing.T) {
 	var patchedPath string
 	var patchedPolicy string
@@ -155,7 +169,7 @@ func TestCLIHelpTopicsDoNotRequireAPI(t *testing.T) {
 
 func TestServiceInstallAdvisorFlagsWriteRedactedEnvironment(t *testing.T) {
 	output, err := captureStdoutText(t, func() error {
-		return serviceInstall([]string{
+		args := []string{
 			"--dry-run",
 			"--name", "MongojsonStewardAdvisorTest",
 			"--workdir", ".",
@@ -172,7 +186,8 @@ func TestServiceInstallAdvisorFlagsWriteRedactedEnvironment(t *testing.T) {
 			"--autonomy-retry-max-attempts", "4",
 			"--autonomy-retry-backoff", "30s",
 			"--autonomy-retry-max-backoff", "15m",
-		})
+		}
+		return serviceInstall(append(args, windowsHardenedServiceInstallTestArgs(t)...))
 	})
 	if err != nil {
 		t.Fatalf("service install dry-run: %v", err)
@@ -200,7 +215,11 @@ func TestServiceInstallAdvisorFlagsWriteRedactedEnvironment(t *testing.T) {
 	if env["STEWARD_UI_DIR"] == "" {
 		t.Fatalf("ui dir was not included in dry-run output: %#v", env)
 	}
-	if env["STEWARD_LLM_API_KEY"] != "<redacted>" {
+	if runtime.GOOS == "windows" {
+		if _, exposed := env["STEWARD_LLM_API_KEY"]; exposed {
+			t.Fatalf("hardened Windows plan exposed private advisor API key metadata: %#v", env)
+		}
+	} else if env["STEWARD_LLM_API_KEY"] != "<redacted>" {
 		t.Fatalf("advisor API key redaction = %q, want <redacted>", env["STEWARD_LLM_API_KEY"])
 	}
 	if env["STEWARD_LLM_ALLOW_NO_API_KEY"] != "false" ||
@@ -235,12 +254,15 @@ func TestServiceInstallAdvisorEnvOmitsZeroTuningValues(t *testing.T) {
 func TestServiceInstallR3ValidatesAndRedactsBrokerConfiguration(t *testing.T) {
 	clientKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x21}, 32))
 	publicKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	orchestrationKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x63}, 32))
 	output, err := captureStdoutText(t, func() error {
-		return serviceInstall([]string{
+		args := []string{
 			"--dry-run", "--name", "MongojsonStewardR3Test", "--workdir", ".", "--ui-dir", ".",
 			"--runtime-r3", "--broker-url", "http://127.0.0.1:18100",
 			"--broker-client-key", clientKey, "--broker-public-key", publicKey,
-		})
+			"--orchestration-signing-key", orchestrationKey,
+		}
+		return serviceInstall(append(args, windowsHardenedServiceInstallTestArgs(t)...))
 	})
 	if err != nil {
 		t.Fatalf("service install R3 dry-run: %v", err)
@@ -257,18 +279,53 @@ func TestServiceInstallR3ValidatesAndRedactsBrokerConfiguration(t *testing.T) {
 		t.Fatalf("decode R3 service output: %v\n%s", err, output)
 	}
 	env := payload.Service.Environment
+	brokerClientKeyProtected := env["STEWARD_BROKER_CLIENT_KEY"] == "<redacted>"
+	if runtime.GOOS == "windows" {
+		_, brokerClientKeyProtected = env["STEWARD_BROKER_CLIENT_KEY"]
+		brokerClientKeyProtected = !brokerClientKeyProtected
+	}
 	if env["STEWARD_RUNTIME_R3"] != "true" || env["STEWARD_RUNTIME_V2"] != "true" ||
-		env["STEWARD_BROKER_URL"] != "http://127.0.0.1:18100" ||
-		env["STEWARD_BROKER_CLIENT_KEY"] != "<redacted>" || env["STEWARD_BROKER_PUBLIC_KEY"] != publicKey {
+		env["STEWARD_BROKER_URL"] != "http://127.0.0.1:18100" || !brokerClientKeyProtected ||
+		env["STEWARD_BROKER_PUBLIC_KEY"] != publicKey {
 		t.Fatalf("unexpected R3 service environment: %#v", env)
 	}
 
 	err = serviceInstall([]string{
 		"--dry-run", "--runtime-r3", "--broker-url", "http://192.0.2.10:18100",
 		"--broker-client-key", clientKey, "--broker-public-key", publicKey,
+		"--orchestration-signing-key", orchestrationKey,
 	})
 	if err == nil || !strings.Contains(err.Error(), "loopback") {
 		t.Fatalf("non-loopback R3 broker was accepted: %v", err)
+	}
+}
+
+func TestServiceInstallGeneratesAndRedactsOrchestrationKey(t *testing.T) {
+	output, err := captureStdoutText(t, func() error {
+		args := []string{"--dry-run", "--runtime-v2"}
+		return serviceInstall(append(args, windowsHardenedServiceInstallTestArgs(t)...))
+	})
+	if err != nil {
+		t.Fatalf("runtime-v2 did not generate an orchestration key: %v", err)
+	}
+	var payload struct {
+		Service struct {
+			Environment map[string]string `json:"environment"`
+		} `json:"service"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode service install output: %v\n%s", err, output)
+	}
+	if runtime.GOOS == "windows" {
+		if _, exposed := payload.Service.Environment["STEWARD_ORCHESTRATION_SIGNING_KEY"]; exposed {
+			t.Fatalf("hardened Windows plan exposed generated orchestration key metadata: %#v", payload.Service.Environment)
+		}
+	} else if payload.Service.Environment["STEWARD_ORCHESTRATION_SIGNING_KEY"] != "<redacted>" {
+		t.Fatalf("generated orchestration key was not redacted: %#v", payload.Service.Environment)
+	}
+	if err := serviceInstall([]string{"--dry-run", "--runtime-v2", "--orchestration-signing-key", "not-base64"}); err == nil ||
+		!strings.Contains(err.Error(), "32-byte Ed25519 seed") {
+		t.Fatalf("runtime-v2 accepted invalid orchestration key: %v", err)
 	}
 }
 
@@ -285,6 +342,7 @@ func TestServiceInstallWindowsProductionIsolationPlan(t *testing.T) {
 			"--windows-hardened", "--windows-install-dir", filepath.Join(root, "install"),
 			"--windows-private-environment-file", filepath.Join(root, "config", "service-secrets.json"),
 			"--windows-service-account", "localservice", "--windows-service-sid-type", "restricted",
+			"--management-auth-token", "test-management-token-with-at-least-32-characters",
 		})
 	})
 	if err != nil {

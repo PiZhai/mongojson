@@ -12,7 +12,7 @@
 
 采用单机容器编排：
 
-- `nginx`：公网入口，转发前端和 API
+- `nginx`：HTTPS 公网入口，转发前端和 API；HTTP 仅保留健康检查与 HTTPS 跳转
 - `frontend`：从镜像仓库拉取的 React/Vite 构建产物镜像
 - `backend`：从镜像仓库拉取的 Go API 镜像
 - `postgres`：主数据库
@@ -77,7 +77,19 @@ cd /opt/personal-tooling/app
 git clone https://github.com/PiZhai/mongojson.git .
 ```
 
-## 6. 一键首次部署
+## 6. 准备域名与 TLS 证书
+
+远程管理必须运行在浏览器信任的 HTTPS 安全上下文中。先把域名解析到服务器，并取得与该域名匹配的证书（可使用 Certbot、云厂商证书服务或组织内部 CA），然后安装到固定目录：
+
+```bash
+mkdir -p /opt/personal-tooling/env/tls
+install -m 0644 /path/to/fullchain.pem /opt/personal-tooling/env/tls/fullchain.pem
+install -m 0600 /path/to/privkey.pem /opt/personal-tooling/env/tls/privkey.pem
+```
+
+证书续期后必须重新复制文件并重启 Nginx。自签名证书只有在所有客户端都已信任对应根证书时才适用。
+
+## 7. 一键首次部署
 
 首次部署前，先在本地构建并推送镜像：
 
@@ -93,6 +105,8 @@ cd C:\Mine\projects\mongojson
 ```bash
 POSTGRES_PASSWORD='<strong-postgres-password>' \
 BASIC_AUTH_PASSWORD='<strong-basic-auth-password>' \
+STEWARD_MANAGEMENT_AUTH_TOKEN="$(openssl rand -hex 32)" \
+STEWARD_PUBLIC_ORIGIN='https://steward.example.com' \
 BACKEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-backend:20260627-001' \
 FRONTEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-frontend:20260627-001' \
 /opt/personal-tooling/app/deploy/deploy-init.sh
@@ -101,6 +115,8 @@ FRONTEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-front
 说明：
 
 - `POSTGRES_PASSWORD`：写入 `/opt/personal-tooling/env/prod.env`
+- `STEWARD_MANAGEMENT_AUTH_TOKEN`：应用管理面的独立密钥；首次部署脚本在未提供时也会自动生成并以 `0600` 权限保存
+- `STEWARD_PUBLIC_ORIGIN`：浏览器实际访问的 HTTPS 源；若使用非默认端口必须包含端口
 - `BASIC_AUTH_PASSWORD`：生成 `/opt/personal-tooling/env/.htpasswd`
 - `BASIC_AUTH_USER` 默认是 `admin`
 - `BACKEND_IMAGE` / `FRONTEND_IMAGE`：生产机要拉取的前后端镜像标签
@@ -111,12 +127,14 @@ FRONTEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-front
 POSTGRES_PASSWORD='<strong-postgres-password>' \
 BASIC_AUTH_USER='your-admin-name' \
 BASIC_AUTH_PASSWORD='<strong-basic-auth-password>' \
+STEWARD_MANAGEMENT_AUTH_TOKEN="$(openssl rand -hex 32)" \
+STEWARD_PUBLIC_ORIGIN='https://steward.example.com' \
 BACKEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-backend:20260627-001' \
 FRONTEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-frontend:20260627-001' \
 /opt/personal-tooling/app/deploy/deploy-init.sh
 ```
 
-## 7. 分步方式
+## 8. 分步方式
 
 如果你更希望先自己准备环境文件，再执行首次部署，也可以这样：
 
@@ -124,10 +142,13 @@ FRONTEND_IMAGE='registry.cn-hangzhou.aliyuncs.com/your-namespace/mongojson-front
 cp /opt/personal-tooling/app/deploy/.env.prod.example /opt/personal-tooling/env/prod.env
 vi /opt/personal-tooling/env/prod.env
 htpasswd -bc /opt/personal-tooling/env/.htpasswd admin <strong-password>
+docker compose --env-file /opt/personal-tooling/env/prod.env -f /opt/personal-tooling/app/deploy/docker-compose.prod.yml config --quiet
 /opt/personal-tooling/app/deploy/deploy-init.sh
 ```
 
-## 8. 首次上线验收
+不要使用不带 `--quiet` 的 `docker compose config`，否则展开后的数据库密码和管理密钥可能进入终端记录。
+
+## 9. 首次上线验收
 
 检查容器：
 
@@ -141,6 +162,7 @@ docker compose --env-file /opt/personal-tooling/env/prod.env -f /opt/personal-to
 curl -I http://127.0.0.1
 curl http://127.0.0.1/healthz
 curl http://127.0.0.1/readyz
+curl -u admin:<strong-password> -I https://steward.example.com
 ```
 
 预期：
@@ -149,6 +171,8 @@ curl http://127.0.0.1/readyz
 - `backend` running
 - `frontend` running
 - `nginx` running
+- HTTP 首页返回 `308` 并跳转到 HTTPS
+- HTTPS 首页通过 Basic Auth 后可访问，证书链校验成功
 
 页面至少检查：
 
@@ -163,7 +187,7 @@ curl http://127.0.0.1/readyz
 3. MongoDB JSON 对比
 4. 可视化渲染
 
-## 9. 后续运维入口
+## 10. 后续运维入口
 
 首次部署完成后，后续不要再用“手敲长 compose 命令”作为主方式，优先用这些脚本：
 

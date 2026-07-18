@@ -262,11 +262,22 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 
 func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 	handler := &Handler{deps: deps}
+	security := newManagementSecurity(
+		deps.Config.ManagementAuthRequired,
+		deps.Config.ManagementAuthToken,
+		deps.Config.ManagementAllowedOrigins,
+		deps.Config.AllowRemoteManagement,
+	)
 
 	router.Get("/healthz", handler.healthz)
 	router.Get("/readyz", handler.readyz)
 
 	router.Route("/api", func(r chi.Router) {
+		r.Use(security.middleware)
+		r.Get("/auth/session", security.getSession)
+		r.Post("/auth/session", security.exchangeSession)
+		r.Delete("/auth/session", security.deleteSession)
+		r.Get("/system/readiness", handler.readinessDetails)
 		r.Post("/files", handler.uploadFile)
 		r.Get("/files/{id}/download", handler.downloadFile)
 		r.Get("/memo", handler.getMemo)
@@ -460,7 +471,7 @@ func RegisterPeerRoutes(router chi.Router, deps PeerDependencies) {
 	router.Use(limitPeerRequestBody)
 
 	router.Get("/healthz", handler.healthz)
-	router.Get("/readyz", handler.readyz)
+	router.Get("/readyz", handler.peerReadyz)
 	router.Route("/api/steward", func(r chi.Router) {
 		r.Get("/sync/changes", handler.listStewardSyncChanges)
 		r.Post("/sync/changes/import", handler.importStewardSyncChanges)

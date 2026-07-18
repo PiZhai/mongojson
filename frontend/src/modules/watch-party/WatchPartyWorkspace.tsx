@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import './styles.css'
 import { getWatchRoomWebSocketUrl } from './api'
+import { createManagementWebSocket } from '../../platform/auth/managementSession'
 import type { ToolStatus } from '../../shared/ui/toolStatus'
 import { StatusBanner } from '../../components/common/StatusBanner'
 
@@ -353,7 +354,7 @@ export function WatchPartyWorkspace() {
       return
     }
 
-    const socket = new WebSocket(getWatchRoomWebSocketUrl(activeRoom, clientId))
+    const socket = createManagementWebSocket(getWatchRoomWebSocketUrl(activeRoom, clientId))
     socketRef.current = socket
     setSocketStatus({ kind: 'idle', message: `正在连接房间：${activeRoom}` })
     setPeerCount(0)

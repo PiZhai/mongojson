@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -172,6 +178,11 @@ func serviceInstallDiscoveryDefaultsFromEnv(agentID string) (serviceInstallDisco
 
 func strictBoolEnv(key string, fallback bool) (bool, error) {
 	value := strings.TrimSpace(os.Getenv(key))
+	return strictBoolValue(key, value, fallback)
+}
+
+func strictBoolValue(key, value string, fallback bool) (bool, error) {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return fallback, nil
 	}
@@ -180,6 +191,124 @@ func strictBoolEnv(key string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s must be true or false", key)
 	}
 	return parsed, nil
+}
+
+func validateManagementServiceInstall(required bool, token, allowedOrigins string) error {
+	token = strings.TrimSpace(token)
+	if token != "" && len(token) < 32 {
+		return fmt.Errorf("STEWARD_MANAGEMENT_AUTH_TOKEN must contain at least 32 characters")
+	}
+	if required && token == "" {
+		return fmt.Errorf("STEWARD_MANAGEMENT_AUTH_TOKEN is required when management authentication is enabled")
+	}
+	for _, raw := range strings.Split(allowedOrigins, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if raw == "*" {
+			return fmt.Errorf("STEWARD_MANAGEMENT_ALLOWED_ORIGINS must not contain wildcard origins")
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("STEWARD_MANAGEMENT_ALLOWED_ORIGINS contains invalid origin %q", raw)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("STEWARD_MANAGEMENT_ALLOWED_ORIGINS origin %q must use http or https", raw)
+		}
+	}
+	return nil
+}
+
+func readManagementTokenFile(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("read management token file metadata: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("management token file must be a regular non-symlink file")
+	}
+	if info.Size() > 64*1024 {
+		return "", fmt.Errorf("management token file exceeds 64 KiB")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("read management token file: %w", err)
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("read management token file metadata: %w", err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return "", fmt.Errorf("management token file changed while being opened")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, 64*1024+1))
+	if err != nil {
+		return "", fmt.Errorf("read management token file: %w", err)
+	}
+	if len(raw) > 64*1024 {
+		return "", fmt.Errorf("management token file exceeds 64 KiB")
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", fmt.Errorf("management token file is empty")
+	}
+	if strings.ContainsAny(token, "\r\n\x00") {
+		return "", fmt.Errorf("management token file must contain exactly one token")
+	}
+	if len(token) < 32 {
+		return "", fmt.Errorf("management token file must contain at least 32 characters")
+	}
+	return token, nil
+}
+
+func serviceVerificationManagementToken(path string, set map[string]string) (string, error) {
+	if strings.TrimSpace(path) != "" {
+		return readManagementTokenFile(path)
+	}
+	if updated, ok := set["STEWARD_MANAGEMENT_AUTH_TOKEN"]; ok {
+		return strings.TrimSpace(updated), nil
+	}
+	return strings.TrimSpace(os.Getenv("STEWARD_MANAGEMENT_AUTH_TOKEN")), nil
+}
+
+func validateServiceEnvManagementTarget(target map[string]string, verificationToken string, requireVerificationToken bool) error {
+	authRequired, err := strictBoolValue("STEWARD_MANAGEMENT_AUTH_REQUIRED", target["STEWARD_MANAGEMENT_AUTH_REQUIRED"], false)
+	if err != nil {
+		return err
+	}
+	allowRemote, err := strictBoolValue("STEWARD_ALLOW_REMOTE_MANAGEMENT", target["STEWARD_ALLOW_REMOTE_MANAGEMENT"], false)
+	if err != nil {
+		return err
+	}
+	restrictedService, err := strictBoolValue("STEWARD_RESTRICTED_SERVICE", target["STEWARD_RESTRICTED_SERVICE"], false)
+	if err != nil {
+		return err
+	}
+	targetToken := strings.TrimSpace(target["STEWARD_MANAGEMENT_AUTH_TOKEN"])
+	authRequired = authRequired || allowRemote || restrictedService || targetToken != ""
+	if err := validateManagementServiceInstall(authRequired, targetToken, target["STEWARD_MANAGEMENT_ALLOWED_ORIGINS"]); err != nil {
+		return err
+	}
+	if !requireVerificationToken || !authRequired {
+		return nil
+	}
+	verificationToken = strings.TrimSpace(verificationToken)
+	if verificationToken == "" {
+		return fmt.Errorf("management-authenticated verification requires --management-token-file or STEWARD_MANAGEMENT_AUTH_TOKEN")
+	}
+	if len(verificationToken) < 32 {
+		return fmt.Errorf("management verification token must contain at least 32 characters")
+	}
+	if targetToken != "" && verificationToken != targetToken {
+		return fmt.Errorf("management verification token does not match the target service token")
+	}
+	return nil
 }
 
 func strictPositiveDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
@@ -222,7 +351,65 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 	return seen
 }
 
+func validateOrchestrationServiceKeys(signingKey, verifyKey string) error {
+	signingKey = strings.TrimSpace(signingKey)
+	verifyKey = strings.TrimSpace(verifyKey)
+	if signingKey == "" {
+		if verifyKey == "" {
+			return fmt.Errorf("STEWARD_ORCHESTRATION_SIGNING_KEY is required for the owner service")
+		}
+		publicKey, err := base64.StdEncoding.DecodeString(verifyKey)
+		if err != nil || len(publicKey) != ed25519.PublicKeySize {
+			return fmt.Errorf("STEWARD_ORCHESTRATION_VERIFY_KEY must be base64 encoding of a %d-byte Ed25519 public key", ed25519.PublicKeySize)
+		}
+		return nil
+	}
+	seed, err := base64.StdEncoding.DecodeString(signingKey)
+	if err != nil || len(seed) != ed25519.SeedSize {
+		return fmt.Errorf("STEWARD_ORCHESTRATION_SIGNING_KEY must be base64 encoding of a %d-byte Ed25519 seed", ed25519.SeedSize)
+	}
+	if verifyKey != "" {
+		publicKey, err := base64.StdEncoding.DecodeString(verifyKey)
+		if err != nil || len(publicKey) != ed25519.PublicKeySize {
+			return fmt.Errorf("STEWARD_ORCHESTRATION_VERIFY_KEY must be base64 encoding of a %d-byte Ed25519 public key", ed25519.PublicKeySize)
+		}
+		derived := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+		if !bytes.Equal(publicKey, derived) {
+			return fmt.Errorf("STEWARD_ORCHESTRATION_VERIFY_KEY does not match STEWARD_ORCHESTRATION_SIGNING_KEY")
+		}
+	}
+	return nil
+}
+
+func prepareOrchestrationServiceKeys(signingKey, verifyKey string) (string, error) {
+	signingKey = strings.TrimSpace(signingKey)
+	verifyKey = strings.TrimSpace(verifyKey)
+	if signingKey == "" && verifyKey == "" {
+		generatedKey, err := newOrchestrationSigningKey()
+		if err != nil {
+			return "", err
+		}
+		signingKey = generatedKey
+	}
+	if err := validateOrchestrationServiceKeys(signingKey, verifyKey); err != nil {
+		return "", err
+	}
+	return signingKey, nil
+}
+
+func newOrchestrationSigningKey() (string, error) {
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return "", fmt.Errorf("generate orchestration signing key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(seed), nil
+}
+
 func serviceInstall(args []string) error {
+	managementAuthRequiredDefault, err := strictBoolEnv("STEWARD_MANAGEMENT_AUTH_REQUIRED", false)
+	if err != nil {
+		return err
+	}
 	opts := servicecontrol.InstallOptions{
 		Name:                        servicecontrol.DefaultName(),
 		Scope:                       servicecontrol.DefaultScope(),
@@ -294,6 +481,9 @@ func serviceInstall(args []string) error {
 	windowsPrivateEnvironmentFile := fs.String("windows-private-environment-file", "", "Protected JSON secret file under ProgramData")
 	windowsServiceAccount := fs.String("windows-service-account", "localsystem", "Windows service identity: localsystem or localservice")
 	windowsServiceSIDType := fs.String("windows-service-sid-type", "unrestricted", "Windows service SID type: unrestricted or restricted")
+	managementAuthRequired := fs.Bool("management-auth-required", managementAuthRequiredDefault, "Require owner authentication for the management API")
+	managementAuthToken := fs.String("management-auth-token", envOrDefault("STEWARD_MANAGEMENT_AUTH_TOKEN", ""), "High-entropy management API owner token; stored as private service environment")
+	managementAllowedOrigins := fs.String("management-allowed-origins", envOrDefault("STEWARD_MANAGEMENT_ALLOWED_ORIGINS", ""), "Comma-separated exact origins allowed to call the management API; same-origin is always allowed")
 	llmProvider := fs.String("llm-provider", envOrDefault("STEWARD_LLM_PROVIDER", ""), "STEWARD_LLM_PROVIDER for the S4 autonomy advisor; empty keeps it disabled")
 	llmBaseURL := fs.String("llm-base-url", envOrDefault("STEWARD_LLM_BASE_URL", ""), "STEWARD_LLM_BASE_URL for an OpenAI-compatible advisor endpoint")
 	llmModel := fs.String("llm-model", envOrDefault("STEWARD_LLM_MODEL", ""), "STEWARD_LLM_MODEL for the S4 autonomy advisor")
@@ -324,6 +514,8 @@ func serviceInstall(args []string) error {
 	runtimePlannerAllowNoAPIKey := fs.Bool("runtime-planner-allow-no-api-key", envBoolOrDefault("STEWARD_RUNTIME_PLANNER_ALLOW_NO_API_KEY", false), "Allow an R2 OpenAI-compatible planner endpoint without an API key")
 	runtimePlannerTimeout := fs.Duration("runtime-planner-timeout", envDurationOrDefault("STEWARD_RUNTIME_PLANNER_TIMEOUT", 30*time.Second), "Timeout for optional R2 planner requests")
 	runtimePlannerMaxDataLevel := fs.String("runtime-planner-max-data-level", envOrDefault("STEWARD_RUNTIME_PLANNER_MAX_DATA_LEVEL", "D1"), "Highest data level that may be sent to the optional R2 planner")
+	orchestrationSigningKey := fs.String("orchestration-signing-key", envOrDefault("STEWARD_ORCHESTRATION_SIGNING_KEY", ""), "Base64 Ed25519 seed used to sign local orchestration claims; stored as private service environment")
+	orchestrationVerifyKey := fs.String("orchestration-verify-key", envOrDefault("STEWARD_ORCHESTRATION_VERIFY_KEY", ""), "Optional Base64 Ed25519 public key matching the owner signing key; this owner-service installer does not support verify-only workers")
 	runtimeInterval := fs.Duration("runtime-interval", envDurationOrDefault("STEWARD_RUNTIME_INTERVAL", time.Second), "STEWARD_RUNTIME_INTERVAL for queued R1 runs")
 	runtimeLimit := fs.Int("runtime-limit", envIntOrDefault("STEWARD_RUNTIME_LIMIT", 10), "Maximum R1 runs claimed per daemon cycle")
 	discoveryEnabled := fs.Bool("discovery-enabled", discoveryDefaults.Enabled, "Enable signed LAN candidate discovery without automatically trusting devices")
@@ -346,6 +538,15 @@ func serviceInstall(args []string) error {
 	fs.StringVar(&postVerify.EvidenceDir, "verify-evidence-dir", "", "Write post-install verification evidence JSON to this directory")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *windowsHardened {
+		*managementAuthRequired = true
+	}
+	if strings.TrimSpace(*managementAuthToken) != "" {
+		*managementAuthRequired = true
+	}
+	if err := validateManagementServiceInstall(*managementAuthRequired, *managementAuthToken, *managementAllowedOrigins); err != nil {
+		return fmt.Errorf("service install management security configuration: %w", err)
 	}
 	opts.UIDir = resolveStewardUIDir(opts.UIDir, opts.BinaryPath)
 	if opts.DryRun && *startAfterInstall {
@@ -380,6 +581,14 @@ func serviceInstall(args []string) error {
 			return fmt.Errorf("service install R3 privilege broker configuration: %w", err)
 		}
 	}
+	preparedSigningKey, err := prepareOrchestrationServiceKeys(*orchestrationSigningKey, *orchestrationVerifyKey)
+	if err != nil {
+		return fmt.Errorf("service install runtime orchestration configuration: %w", err)
+	}
+	if preparedSigningKey == "" {
+		return fmt.Errorf("service install configures an owner service and requires --orchestration-signing-key; verify-only workers are not supported by this installer")
+	}
+	*orchestrationSigningKey = preparedSigningKey
 	retryEnv := map[string]string{}
 	if *autonomyRetryMaxAttempts > 0 {
 		retryEnv["STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS"] = strconv.Itoa(*autonomyRetryMaxAttempts)
@@ -391,6 +600,9 @@ func serviceInstall(args []string) error {
 		retryEnv["STEWARD_AUTONOMY_RETRY_MAX_BACKOFF"] = autonomyRetryMaxBackoff.String()
 	}
 	runtimeEnv := map[string]string{
+		"STEWARD_MANAGEMENT_AUTH_REQUIRED":         strconv.FormatBool(*managementAuthRequired),
+		"STEWARD_MANAGEMENT_AUTH_TOKEN":            strings.TrimSpace(*managementAuthToken),
+		"STEWARD_MANAGEMENT_ALLOWED_ORIGINS":       strings.TrimSpace(*managementAllowedOrigins),
 		"STEWARD_MODEL_SETTINGS_KEY_RECOVERY":      strconv.FormatBool(*recoverModelSettingsFromEnv),
 		"STEWARD_RUNTIME_V2":                       strconv.FormatBool(*runtimeV2),
 		"STEWARD_RUNTIME_R2":                       strconv.FormatBool(*runtimeR2),
@@ -409,6 +621,8 @@ func serviceInstall(args []string) error {
 		"STEWARD_RUNTIME_PLANNER_ALLOW_NO_API_KEY": strconv.FormatBool(*runtimePlannerAllowNoAPIKey),
 		"STEWARD_RUNTIME_PLANNER_TIMEOUT":          runtimePlannerTimeout.String(),
 		"STEWARD_RUNTIME_PLANNER_MAX_DATA_LEVEL":   runtimePlannerDataLevel,
+		"STEWARD_ORCHESTRATION_SIGNING_KEY":        strings.TrimSpace(*orchestrationSigningKey),
+		"STEWARD_ORCHESTRATION_VERIFY_KEY":         strings.TrimSpace(*orchestrationVerifyKey),
 		"STEWARD_RUNTIME_INTERVAL":                 runtimeInterval.String(),
 		"STEWARD_RUNTIME_LIMIT":                    strconv.Itoa(*runtimeLimit),
 	}
@@ -497,7 +711,7 @@ func serviceInstall(args []string) error {
 		output.Status = &status
 	}
 	if postVerify.Verify {
-		verification := runServiceVerificationForEnvironment(result.Name, result.Scope, result.Environment, postVerify)
+		verification := runServiceVerificationForEnvironment(result.Name, result.Scope, result.Environment, *managementAuthToken, postVerify)
 		output.VerificationResult = &verification
 		evidencePath, err := writeServicePostVerificationEvidence("service-install", postVerify, verification)
 		if err != nil {
@@ -637,6 +851,7 @@ func serviceEnv(args []string) error {
 	confirm := fs.Bool("confirm", false, "Required for service env apply")
 	restart := fs.Bool("restart", false, "Restart the service after a confirmed apply and print the post-restart service status")
 	strictSecurity := fs.Bool("strict-security", false, "Validate the full target service environment before printing or applying it")
+	managementTokenFile := fs.String("management-token-file", "", "Read the management bearer token for post-restart verification from this local file; the token is never printed")
 	postVerify := servicePostVerifyOptions{}
 	fs.BoolVar(&postVerify.Verify, "verify", false, "Run service verification after a confirmed apply and restart")
 	fs.DurationVar(&postVerify.StartupTimeout, "verify-startup-timeout", 30*time.Second, "Wait up to this long for post-apply service verification to pass")
@@ -706,6 +921,17 @@ func serviceEnv(args []string) error {
 	if action == "apply" && postVerify.Verify && !*restart {
 		return fmt.Errorf("service env apply --verify requires --restart so the target environment is loaded")
 	}
+	if strings.TrimSpace(*managementTokenFile) != "" && !postVerify.Verify {
+		return fmt.Errorf("service env --management-token-file requires --verify")
+	}
+	managementToken := ""
+	if postVerify.Verify {
+		var err error
+		managementToken, err = serviceVerificationManagementToken(*managementTokenFile, set)
+		if err != nil {
+			return err
+		}
+	}
 
 	timeout := 30 * time.Second
 	if *restart {
@@ -725,6 +951,9 @@ func serviceEnv(args []string) error {
 			options.Scope = *scope
 			if err := validateServiceDiscoveryEnvironment(options); err != nil {
 				return err
+			}
+			if err := validateServiceEnvManagementTarget(target, managementToken, action == "apply" && postVerify.Verify); err != nil {
+				return fmt.Errorf("service environment management security configuration: %w", err)
 			}
 			if !*strictSecurity {
 				return nil
@@ -771,7 +1000,7 @@ func serviceEnv(args []string) error {
 		output.Status = &status
 	}
 	if action == "apply" && postVerify.Verify {
-		verification := runServiceVerificationForEnvironment(*name, *scope, result.Environment, postVerify)
+		verification := runServiceVerificationForEnvironment(*name, *scope, result.Environment, managementToken, postVerify)
 		output.VerificationResult = &verification
 		evidencePath, err := writeServicePostVerificationEvidence("service-env", postVerify, verification)
 		if err != nil {
@@ -938,10 +1167,11 @@ common flags:
   --rotate-sync-key-id <id>            generate a new shared sync AES key
   --rotate-local-key-id <id>           generate a new local-at-rest AES key
   --restart --verify                   restart and verify after apply
+  --management-token-file <file>       read the bearer token for verification without printing it
   --verify-watch-duration 24h          prove long-running heartbeat after apply
   --verify-evidence-dir <dir>          persist post-apply verification evidence
 
 examples:
   steward service env plan --set STEWARD_SYNC_INTERVAL=5m
-  steward service env apply --from-pairing .\peer-pairing.encrypted.json --require-signature --strict-security --confirm --restart --verify`)
+  steward service env apply --from-pairing .\peer-pairing.encrypted.json --require-signature --strict-security --confirm --restart --verify --management-token-file .\management-token.txt`)
 }

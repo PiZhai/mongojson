@@ -83,6 +83,7 @@ cp deploy/nginx.prod.conf output/release-$TAG/deploy/
 ```bash
 cat > output/release-$TAG/prod.env <<EOF
 POSTGRES_PASSWORD=replace_with_strong_password
+STEWARD_MANAGEMENT_AUTH_TOKEN=replace_with_random_32_character_management_token
 BACKEND_IMAGE=mongojson-backend:$TAG
 FRONTEND_IMAGE=mongojson-frontend:$TAG
 EOF
@@ -162,6 +163,7 @@ vi /opt/personal-tooling/env/prod.env
 
 ```bash
 POSTGRES_PASSWORD=replace_with_strong_password
+STEWARD_MANAGEMENT_AUTH_TOKEN=$(openssl rand -hex 32)
 ```
 
 ### 4.3 创建 Basic Auth 密码
@@ -392,6 +394,7 @@ vi /opt/personal-tooling/env/prod.env
 
 ```bash
 POSTGRES_PASSWORD=<strong-postgres-password>
+STEWARD_MANAGEMENT_AUTH_TOKEN=$(openssl rand -hex 32)
 ```
 
 如果 `/opt/personal-tooling/env/prod.env` 已存在，只更新镜像标签：

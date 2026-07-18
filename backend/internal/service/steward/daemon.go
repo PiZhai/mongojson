@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"mongojson/backend/internal/domain"
 )
 
 const (
@@ -21,6 +23,9 @@ const (
 	DefaultRuntimeInterval            = time.Second
 	DefaultRuntimeWatchdogInterval    = 2 * time.Second
 	DefaultNotificationInterval       = 5 * time.Second
+	DefaultRuntimeReadinessGrace      = 30 * time.Second
+	maxRuntimeV2StepTimeout           = time.Hour
+	criticalLoopFailureThreshold      = 3
 )
 
 type DaemonOptions struct {
@@ -260,6 +265,160 @@ func (d *Daemon) IsRunning() bool {
 	return d != nil && d.running.Load()
 }
 
+// Readiness verifies that the daemon is not merely alive, but can run the
+// durable execution loop that backs conversations and orchestration. Optional
+// model-driven loops remain observable without taking the whole service out of
+// readiness when their provider is temporarily unavailable.
+func (d *Daemon) Readiness(ctx context.Context) error {
+	if d == nil || d.service == nil {
+		return fmt.Errorf("steward daemon is not configured")
+	}
+	if !d.IsRunning() {
+		return fmt.Errorf("steward daemon is not running")
+	}
+	if d.service.orchestrationR4 {
+		if err := d.service.orchestrationEnabled(); err != nil {
+			return fmt.Errorf("orchestration configuration: %w", err)
+		}
+	}
+	if !d.service.runtimeV2 {
+		return nil
+	}
+	statuses, err := d.service.listDaemonLoopStatuses(ctx)
+	if err != nil {
+		return err
+	}
+	executionBudget, err := d.runtimeReadinessExecutionBudget(ctx)
+	if err != nil {
+		return err
+	}
+	return criticalDaemonLoopReadiness(
+		statuses,
+		"runtime-v2",
+		criticalLoopFailureThreshold,
+		d.options.RuntimeInterval,
+		DefaultRuntimeReadinessGrace,
+		executionBudget,
+		time.Now().UTC(),
+	)
+}
+
+func (d *Daemon) runtimeReadinessExecutionBudget(ctx context.Context) (time.Duration, error) {
+	values, err := d.service.loadModelSettings(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("load runtime-v2 execution budget: %w", err)
+	}
+	return runtimeLoopExecutionBudget(d.options.RuntimeLimit, values.timeoutSeconds, values.agentMaxDurationSeconds, d.options.RuntimeInterval), nil
+}
+
+func runtimeLoopExecutionBudget(runtimeLimit, modelTimeoutSeconds, agentMaxDurationSeconds int, interval time.Duration) time.Duration {
+	modelTimeout := time.Duration(modelTimeoutSeconds) * time.Second
+	if modelTimeout <= 0 {
+		modelTimeout = 30 * time.Second
+	}
+	limit := runtimeLimit
+	if limit <= 0 {
+		limit = 1
+	}
+	// A runtime-v2 cycle advances agent episodes before and after tool/runtime
+	// execution. Both passes can make one bounded model request per claimed
+	// episode, so account for both instead of treating interval as execution
+	// time.
+	budget := time.Duration(2*limit) * modelTimeout
+	// Runtime V2 permits a step timeout of up to one hour and applies the same
+	// bound again while verifying the postcondition. A legitimate long-running
+	// system tool must not make readiness report a stuck daemon halfway through
+	// either phase.
+	if stepBudget := 2 * maxRuntimeV2StepTimeout; stepBudget > budget {
+		budget = stepBudget
+	}
+	if agentMaxDurationSeconds > 0 {
+		episodeBudget := time.Duration(agentMaxDurationSeconds) * time.Second
+		if episodeBudget > budget {
+			budget = episodeBudget
+		}
+	}
+	if budget < interval {
+		budget = interval
+	}
+	return budget
+}
+
+func criticalDaemonLoopReadiness(
+	statuses []domain.StewardBackgroundLoopStatus,
+	name string,
+	failureThreshold int,
+	interval time.Duration,
+	grace time.Duration,
+	executionBudget time.Duration,
+	now time.Time,
+) error {
+	if failureThreshold < 1 {
+		failureThreshold = 1
+	}
+	if interval <= 0 {
+		return fmt.Errorf("critical loop %s has invalid interval %s", name, interval)
+	}
+	if grace < 0 {
+		grace = 0
+	}
+	if executionBudget < interval {
+		executionBudget = interval
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	for _, status := range statuses {
+		if status.Name != name {
+			continue
+		}
+		if !status.Enabled {
+			return fmt.Errorf("critical loop %s is disabled", name)
+		}
+		if !status.Running {
+			return fmt.Errorf("critical loop %s is not running", name)
+		}
+		if status.LastCompletedAt == nil {
+			return fmt.Errorf("critical loop %s has not completed its first iteration", name)
+		}
+		if status.LastSuccessAt == nil {
+			return fmt.Errorf("critical loop %s has not completed successfully", name)
+		}
+		if status.ConsecutiveFailures >= failureThreshold {
+			detail := ""
+			if status.LastError != nil {
+				detail = strings.TrimSpace(*status.LastError)
+			}
+			if len(detail) > 512 {
+				detail = detail[:512] + "..."
+			}
+			if detail != "" {
+				return fmt.Errorf("critical loop %s failed %d consecutive times: %s", name, status.ConsecutiveFailures, detail)
+			}
+			return fmt.Errorf("critical loop %s failed %d consecutive times", name, status.ConsecutiveFailures)
+		}
+		inFlight := status.LastStartedAt != nil && status.LastStartedAt.After(status.LastCompletedAt.UTC())
+		if inFlight {
+			if age := now.Sub(status.LastStartedAt.UTC()); age > executionBudget+grace {
+				return fmt.Errorf("critical loop %s has been in flight for %s, exceeding execution budget %s plus grace %s", name, age.Round(time.Millisecond), executionBudget, grace)
+			}
+			return nil
+		}
+		completionWindow := interval + grace
+		if age := now.Sub(status.LastCompletedAt.UTC()); age > completionWindow {
+			return fmt.Errorf("critical loop %s last completed %s ago, exceeding interval %s plus grace %s", name, age.Round(time.Millisecond), interval, grace)
+		}
+		successWindow := time.Duration(failureThreshold)*interval + grace
+		if age := now.Sub(status.LastSuccessAt.UTC()); age > successWindow {
+			return fmt.Errorf("critical loop %s last succeeded %s ago, exceeding %d intervals plus grace %s", name, age.Round(time.Millisecond), failureThreshold, grace)
+		}
+		return nil
+	}
+	return fmt.Errorf("critical loop %s has no status record", name)
+}
+
 func (d *Daemon) Stop() {
 	if d == nil {
 		return
@@ -347,6 +506,9 @@ func (d *Daemon) startPersistedLoop(ctx context.Context, name string, interval t
 
 func (d *Daemon) runOnce(ctx context.Context, name string, run func(context.Context) error) {
 	startedAt := time.Now().UTC()
+	if err := d.service.recordDaemonLoopStarted(ctx, name, startedAt); err != nil && ctx.Err() == nil {
+		log.Printf("steward daemon %s loop start status update failed: %v", name, err)
+	}
 	err := run(ctx)
 	if ctx.Err() == nil {
 		if statusErr := d.service.recordDaemonLoopResult(ctx, name, startedAt, err); statusErr != nil {

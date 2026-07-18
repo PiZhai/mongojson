@@ -31,8 +31,9 @@ const defaultAPIRequestTimeout = 20 * time.Second
 var stdout io.Writer = os.Stdout
 
 type cli struct {
-	apiBase string
-	client  *http.Client
+	apiBase         string
+	client          *http.Client
+	managementToken string
 }
 
 func main() {
@@ -80,8 +81,9 @@ func main() {
 	}
 
 	c := cli{
-		apiBase: strings.TrimRight(*apiBase, "/"),
-		client:  &http.Client{Timeout: envDurationOrDefault("STEWARD_API_TIMEOUT", defaultAPIRequestTimeout)},
+		apiBase:         strings.TrimRight(*apiBase, "/"),
+		client:          &http.Client{Timeout: envDurationOrDefault("STEWARD_API_TIMEOUT", defaultAPIRequestTimeout)},
+		managementToken: strings.TrimSpace(os.Getenv("STEWARD_MANAGEMENT_AUTH_TOKEN")),
 	}
 	if err := c.run(command, args[1:]); err != nil {
 		log.Fatal(err)
@@ -342,6 +344,9 @@ func (c cli) requestURL(method string, endpoint string, payload any) ([]byte, er
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if strings.TrimSpace(c.managementToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.managementToken))
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {

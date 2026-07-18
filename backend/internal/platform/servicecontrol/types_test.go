@@ -155,6 +155,17 @@ func TestPlanInstallUsesExplicitServiceArgsAndRedactsBrokerKeys(t *testing.T) {
 	}
 }
 
+func TestOrchestrationSigningKeyIsAlwaysPrivate(t *testing.T) {
+	const key = "STEWARD_ORCHESTRATION_SIGNING_KEY"
+	if !isSensitiveEnvKey(key) {
+		t.Fatalf("%s must be classified as sensitive", key)
+	}
+	redacted := redactedEnvironment(map[string]string{key: "signing-seed"})
+	if redacted[key] != "<redacted>" {
+		t.Fatalf("orchestration signing key was not redacted: %#v", redacted)
+	}
+}
+
 func TestNormalizeInstallOptionsRejectsInvalidExtraEnvKey(t *testing.T) {
 	_, err := NormalizeInstallOptions(InstallOptions{
 		Name:       "MongojsonStewardTest",

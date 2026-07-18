@@ -21,7 +21,15 @@ param(
 
   [switch]$SkipAdvisorE2E,
 
-  [switch]$SkipRuntimeWatch
+  [switch]$SkipRuntimeWatch,
+
+  [string]$ReleaseSigningCertificateThumbprint = "",
+
+  [string]$ReleaseTimestampServer = "",
+
+  [string]$TrustedReleaseSignerThumbprint = "",
+
+  [switch]$ProductionReleasePreflight
 )
 
 $ErrorActionPreference = "Stop"
@@ -252,13 +260,31 @@ $errorMessage = ""
 $hostPlatform = Get-HostPlatform
 
 try {
+  $releaseTrustArgumentsPresent = -not [string]::IsNullOrWhiteSpace($ReleaseSigningCertificateThumbprint) -or
+    -not [string]::IsNullOrWhiteSpace($ReleaseTimestampServer) -or
+    -not [string]::IsNullOrWhiteSpace($TrustedReleaseSignerThumbprint)
+  if ($releaseTrustArgumentsPresent -and -not $ProductionReleasePreflight) {
+    throw "Release signer or timestamp arguments require -ProductionReleasePreflight; refusing to silently run unsigned development preflight"
+  }
+  if ($ProductionReleasePreflight -and [string]::IsNullOrWhiteSpace($TrustedReleaseSignerThumbprint)) {
+    $TrustedReleaseSignerThumbprint = $ReleaseSigningCertificateThumbprint
+  }
   $binary = Get-OrBuild-Binary -RepoRoot $repoRoot -BackendDir $backendDir -RunRoot $runRoot -BinaryPath $BinaryPath
   Add-Check $checks "local_readiness.binary" "ok" "steward local readiness binary is available" @{ path = $binary }
 
   if (-not $SkipDistPreflight) {
-    Invoke-ReadinessStep -ID "dist_preflight" -ScriptPath (Join-Path $PSScriptRoot "run-steward-dist-preflight.ps1") -Parameters @{
+    $distPreflightParameters = @{
       EvidenceDir = (Join-Path $runRoot "dist-preflight")
-    } -Checks $checks -Steps $steps
+    }
+    if ($ProductionReleasePreflight) {
+      $distPreflightParameters.SigningCertificateThumbprint = $ReleaseSigningCertificateThumbprint
+      $distPreflightParameters.TimestampServer = $ReleaseTimestampServer
+      $distPreflightParameters.TrustedSignerThumbprint = $TrustedReleaseSignerThumbprint
+    } else {
+      $distPreflightParameters.DevelopmentUnsigned = $true
+      $distPreflightParameters.AllowDirtyWorktree = $true
+    }
+    Invoke-ReadinessStep -ID "dist_preflight" -ScriptPath (Join-Path $PSScriptRoot "run-steward-dist-preflight.ps1") -Parameters $distPreflightParameters -Checks $checks -Steps $steps
   }
 
   if (-not $SkipPostgresE2E) {
@@ -315,8 +341,13 @@ try {
   }
   if (-not $SkipDistPreflight) {
     Add-ManifestRequirement $manifestArgs "--require-kind" "dist-preflight"
-    foreach ($check in @("dist_preflight.build", "dist_preflight.integrity", "dist_preflight.targets", "dist_preflight.ui", "dist_preflight.current_binary")) {
+    foreach ($check in @("dist_preflight.build", "dist_preflight.integrity", "dist_preflight.package_integrity", "dist_preflight.targets", "dist_preflight.ui", "dist_preflight.current_binary")) {
       Add-ManifestRequirement $manifestArgs "--require-check" $check
+    }
+    if ($ProductionReleasePreflight) {
+      Add-ManifestRequirement $manifestArgs "--require-check" "dist_preflight.production_eligibility"
+    } else {
+      Add-ManifestRequirement $manifestArgs "--require-check" "dist_preflight.development_override"
     }
   }
   if (-not $SkipPostgresE2E) {
@@ -450,6 +481,8 @@ $payload = [ordered]@{
     run_root = $runRoot
     watch_duration = $WatchDuration
     watch_interval = $WatchInterval
+    release_preflight_mode = if ($SkipDistPreflight) { "skipped" } elseif ($ProductionReleasePreflight) { "production_signed" } else { "development_unsigned" }
+    trusted_release_signer_thumbprint = if ($ProductionReleasePreflight) { $TrustedReleaseSignerThumbprint } else { $null }
     manifest = if ($null -ne $manifestOutput) { $manifestOutput.manifest } else { $null }
     manifest_exit_code = if ($null -ne $manifestResult) { $manifestResult.exit_code } else { $null }
     steps = @($steps)
@@ -477,6 +510,18 @@ foreach ($item in @(
     $command += $item.name
   }
 }
+if ($ProductionReleasePreflight) {
+  $command += "-ProductionReleasePreflight"
+  if (-not [string]::IsNullOrWhiteSpace($ReleaseSigningCertificateThumbprint)) {
+    $command += @("-ReleaseSigningCertificateThumbprint", $ReleaseSigningCertificateThumbprint)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ReleaseTimestampServer)) {
+    $command += @("-ReleaseTimestampServer", $ReleaseTimestampServer)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($TrustedReleaseSignerThumbprint)) {
+    $command += @("-TrustedReleaseSignerThumbprint", $TrustedReleaseSignerThumbprint)
+  }
+}
 
 $envelope = [ordered]@{
   kind = "local-readiness"
@@ -496,6 +541,7 @@ $summary = [ordered]@{
   binary_path = $binary
   watch_duration = $WatchDuration
   watch_interval = $WatchInterval
+  release_preflight_mode = if ($SkipDistPreflight) { "skipped" } elseif ($ProductionReleasePreflight) { "production_signed" } else { "development_unsigned" }
   steps = @($steps)
   error = $errorMessage
 }

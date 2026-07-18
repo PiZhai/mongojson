@@ -971,6 +971,53 @@ func TestRunMeshVerificationRejectsMismatchedExpectationCounts(t *testing.T) {
 	}
 }
 
+func TestMeshManagementTokenIsNeverReusedForAnotherNode(t *testing.T) {
+	const localToken = "local-management-token-0123456789abcdef"
+	opts := meshVerifyOptions{
+		NodeAPIs: []string{
+			"http://127.0.0.1:18080/api",
+			"http://127.0.0.1:28080/api",
+		},
+	}
+	if got := meshManagementTokenForNode(opts, 0, opts.NodeAPIs[0], opts.NodeAPIs[0], localToken); got != localToken {
+		t.Fatalf("local node management token = %q, want local token", got)
+	}
+	if got := meshManagementTokenForNode(opts, 1, opts.NodeAPIs[1], opts.NodeAPIs[0], localToken); got != "" {
+		t.Fatalf("remote node received local management token %q", got)
+	}
+
+	opts.NodeManagementTokens = []string{"node-one-token-0123456789abcdef", "node-two-token-0123456789abcdef"}
+	if got := meshManagementTokenForNode(opts, 1, opts.NodeAPIs[1], opts.NodeAPIs[0], localToken); got != opts.NodeManagementTokens[1] {
+		t.Fatalf("remote node management token = %q, want explicit per-node token", got)
+	}
+	encoded, err := json.Marshal(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "node-one-token") || strings.Contains(string(encoded), "node-two-token") {
+		t.Fatalf("mesh evidence leaked management tokens: %s", encoded)
+	}
+}
+
+func TestValidateMeshManagementEndpointProtectsBearerToken(t *testing.T) {
+	const token = "node-management-token-0123456789abcdef"
+	for _, endpoint := range []string{
+		"http://127.0.0.1:18080/api",
+		"http://[::1]:18080/api",
+		"https://steward.example.test/api",
+	} {
+		if err := validateMeshManagementEndpoint(endpoint, token); err != nil {
+			t.Fatalf("secure endpoint %q rejected: %v", endpoint, err)
+		}
+	}
+	if err := validateMeshManagementEndpoint("http://192.0.2.10:18080/api", token); err == nil {
+		t.Fatal("non-loopback plaintext endpoint accepted a management token")
+	}
+	if err := validateMeshManagementEndpoint("http://192.0.2.10:18080/api", ""); err != nil {
+		t.Fatalf("unauthenticated development endpoint rejected: %v", err)
+	}
+}
+
 func TestBuildMeshWatchVerificationResultChecksNodeHeartbeats(t *testing.T) {
 	opts := meshVerifyOptions{
 		NodeAPIs:      []string{"http://127.0.0.1:18080/api", "http://127.0.0.1:28080/api"},

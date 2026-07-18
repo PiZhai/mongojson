@@ -16,6 +16,7 @@ import {
   saveMemoSideNote,
   uploadFile,
 } from './api'
+import { createManagementWebSocket } from '../../platform/auth/managementSession'
 import { MemoDocumentDrawer } from './components/MemoDocumentDrawer'
 import { MemoIcon } from './components/MemoIcon'
 import { BlockNoteMemoEditor } from './editor/BlockNoteMemoEditor'
@@ -317,7 +318,7 @@ export function MemoDocsWorkspace() {
     const connect = () => {
       if (disposed) return
       setSyncStatus('connecting')
-      socket = new WebSocket(getMemoDocumentWebSocketUrl(documentId))
+      socket = createManagementWebSocket(getMemoDocumentWebSocketUrl(documentId))
       socket.addEventListener('open', () => {
         reconnectAttempt = 0
         setSyncStatus('connected')

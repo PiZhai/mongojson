@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -13,13 +14,16 @@ import (
 )
 
 type Config struct {
-	HTTPAddr              string
-	PeerHTTPAddr          string
-	AllowRemoteManagement bool
-	DatabaseURL           string
-	StorageDir            string
-	StewardUIDir          string
-	FileRetention         time.Duration
+	HTTPAddr                 string
+	PeerHTTPAddr             string
+	AllowRemoteManagement    bool
+	ManagementAuthRequired   bool
+	ManagementAuthToken      string
+	ManagementAllowedOrigins []string
+	DatabaseURL              string
+	StorageDir               string
+	StewardUIDir             string
+	FileRetention            time.Duration
 }
 
 const DefaultHTTPAddr = "127.0.0.1:18080"
@@ -32,14 +36,36 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	managementAuthRequired, err := getenvBool("STEWARD_MANAGEMENT_AUTH_REQUIRED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	restrictedService, err := getenvBool("STEWARD_RESTRICTED_SERVICE", false)
+	if err != nil {
+		return Config{}, err
+	}
+	managementAuthToken := strings.TrimSpace(os.Getenv("STEWARD_MANAGEMENT_AUTH_TOKEN"))
+	if managementAuthToken != "" && len(managementAuthToken) < 32 {
+		return Config{}, fmt.Errorf("STEWARD_MANAGEMENT_AUTH_TOKEN must contain at least 32 characters")
+	}
+	if (managementAuthRequired || allowRemoteManagement || restrictedService) && managementAuthToken == "" {
+		return Config{}, fmt.Errorf("STEWARD_MANAGEMENT_AUTH_TOKEN is required when management authentication, remote management, or restricted-service mode is enabled")
+	}
+	managementAllowedOrigins, err := parseManagementAllowedOrigins(os.Getenv("STEWARD_MANAGEMENT_ALLOWED_ORIGINS"))
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		HTTPAddr:              strings.TrimSpace(getenv("HTTP_ADDR", DefaultHTTPAddr)),
-		PeerHTTPAddr:          strings.TrimSpace(os.Getenv("STEWARD_PEER_HTTP_ADDR")),
-		AllowRemoteManagement: allowRemoteManagement,
-		DatabaseURL:           getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/mongojson?sslmode=disable"),
-		StorageDir:            getenv("STORAGE_DIR", "./data"),
-		StewardUIDir:          strings.TrimSpace(os.Getenv("STEWARD_UI_DIR")),
-		FileRetention:         time.Duration(retentionHours) * time.Hour,
+		HTTPAddr:                 strings.TrimSpace(getenv("HTTP_ADDR", DefaultHTTPAddr)),
+		PeerHTTPAddr:             strings.TrimSpace(os.Getenv("STEWARD_PEER_HTTP_ADDR")),
+		AllowRemoteManagement:    allowRemoteManagement,
+		ManagementAuthRequired:   managementAuthRequired || managementAuthToken != "" || allowRemoteManagement || restrictedService,
+		ManagementAuthToken:      managementAuthToken,
+		ManagementAllowedOrigins: managementAllowedOrigins,
+		DatabaseURL:              getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/mongojson?sslmode=disable"),
+		StorageDir:               getenv("STORAGE_DIR", "./data"),
+		StewardUIDir:             strings.TrimSpace(os.Getenv("STEWARD_UI_DIR")),
+		FileRetention:            time.Duration(retentionHours) * time.Hour,
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -49,6 +75,34 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func parseManagementAllowedOrigins(value string) ([]string, error) {
+	seen := map[string]struct{}{}
+	result := make([]string, 0)
+	for _, raw := range strings.Split(value, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if raw == "*" {
+			return nil, fmt.Errorf("STEWARD_MANAGEMENT_ALLOWED_ORIGINS must not contain wildcard origins")
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return nil, fmt.Errorf("STEWARD_MANAGEMENT_ALLOWED_ORIGINS contains invalid origin %q", raw)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("STEWARD_MANAGEMENT_ALLOWED_ORIGINS origin %q must use http or https", raw)
+		}
+		origin := strings.ToLower(parsed.Scheme + "://" + parsed.Host)
+		if _, exists := seen[origin]; exists {
+			continue
+		}
+		seen[origin] = struct{}{}
+		result = append(result, origin)
+	}
+	return result, nil
 }
 
 func getenv(key string, fallback string) string {

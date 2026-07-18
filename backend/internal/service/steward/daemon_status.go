@@ -38,6 +38,37 @@ func (s *Service) configureDaemonLoop(ctx context.Context, name string, interval
 	return nil
 }
 
+func (s *Service) recordDaemonLoopStarted(ctx context.Context, name string, startedAt time.Time) error {
+	_, err := s.db.Pool.Exec(ctx, `
+		update steward_daemon_loop_status
+		set last_started_at = $1,
+		    updated_at = $1
+		where agent_id = $2 and name = $3
+	`, startedAt.UTC(), s.agentIDValue(), strings.TrimSpace(name))
+	if err != nil {
+		return fmt.Errorf("record daemon loop %s start: %w", name, err)
+	}
+	return nil
+}
+
+// recordDaemonLoopProgress refreshes the in-flight timestamp after the runtime
+// has durably claimed more work. A runtime-v2 pass may legitimately execute
+// several long steps or runs; using only the timestamp from the beginning of
+// the pass would make readiness classify a progressing worker as stuck.
+func (s *Service) recordDaemonLoopProgress(ctx context.Context, name string) error {
+	now := time.Now().UTC()
+	_, err := s.db.Pool.Exec(ctx, `
+		update steward_daemon_loop_status
+		set last_started_at = $1,
+		    updated_at = $1
+		where agent_id = $2 and name = $3 and running
+	`, now, s.agentIDValue(), strings.TrimSpace(name))
+	if err != nil {
+		return fmt.Errorf("record daemon loop %s progress: %w", name, err)
+	}
+	return nil
+}
+
 func (s *Service) recordDaemonLoopResult(ctx context.Context, name string, startedAt time.Time, runErr error) error {
 	now := time.Now().UTC()
 	var errorSummary *string

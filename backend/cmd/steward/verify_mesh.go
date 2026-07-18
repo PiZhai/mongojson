@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -12,6 +14,7 @@ func (c cli) verifyMesh(args []string) error {
 	fs := flag.NewFlagSet("steward verify mesh", flag.ExitOnError)
 	opts := meshVerifyOptions{AutonomyLimit: 5}
 	var nodes stringListFlag
+	var nodeManagementTokenFiles stringListFlag
 	var expectAgentIDs stringListFlag
 	var expectAgentVersions stringListFlag
 	var expectAgentPlatforms stringListFlag
@@ -19,6 +22,7 @@ func (c cli) verifyMesh(args []string) error {
 	var expectLocalKeyIDs stringListFlag
 	evidenceDir := fs.String("evidence-dir", "", "Write a timestamped verification evidence JSON file to this directory")
 	fs.Var(&nodes, "node", "Steward API base URL for a node; repeat for Windows/macOS/Linux nodes")
+	fs.Var(&nodeManagementTokenFiles, "node-management-token-file", "Protected file containing the management token for the corresponding --node; repeat once per node and never reuse one node's token for another")
 	fs.BoolVar(&opts.StrictSecurity, "strict-security", false, "Fail when runtime sync security or enabled S4 advisor safety is incomplete")
 	fs.BoolVar(&opts.StrictPeers, "strict", false, "Fail when any registered peer is not verifiable")
 	fs.BoolVar(&opts.RequirePeers, "require-peers", false, "Fail each node when no peer devices are registered")
@@ -71,6 +75,25 @@ func (c cli) verifyMesh(args []string) error {
 		normalizedNodes = append(normalizedNodes, apiBase)
 	}
 	opts.NodeAPIs = normalizedNodes
+	if len(nodeManagementTokenFiles) > 0 {
+		if len(nodeManagementTokenFiles) != len(normalizedNodes) {
+			return fmt.Errorf("verify mesh --node-management-token-file must be provided once per node; got %d files for %d nodes", len(nodeManagementTokenFiles), len(normalizedNodes))
+		}
+		opts.NodeManagementTokens = make([]string, len(nodeManagementTokenFiles))
+		for index, path := range nodeManagementTokenFiles {
+			token, err := readMeshManagementTokenFile(path)
+			if err != nil {
+				return fmt.Errorf("verify mesh management token for node %d: %w", index+1, err)
+			}
+			opts.NodeManagementTokens[index] = token
+		}
+	}
+	for index, apiBase := range opts.NodeAPIs {
+		token := meshManagementTokenForNode(opts, index, apiBase, c.apiBase, c.managementToken)
+		if err := validateMeshManagementEndpoint(apiBase, token); err != nil {
+			return fmt.Errorf("verify mesh node %d: %w", index+1, err)
+		}
+	}
 
 	result := c.runMeshVerification(opts)
 	if err := printVerificationResult("mesh", *evidenceDir, result, result.OK); err != nil {
@@ -114,7 +137,8 @@ func (c cli) runSingleMeshVerification(opts meshVerifyOptions) meshVerificationR
 		WriteProbes:  opts.WriteProbes,
 	}
 	for index, apiBase := range opts.NodeAPIs {
-		nodeCLI := cli{apiBase: apiBase, client: c.client}
+		managementToken := meshManagementTokenForNode(opts, index, apiBase, c.apiBase, c.managementToken)
+		nodeCLI := cli{apiBase: apiBase, client: c.client, managementToken: managementToken}
 		runtimeOptions := meshRuntimeOptionsForNode(opts, index)
 		runtime := nodeCLI.runRuntimeVerification(runtimeOptions)
 		peers := nodeCLI.runPeersVerification(peerOptions)
@@ -130,6 +154,64 @@ func (c cli) runSingleMeshVerification(opts meshVerifyOptions) meshVerificationR
 		result.Nodes = append(result.Nodes, node)
 	}
 	return result
+}
+
+func meshManagementTokenForNode(opts meshVerifyOptions, index int, nodeAPI, localAPI, localToken string) string {
+	if index >= 0 && index < len(opts.NodeManagementTokens) {
+		return strings.TrimSpace(opts.NodeManagementTokens[index])
+	}
+	if sameMeshManagementEndpoint(nodeAPI, localAPI) {
+		return strings.TrimSpace(localToken)
+	}
+	return ""
+}
+
+func readMeshManagementTokenFile(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("token file path is required")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect token file: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > 4096 {
+		return "", fmt.Errorf("token file must be a regular file between 1 and 4096 bytes")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read token file: %w", err)
+	}
+	token := strings.TrimSpace(string(contents))
+	if len(token) < 32 {
+		return "", fmt.Errorf("management token must contain at least 32 characters")
+	}
+	return token, nil
+}
+
+func sameMeshManagementEndpoint(left, right string) bool {
+	leftNormalized, leftErr := normalizeMeshAPIBase(left)
+	rightNormalized, rightErr := normalizeMeshAPIBase(right)
+	return leftErr == nil && rightErr == nil && strings.EqualFold(leftNormalized, rightNormalized)
+}
+
+func validateMeshManagementEndpoint(apiBase, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return nil
+	}
+	parsed, err := url.Parse(apiBase)
+	if err != nil {
+		return fmt.Errorf("invalid management endpoint: %w", err)
+	}
+	if strings.EqualFold(parsed.Scheme, "https") {
+		return nil
+	}
+	hostname := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	ip := net.ParseIP(hostname)
+	if strings.EqualFold(parsed.Scheme, "http") && (hostname == "localhost" || (ip != nil && ip.IsLoopback())) {
+		return nil
+	}
+	return fmt.Errorf("refusing to send a management token to non-loopback plaintext endpoint %q; use HTTPS or a loopback tunnel", apiBase)
 }
 
 func (c cli) runMeshVerificationWatch(opts meshVerifyOptions) meshVerificationResult {
@@ -381,8 +463,12 @@ func normalizeMeshAPIBase(value string) (string, error) {
 	if apiBase == "" {
 		return "", fmt.Errorf("mesh node api base is required")
 	}
-	if _, err := url.ParseRequestURI(apiBase); err != nil {
+	parsed, err := url.ParseRequestURI(apiBase)
+	if err != nil {
 		return "", fmt.Errorf("invalid mesh node api base %q: %w", value, err)
+	}
+	if parsed.User != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("mesh node api base must be an absolute HTTP(S) URL without credentials, query, or fragment")
 	}
 	if !strings.HasSuffix(apiBase, "/api") {
 		apiBase += "/api"

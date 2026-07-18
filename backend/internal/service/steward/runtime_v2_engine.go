@@ -44,6 +44,9 @@ func (s *Service) RunAgentRuntimeCycle(ctx context.Context, limit int) (int, err
 		if !claimed {
 			break
 		}
+		if err := s.recordDaemonLoopProgress(ctx, "runtime-v2"); err != nil {
+			return processed, err
+		}
 		processed++
 		seenRunIDs = append(seenRunIDs, runID)
 		if err := s.executeAgentRun(ctx, runID); err != nil {
@@ -191,6 +194,9 @@ func (s *Service) executeAgentRun(ctx context.Context, runID string) error {
 		}
 		if !claimed {
 			continue
+		}
+		if err := s.recordDaemonLoopProgress(ctx, "runtime-v2"); err != nil {
+			return err
 		}
 		paused, err = s.runtimeExecutionPaused(ctx)
 		if err != nil {

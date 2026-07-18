@@ -105,9 +105,16 @@ inventory 可从 `deploy/steward-s3s4-final-system.example.json` 开始填写，
 
 > 本节是完整容器化的开发/演示模式。Windows 原生智能管家生产安装与它互斥：生产模式只在 Docker 中运行 PostgreSQL，完整后端和 UI 由原生 `MongojsonSteward` 服务承载。详见 [全新 Windows 主机完整生产部署指南](docs/windows-fresh-production-deployment.md)。
 
-```bash
+PowerShell：
+
+```powershell
+$bytes = [byte[]]::new(32)
+[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+$env:STEWARD_MANAGEMENT_AUTH_TOKEN = [Convert]::ToHexString($bytes)
 docker compose up --build
 ```
+
+打开工作台后，使用当前 PowerShell 会话中的 `$env:STEWARD_MANAGEMENT_AUTH_TOKEN` 解锁。该变量至少 32 个字符；不要提交到 Git。Linux/macOS 可用 `export STEWARD_MANAGEMENT_AUTH_TOKEN="$(openssl rand -hex 32)"`。
 
 服务：
 

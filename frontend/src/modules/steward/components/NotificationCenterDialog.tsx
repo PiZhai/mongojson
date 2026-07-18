@@ -28,9 +28,16 @@ export function NotificationCenterDialog({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return
-    void load()
-    const timer = window.setInterval(() => void load(), 10_000)
-    return () => window.clearInterval(timer)
+    const initialLoad = window.setTimeout(() => {
+      void load()
+    }, 0)
+    const timer = window.setInterval(() => {
+      void load()
+    }, 10_000)
+    return () => {
+      window.clearTimeout(initialLoad)
+      window.clearInterval(timer)
+    }
   }, [load, open])
   useEffect(() => {
     if (!open) return

@@ -463,6 +463,7 @@ func isSensitiveEnvKey(key string) bool {
 		key == "STEWARD_BROKER_CLIENT_KEY" ||
 		key == "STEWARD_BROKER_CONTROL_KEY" ||
 		key == "STEWARD_BROKER_SIGNING_PRIVATE_KEY" ||
+		key == "STEWARD_ORCHESTRATION_SIGNING_KEY" ||
 		strings.Contains(key, "SECRET") ||
 		strings.Contains(key, "TOKEN") ||
 		strings.Contains(key, "PASSWORD") ||
@@ -470,6 +471,17 @@ func isSensitiveEnvKey(key string) bool {
 		(strings.Contains(key, "ENCRYPTION_KEY") && !strings.Contains(key, "ENCRYPTION_KEY_ID")) ||
 		strings.Contains(key, "PREVIOUS_KEYS") ||
 		strings.Contains(key, "PRIVATE_KEY")
+}
+
+func sensitiveEnvironmentKeys(env map[string]string) []string {
+	keys := make([]string, 0)
+	for key, value := range env {
+		if strings.TrimSpace(value) != "" && isSensitiveEnvKey(key) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func envList(env map[string]string) []string {

@@ -29,7 +29,7 @@ func TestSaveMemoDocumentPassesStructuredContent(t *testing.T) {
 	}})
 
 	body := `{"title":"随手记","content_json":[{"id":"block-1","type":"paragraph","content":[]}],"content_markdown":"hello","content_html":"<p>hello</p>","schema_version":1,"revision":4,"editor_type":"blocknote"}`
-	req := httptest.NewRequest(http.MethodPut, "/api/memo/documents/memo-1", strings.NewReader(body))
+	req := newHTTPAPITestRequest(http.MethodPut, "/api/memo/documents/memo-1", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -56,7 +56,7 @@ func TestListMemoDocumentsReturnsArchiveSummaries(t *testing.T) {
 		},
 	}})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/memo/documents", nil)
+	req := newHTTPAPITestRequest(http.MethodGet, "/api/memo/documents", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -81,7 +81,7 @@ func TestSaveMemoDocumentReturnsConflict(t *testing.T) {
 			return domain.MemoRecord{}, memo.ErrRevisionConflict
 		},
 	}})
-	req := httptest.NewRequest(http.MethodPut, "/api/memo/documents/memo-1", strings.NewReader(`{"content_json":[],"revision":1}`))
+	req := newHTTPAPITestRequest(http.MethodPut, "/api/memo/documents/memo-1", strings.NewReader(`{"content_json":[],"revision":1}`))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -144,7 +144,7 @@ func TestCreateMemoSideNote(t *testing.T) {
 			return domain.MemoSideNoteRecord{ID: "note-1", DocumentID: documentID, BodyJSON: input.BodyJSON, Revision: 1}, nil
 		},
 	}})
-	req := httptest.NewRequest(http.MethodPost, "/api/memo/documents/memo-1/notes", strings.NewReader(`{"anchor_block_id":"block-1","body_json":{"text":"note"},"color":"#fff7d6"}`))
+	req := newHTTPAPITestRequest(http.MethodPost, "/api/memo/documents/memo-1/notes", strings.NewReader(`{"anchor_block_id":"block-1","body_json":{"text":"note"},"color":"#fff7d6"}`))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {

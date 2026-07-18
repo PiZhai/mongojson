@@ -80,6 +80,11 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 	sourceBinary := options.BinaryPath
 	env := Environment(options)
 	serviceEnv := env
+	if !options.WindowsHardened {
+		if sensitiveKeys := sensitiveEnvironmentKeys(env); len(sensitiveKeys) > 0 {
+			return Result{}, fmt.Errorf("refusing to store sensitive Windows service environment in SCM; use Windows hardened installation with a protected private environment file (sensitive keys: %s)", strings.Join(sensitiveKeys, ", "))
+		}
+	}
 	if options.WindowsHardened {
 		if options.Scope != ScopeSystem || options.InstallDir == "" || options.PrivateEnvironmentFile == "" {
 			return Result{}, fmt.Errorf("Windows service hardening requires system scope, install dir, and private environment file")

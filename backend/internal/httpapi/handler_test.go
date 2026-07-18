@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -21,6 +22,13 @@ import (
 	"mongojson/backend/internal/service/music"
 )
 
+func newHTTPAPITestRequest(method, target string, body io.Reader) *http.Request {
+	if strings.HasPrefix(target, "/") {
+		target = "http://127.0.0.1:18080" + target
+	}
+	return httptest.NewRequest(method, target, body)
+}
+
 func TestReadyzUsesReadinessChecker(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{
@@ -33,7 +41,7 @@ func TestReadyzUsesReadinessChecker(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := newHTTPAPITestRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -54,7 +62,7 @@ func TestReadyzReturnsServiceUnavailableWhenCheckFails(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := newHTTPAPITestRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -64,6 +72,24 @@ func TestReadyzReturnsServiceUnavailableWhenCheckFails(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"status":"not_ready"`) {
 		t.Fatalf("expected not_ready response, got %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "database") || strings.Contains(rec.Body.String(), "deadline") {
+		t.Fatalf("anonymous readiness leaked internal failure detail: %s", rec.Body.String())
+	}
+}
+
+func TestAuthenticatedReadinessDetailsRemainAvailable(t *testing.T) {
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{
+		Readiness: func(context.Context) (map[string]string, error) {
+			return map[string]string{"database": "ok", "runtime": "ok"}, nil
+		},
+	})
+	req := newHTTPAPITestRequest(http.MethodGet, "/api/system/readiness", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"database":"ok"`) {
+		t.Fatalf("detailed readiness status = %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -93,10 +119,28 @@ func TestManagementAndPeerRoutersExposeDisjointStewardSurfaces(t *testing.T) {
 	assertRouteStatus(t, peer, http.MethodGet, "/api/steward/sync/probe?entity_type=task&entity_id=task-1", http.StatusServiceUnavailable)
 }
 
+func TestPeerReadyzDoesNotExposeInternalFailureDetails(t *testing.T) {
+	peer := chi.NewRouter()
+	RegisterPeerRoutes(peer, PeerDependencies{
+		Readiness: func(context.Context) (map[string]string, error) {
+			return map[string]string{"steward_runtime": "secret provider failure detail"}, errors.New("secret provider failure detail")
+		},
+	})
+	req := newHTTPAPITestRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	peer.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("peer readiness status = %d, want 503", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "secret provider") || strings.Contains(rec.Body.String(), "steward_runtime") {
+		t.Fatalf("peer readiness leaked internal detail: %s", rec.Body.String())
+	}
+}
+
 func TestPeerRouterRejectsOversizedBodiesBeforeProtocolHandling(t *testing.T) {
 	peer := chi.NewRouter()
 	RegisterPeerRoutes(peer, PeerDependencies{})
-	req := httptest.NewRequest(http.MethodPost, "/api/steward/pairing/challenge", io.LimitReader(repeatingReader('x'), maxPeerRequestBodyBytes+1))
+	req := newHTTPAPITestRequest(http.MethodPost, "/api/steward/pairing/challenge", io.LimitReader(repeatingReader('x'), maxPeerRequestBodyBytes+1))
 	req.ContentLength = maxPeerRequestBodyBytes + 1
 	rec := httptest.NewRecorder()
 
@@ -109,7 +153,7 @@ func TestPeerRouterRejectsOversizedBodiesBeforeProtocolHandling(t *testing.T) {
 
 func assertRouteStatus(t *testing.T, handler http.Handler, method string, path string, want int) {
 	t.Helper()
-	req := httptest.NewRequest(method, path, nil)
+	req := newHTTPAPITestRequest(method, path, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != want {
@@ -123,7 +167,7 @@ func TestCreateJobReturnsServiceUnavailableWhenProcessingIsDisabled(t *testing.T
 		JobService: jobs.NewService(nil, nil, time.Hour),
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(`{"tool_type":"visualize"}`))
+	req := newHTTPAPITestRequest(http.MethodPost, "/api/jobs", strings.NewReader(`{"tool_type":"visualize"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -152,7 +196,7 @@ func TestUploadFileRejectsBodyOverHardLimit(t *testing.T) {
 		strings.NewReader(suffix),
 	)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/files", body)
+	req := newHTTPAPITestRequest(http.MethodPost, "/api/files", body)
 	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 	rec := httptest.NewRecorder()
 
@@ -190,7 +234,7 @@ func TestUploadMusicTrackAcceptsMetadata(t *testing.T) {
 
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{MusicService: store})
-	req := httptest.NewRequest(http.MethodPost, "/api/music/tracks", &body)
+	req := newHTTPAPITestRequest(http.MethodPost, "/api/music/tracks", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -214,7 +258,7 @@ func TestUploadMusicTrackReturnsOKForDuplicate(t *testing.T) {
 	_ = writer.Close()
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{MusicService: store})
-	req := httptest.NewRequest(http.MethodPost, "/api/music/tracks", &body)
+	req := newHTTPAPITestRequest(http.MethodPost, "/api/music/tracks", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -233,7 +277,7 @@ func TestListMusicTracksPassesCursorAndLimit(t *testing.T) {
 	}}
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{MusicService: store})
-	req := httptest.NewRequest(http.MethodGet, "/api/music/tracks?cursor=next-page&limit=7", nil)
+	req := newHTTPAPITestRequest(http.MethodGet, "/api/music/tracks?cursor=next-page&limit=7", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -254,7 +298,7 @@ func TestStreamMusicTrackSupportsRanges(t *testing.T) {
 	}}
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{MusicService: store})
-	req := httptest.NewRequest(http.MethodGet, "/api/music/tracks/track-1/content", nil)
+	req := newHTTPAPITestRequest(http.MethodGet, "/api/music/tracks/track-1/content", nil)
 	req.Header.Set("Range", "bytes=2-5")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -276,7 +320,7 @@ func TestStreamMusicLyrics(t *testing.T) {
 	}}
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{MusicService: store})
-	req := httptest.NewRequest(http.MethodGet, "/api/music/tracks/track-1/lyrics", nil)
+	req := newHTTPAPITestRequest(http.MethodGet, "/api/music/tracks/track-1/lyrics", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -293,7 +337,7 @@ func TestDeleteMusicTrack(t *testing.T) {
 	}}
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{MusicService: store})
-	req := httptest.NewRequest(http.MethodDelete, "/api/music/tracks/track-1", nil)
+	req := newHTTPAPITestRequest(http.MethodDelete, "/api/music/tracks/track-1", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -324,7 +368,7 @@ func TestSaveMemoAcceptsFloatingCards(t *testing.T) {
 	})
 
 	body := `{"slug":"inbox","title":"随手记","content_html":"<p>x</p>","content_text":"x","floating_cards":[{"id":"card-1","content":"note","color":"#fff7d6","created_at":"2026-06-28T01:02:03Z","updated_at":"2026-06-28T01:02:03Z"}]}`
-	req := httptest.NewRequest(http.MethodPut, "/api/memo", strings.NewReader(body))
+	req := newHTTPAPITestRequest(http.MethodPut, "/api/memo", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -357,7 +401,7 @@ func TestSaveMemoPreservesFloatingCardsWhenFieldIsOmitted(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPut, "/api/memo", strings.NewReader(`{"slug":"inbox","title":"随手记","content_html":"","content_text":""}`))
+	req := newHTTPAPITestRequest(http.MethodPut, "/api/memo", strings.NewReader(`{"slug":"inbox","title":"随手记","content_html":"","content_text":""}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -381,7 +425,7 @@ func TestSaveMemoReturnsBadRequestForInvalidFloatingCards(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPut, "/api/memo", strings.NewReader(`{"slug":"inbox","floating_cards":{}}`))
+	req := newHTTPAPITestRequest(http.MethodPut, "/api/memo", strings.NewReader(`{"slug":"inbox","floating_cards":{}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 

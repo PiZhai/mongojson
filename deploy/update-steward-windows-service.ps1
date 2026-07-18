@@ -11,6 +11,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+throw "This legacy updater is disabled because it cannot verify a signed release or preserve R5.1 service isolation. Run the installed C:\Program Files\MongojsonSteward\update-steward-production.ps1 against a verified production package instead."
+
 function Test-IsAdministrator {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = [Security.Principal.WindowsPrincipal]::new($identity)

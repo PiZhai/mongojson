@@ -11,6 +11,9 @@ BACKUP_DIR="${BACKUP_DIR:-$BASE_DIR/backups}"
 ENV_FILE="${ENV_FILE:-$ENV_DIR/prod.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-$APP_DIR/deploy/docker-compose.prod.yml}"
 HTPASSWD_FILE="${HTPASSWD_FILE:-$ENV_DIR/.htpasswd}"
+TLS_DIR="${TLS_DIR:-$ENV_DIR/tls}"
+TLS_CERT_FILE="${TLS_CERT_FILE:-$TLS_DIR/fullchain.pem}"
+TLS_KEY_FILE="${TLS_KEY_FILE:-$TLS_DIR/privkey.pem}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1/healthz}"
 READY_URL="${READY_URL:-http://127.0.0.1/readyz}"
 
@@ -45,11 +48,26 @@ ensure_compose_assets() {
 ensure_runtime_env() {
   ensure_compose_assets
   ensure_file "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  local management_token
+  management_token="$(awk -F= '/^STEWARD_MANAGEMENT_AUTH_TOKEN=/{sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")"
+  if [[ ${#management_token} -lt 32 || "$management_token" == "replace_with_random_32_character_management_token" ]]; then
+    die "Set STEWARD_MANAGEMENT_AUTH_TOKEN to a random value of at least 32 characters in $ENV_FILE before deploying."
+  fi
+  local public_origin
+  public_origin="$(awk -F= '/^STEWARD_PUBLIC_ORIGIN=/{sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")"
+  if [[ "$public_origin" == "https://steward.example.com" || ! "$public_origin" =~ ^https://[^/?#[:space:]]+$ ]]; then
+    die "Replace the sample STEWARD_PUBLIC_ORIGIN with the externally visible HTTPS origin (for example https://steward.your-company.com) in $ENV_FILE."
+  fi
 }
 
 ensure_runtime_files() {
   ensure_runtime_env
   ensure_file "$HTPASSWD_FILE"
+  ensure_file "$TLS_CERT_FILE"
+  ensure_file "$TLS_KEY_FILE"
+  chmod 600 "$HTPASSWD_FILE"
+  chmod 600 "$TLS_KEY_FILE"
 }
 
 compose() {
@@ -162,10 +180,12 @@ create_default_dirs() {
   mkdir -p \
     "$APP_DIR" \
     "$ENV_DIR" \
+    "$TLS_DIR" \
     "$DATA_DIR/postgres" \
     "$DATA_DIR/backend" \
     "$LOG_DIR" \
     "$BACKUP_DIR"
+  chmod 700 "$ENV_DIR" "$TLS_DIR"
 }
 
 wait_for_url() {

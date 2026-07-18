@@ -1,3 +1,113 @@
+.management-auth-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(37, 99, 235, 0.14), transparent 38%),
+    linear-gradient(160deg, #f8fafc 0%, #eef4ff 100%);
+  color: #0f172a;
+}
+
+.management-auth-card {
+  width: min(440px, 100%);
+  padding: 34px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.14);
+}
+
+.management-auth-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 12px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.management-auth-eyebrow {
+  margin: 22px 0 4px;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.management-auth-card h1 {
+  margin: 0;
+  font-size: clamp(24px, 5vw, 32px);
+}
+
+.management-auth-description,
+.management-auth-loading {
+  color: #64748b;
+  line-height: 1.65;
+}
+
+.management-auth-card form {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.management-auth-card label {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.management-auth-card input {
+  min-height: 46px;
+  padding: 0 13px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+}
+
+.management-auth-card input:focus {
+  border-color: #2563eb;
+  outline: 3px solid rgba(37, 99, 235, 0.15);
+}
+
+.management-auth-card button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: #2563eb;
+  color: #fff;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.management-auth-card button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.management-auth-error {
+  display: grid;
+  gap: 6px;
+  margin-top: 20px;
+  padding: 13px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.management-auth-error button {
+  margin-top: 6px;
+  background: #991b1b;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: var(--sidebar-expanded-width) minmax(0, 1fr);

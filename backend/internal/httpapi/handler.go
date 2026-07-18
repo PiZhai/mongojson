@@ -10,7 +10,6 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -47,6 +46,10 @@ func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
+	h.peerReadyz(w, r)
+}
+
+func (h *Handler) readinessDetails(w http.ResponseWriter, r *http.Request) {
 	if h.deps.Readiness == nil {
 		httpError(w, http.StatusServiceUnavailable, "readiness checker is not configured")
 		return
@@ -69,6 +72,20 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 		"status": "ready",
 		"checks": checks,
 	})
+}
+
+func (h *Handler) peerReadyz(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Readiness == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+		return
+	}
+	ctx, cancel := withTimeout(r.Context())
+	defer cancel()
+	if _, err := h.deps.Readiness(ctx); err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
@@ -2634,10 +2651,6 @@ func (h *Handler) getStewardModelSettings(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) updateStewardModelSettings(w http.ResponseWriter, r *http.Request) {
-	if !trustedLocalSettingsOrigin(r.Header.Get("Origin")) {
-		httpError(w, http.StatusForbidden, "model settings may only be changed from the local management UI")
-		return
-	}
 	service, ok := h.requireStewardService(w)
 	if !ok {
 		return
@@ -2653,23 +2666,6 @@ func (h *Handler) updateStewardModelSettings(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]steward.StewardModelSettings{"settings": settings})
-}
-
-func trustedLocalSettingsOrigin(origin string) bool {
-	origin = strings.TrimSpace(origin)
-	if origin == "" {
-		return true
-	}
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return false
-	}
-	host := parsed.Hostname()
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func (h *Handler) probeStewardAutonomyAdvisor(w http.ResponseWriter, r *http.Request) {

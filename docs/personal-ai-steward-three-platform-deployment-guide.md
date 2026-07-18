@@ -361,13 +361,10 @@ pwsh ./deploy/run-steward-service-install-e2e.ps1 `
 先构建并校验 Windows 发布目录，再从管理员 PowerShell 执行：
 
 ```powershell
-pwsh ./deploy/update-steward-windows-service.ps1 `
-  -SourceDir ".\backend\dist\steward\steward-0.1.0-s3s4-windows-amd64" `
-  -InstallDir "C:\Program Files\MongojsonSteward" `
-  -ServiceName MongojsonSteward
+sudo pwsh -NoProfile -Command '& ''C:\Program Files\MongojsonSteward\update-steward-production.ps1'' -SourceDir ''.\backend\dist\steward\steward-0.1.0-s3s4-windows-amd64'' -Verify'
 ```
 
-脚本会先拒绝缺少 `steward-broker.exe` 的不完整 Windows 发布目录，再停止现有服务，将整个程序目录改名为带时间戳的备份，复制新版本，重新启动并检查 `/healthz`。更新会把 Broker 二进制部署到程序目录，但不会擅自生成 policy/密钥或安装 Broker 服务；独立 Broker 的首次安装仍按 R3.3 流程显式完成。更新不会修改 `C:\ProgramData\MongojsonSteward`；新版本启动或健康检查失败时会自动恢复旧程序目录。
+必须从受 ACL 保护的已安装目录运行 R5.1 生产更新器。它会先验证发布 manifest、文件哈希、签名者和安装标记，再以事务方式替换主服务、Broker、Companion 与策略，并在失败时恢复和复验旧版本。旧的 `deploy/update-steward-windows-service.ps1` 不具备这些保证，已经 fail closed，不能再用于生产更新。
 
 ## 8. macOS 安装
 

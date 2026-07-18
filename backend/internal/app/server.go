@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/cors"
 
 	"mongojson/backend/internal/config"
 	"mongojson/backend/internal/httpapi"
@@ -111,14 +110,6 @@ func NewServer() (*Server, error) {
 	}
 
 	managementRouter := chi.NewRouter()
-	managementRouter.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "Last-Event-ID"},
-		AllowCredentials: false,
-		MaxAge:           300,
-	}))
-
 	httpapi.RegisterManagementRoutes(managementRouter, deps)
 	managementHandler, err := withStaticWorkspace(managementRouter, cfg.StewardUIDir)
 	if err != nil {
@@ -183,6 +174,12 @@ func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker, s
 		} else {
 			checks["steward_daemon"] = "error: not running"
 			failures = append(failures, "steward_daemon")
+		}
+		if err := stewardDaemon.Readiness(ctx); err != nil {
+			checks["steward_runtime"] = "error: " + err.Error()
+			failures = append(failures, "steward_runtime")
+		} else {
+			checks["steward_runtime"] = "ok"
 		}
 
 		discoveryStatus := peerDiscovery.Status()

@@ -3,10 +3,29 @@
 package servicecontrol
 
 import (
+	"context"
+	"os"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
+
+func TestWindowsInstallRejectsSensitiveSCMEnvironment(t *testing.T) {
+	_, err := installPlatform(context.Background(), InstallOptions{
+		Name:        "MongojsonStewardUnsafeTest",
+		Scope:       ScopeSystem,
+		BinaryPath:  os.Args[0],
+		WorkDir:     ".",
+		HTTPAddr:    "127.0.0.1:18080",
+		DatabaseURL: "postgres://user:password@127.0.0.1:5432/database",
+		StorageDir:  ".",
+		DryRun:      true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "protected private environment") {
+		t.Fatalf("expected sensitive SCM environment rejection, got %v", err)
+	}
+}
 
 func TestSplitPrivateEnvironmentKeepsBrokerKeysOutOfRegistry(t *testing.T) {
 	public, private := splitPrivateEnvironment(map[string]string{

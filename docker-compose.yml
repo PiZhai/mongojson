@@ -26,6 +26,8 @@ services:
       STEWARD_PEER_HTTP_ADDR: ""
       # The container listener is remote only inside Docker; host publication remains loopback-only below.
       STEWARD_ALLOW_REMOTE_MANAGEMENT: "true"
+      STEWARD_MANAGEMENT_AUTH_REQUIRED: "true"
+      STEWARD_MANAGEMENT_AUTH_TOKEN: "${STEWARD_MANAGEMENT_AUTH_TOKEN:?set STEWARD_MANAGEMENT_AUTH_TOKEN to a random value of at least 32 characters}"
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/mongojson?sslmode=disable
       STORAGE_DIR: /app/data
       FILE_RETENTION_HOURS: 24

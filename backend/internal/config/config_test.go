@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -54,5 +55,71 @@ func TestLoadRejectsInvalidRemoteManagementSwitch(t *testing.T) {
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "STEWARD_ALLOW_REMOTE_MANAGEMENT") {
 		t.Fatalf("Load() error = %v, want invalid boolean error", err)
+	}
+}
+
+func TestLoadRequiresManagementTokenInHardenedMode(t *testing.T) {
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_REQUIRED", "true")
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_TOKEN", "")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "STEWARD_MANAGEMENT_AUTH_TOKEN") {
+		t.Fatalf("Load() error = %v, want missing management token error", err)
+	}
+}
+
+func TestLoadRequiresManagementTokenForRestrictedService(t *testing.T) {
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_REQUIRED", "false")
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_TOKEN", "")
+	t.Setenv("STEWARD_RESTRICTED_SERVICE", "true")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "STEWARD_MANAGEMENT_AUTH_TOKEN") {
+		t.Fatalf("restricted-service Load() error = %v, want missing management token error", err)
+	}
+}
+
+func TestLoadRequiresManagementTokenForRemoteManagement(t *testing.T) {
+	t.Setenv("HTTP_ADDR", ":19080")
+	t.Setenv("STEWARD_ALLOW_REMOTE_MANAGEMENT", "true")
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_REQUIRED", "false")
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_TOKEN", "")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "STEWARD_MANAGEMENT_AUTH_TOKEN") {
+		t.Fatalf("remote-management Load() error = %v, want missing management token error", err)
+	}
+}
+
+func TestLoadEnablesManagementAuthenticationWhenTokenConfigured(t *testing.T) {
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_REQUIRED", "false")
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_TOKEN", strings.Repeat("m", 32))
+	t.Setenv("STEWARD_MANAGEMENT_ALLOWED_ORIGINS", "https://console.example.test, HTTPS://CONSOLE.EXAMPLE.TEST, http://127.0.0.1:4174")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.ManagementAuthRequired || cfg.ManagementAuthToken != strings.Repeat("m", 32) {
+		t.Fatalf("management auth config = required:%t token:%q", cfg.ManagementAuthRequired, cfg.ManagementAuthToken)
+	}
+	wantOrigins := []string{"https://console.example.test", "http://127.0.0.1:4174"}
+	if !reflect.DeepEqual(cfg.ManagementAllowedOrigins, wantOrigins) {
+		t.Fatalf("allowed origins = %#v, want %#v", cfg.ManagementAllowedOrigins, wantOrigins)
+	}
+}
+
+func TestLoadRejectsWeakManagementTokenAndWildcardOrigin(t *testing.T) {
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_TOKEN", "short")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "at least 32") {
+		t.Fatalf("weak token Load() error = %v", err)
+	}
+
+	t.Setenv("STEWARD_MANAGEMENT_AUTH_TOKEN", strings.Repeat("m", 32))
+	t.Setenv("STEWARD_MANAGEMENT_ALLOWED_ORIGINS", "*")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "wildcard") {
+		t.Fatalf("wildcard origin Load() error = %v", err)
 	}
 }

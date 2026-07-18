@@ -437,6 +437,10 @@ function Write-Evidence {
 }
 
 $platform = Get-HostPlatform
+$productionVerifier = Join-Path $PSScriptRoot "test-steward-production.ps1"
+if ($platform -eq "windows" -and $ConfirmInstall) {
+  throw "The legacy direct-SCM Windows install E2E is retired. Install or migrate with install-steward-production.ps1/migrate-steward-production.ps1, then run $productionVerifier. This prevents bypassing the R5.1 LocalService, Restricted Service SID, Broker and Companion isolation path."
+}
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $backendDir = Join-Path $repoRoot "backend"
 if ([string]::IsNullOrWhiteSpace($EvidenceDir)) {
@@ -471,7 +475,7 @@ if ($platform -eq "windows" -and $ServiceScope -ne "system") {
   throw "Windows Service only supports system scope."
 }
 if ($ServiceScope -eq "user" -and -not $AllowUserServiceScope) {
-  throw "Final S3/S4 installation defaults to system scope. Pass -AllowUserServiceScope to make an intentional user-scope installation."
+  throw "Portable non-Windows installation defaults to system scope. Pass -AllowUserServiceScope to make an intentional user-scope installation."
 }
 if ([string]::IsNullOrWhiteSpace($ServiceName)) {
   $ServiceName = Get-DefaultServiceName -Platform $platform

@@ -22,6 +22,10 @@ services:
         condition: service_healthy
     environment:
       HTTP_ADDR: :8080
+      STEWARD_ALLOW_REMOTE_MANAGEMENT: "true"
+      STEWARD_MANAGEMENT_AUTH_REQUIRED: "true"
+      STEWARD_MANAGEMENT_AUTH_TOKEN: ${STEWARD_MANAGEMENT_AUTH_TOKEN:?set STEWARD_MANAGEMENT_AUTH_TOKEN}
+      STEWARD_MANAGEMENT_ALLOWED_ORIGINS: ${STEWARD_PUBLIC_ORIGIN:?set STEWARD_PUBLIC_ORIGIN to the public https origin}
       DATABASE_URL: postgres://tooling_app:${POSTGRES_PASSWORD}@postgres:5432/mongojson?sslmode=disable
       STORAGE_DIR: /app/data
       FILE_RETENTION_HOURS: 24
@@ -42,7 +46,9 @@ services:
       - backend
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - /opt/personal-tooling/env/.htpasswd:/etc/nginx/conf.d/.htpasswd:ro
+      - /opt/personal-tooling/env/tls:/etc/nginx/tls:ro
 

@@ -142,11 +142,12 @@ func serviceVerifyOptionsFromEnvironment(serviceName string, scope string, env m
 	}
 }
 
-func runServiceVerificationForEnvironment(serviceName string, scope string, env map[string]string, postVerify servicePostVerifyOptions) serviceVerificationResult {
+func runServiceVerificationForEnvironment(serviceName string, scope string, env map[string]string, managementToken string, postVerify servicePostVerifyOptions) serviceVerificationResult {
 	apiBase, opts := serviceVerifyOptionsFromEnvironment(serviceName, scope, env, postVerify)
 	verifier := cli{
-		apiBase: strings.TrimRight(apiBase, "/"),
-		client:  &http.Client{Timeout: 5 * time.Second},
+		apiBase:         strings.TrimRight(apiBase, "/"),
+		client:          &http.Client{Timeout: 5 * time.Second},
+		managementToken: strings.TrimSpace(managementToken),
 	}
 	postVerify = normalizeServicePostVerifyOptions(postVerify)
 	if postVerify.StartupTimeout > 0 {

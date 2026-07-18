@@ -316,31 +316,89 @@ install-steward-companion.ps1
 uninstall-steward-companion.ps1
 rotate-steward-broker-keys.ps1
 migrate-steward-production.ps1
+verify-steward-dist.ps1
+release-manifest.json
+release-manifest.p7s
+release-catalog.cat
+SHA256SUMS.txt
 ```
 
-假设解压后平台目录为：
+发布者证书的 40 位 SHA-1 Thumbprint 必须通过独立可信渠道取得，例如组织发布页、管理员密码库或线下交付记录。不能从尚未验证的包内 Manifest 自己读取后再信任它。
+
+假设下载并解压后的平台目录为：
 
 ```powershell
-$release = 'C:\Deploy\MongojsonSteward\steward-<version>-windows-amd64'
+$downloadedRelease = 'C:\Deploy\MongojsonSteward\steward-<version>-windows-amd64'
+$signingThumbprint = '<通过独立可信渠道取得的 40 位发布证书 Thumbprint>'
 ```
 
-检查关键文件：
+不要直接运行下载目录中的 EXE 或脚本。先定义下面的引导函数：它把整包复制到仅 SYSTEM 与 Administrators 可写的随机目录，检查 ACL 命令确实成功，先用 Windows 自带 Authenticode 校验固定发布者，再运行包内 verifier 完成 package-local Manifest、签名和全部 SHA-256 校验。
 
 ```powershell
-$required = @(
-  'steward.exe','steward-broker.exe','steward-approval.exe',
-  'steward-companion.exe','steward-system-tool-host.exe',
-  'ui\index.html','install-steward-production.ps1',
-  'test-steward-production.ps1','test-steward-broker-session0.ps1'
-)
+function New-VerifiedStewardBootstrap {
+  param(
+    [Parameter(Mandatory)][string]$SourceDir,
+    [Parameter(Mandatory)][string]$TrustedSignerThumbprint
+  )
 
-$missing = $required | Where-Object { -not (Test-Path (Join-Path $release $_)) }
-if ($missing) { throw "Release is incomplete: $($missing -join ', ')" }
+  $pin = ($TrustedSignerThumbprint -replace '\s','').ToUpperInvariant()
+  if ($pin -notmatch '^[A-F0-9]{40}$') {
+    throw '发布者 Thumbprint 必须是 40 位十六进制字符串。'
+  }
+  $source = (Resolve-Path -LiteralPath $SourceDir).Path
+  $bootstrap = Join-Path $env:ProgramData ('MongojsonStewardBootstrap\' + [guid]::NewGuid().ToString('N'))
+  try {
+    New-Item -ItemType Directory -Force -Path $bootstrap | Out-Null
+    & icacls.exe $bootstrap /inheritance:r | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '无法关闭 bootstrap 目录继承。' }
+    & icacls.exe $bootstrap /grant:r `
+      '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '无法保护 bootstrap 目录 ACL。' }
 
-& "$release\steward.exe" version
+    Get-ChildItem -LiteralPath $source -Force |
+      Copy-Item -Destination $bootstrap -Recurse -Force
+
+    $required = @(
+      'steward.exe','steward-broker.exe','steward-approval.exe',
+      'steward-companion.exe','steward-system-tool-host.exe',
+      'ui\index.html','install-steward-production.ps1',
+      'test-steward-production.ps1','test-steward-broker-session0.ps1',
+      'verify-steward-dist.ps1','release-manifest.json',
+      'release-manifest.p7s','release-catalog.cat','SHA256SUMS.txt'
+    )
+    $missing = $required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $bootstrap $_) -PathType Leaf) }
+    if ($missing) { throw "Release is incomplete: $($missing -join ', ')" }
+
+    $verifier = Join-Path $bootstrap 'verify-steward-dist.ps1'
+    $signature = Get-AuthenticodeSignature -LiteralPath $verifier
+    $actualSigner = if ($signature.SignerCertificate) {
+      ($signature.SignerCertificate.Thumbprint -replace '\s','').ToUpperInvariant()
+    } else { '' }
+    if ($signature.Status -ne 'Valid' -or $actualSigner -ne $pin) {
+      throw '包内 verifier 没有由预期的 Steward 发布证书签名。'
+    }
+
+    & $verifier `
+      -DistDir $bootstrap `
+      -TrustedSignerThumbprint $pin `
+      -RequirePackageMode `
+      -RunCurrentBinary | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Windows 发布包完整性验证失败。' }
+    return $bootstrap
+  } catch {
+    if (Test-Path -LiteralPath $bootstrap) {
+      Remove-Item -LiteralPath $bootstrap -Recurse -Force
+    }
+    throw
+  }
+}
+
+$release = New-VerifiedStewardBootstrap `
+  -SourceDir $downloadedRelease `
+  -TrustedSignerThumbprint $signingThumbprint
 ```
 
-同时保存并核对发布根目录的 `manifest.json` 与 `SHA256SUMS.txt`。若发布物来自源码构建，下一节的 `verify-steward-dist.ps1` 会逐文件验证 Manifest 和 SHA-256。
+此后 `$release` 指向受保护且已验证的 bootstrap，而不是原始下载目录。在安装完成或失败后删除它。Windows 平台包的信任源是 `release-manifest.json`、`release-manifest.p7s`、带可信时间戳的 `release-catalog.cat`、包内 `SHA256SUMS.txt` 和固定发布者；Catalog 覆盖 Manifest、detached signature 及全部载荷，使发布证书到期后仍能按签名时刻验证。聚合构建根目录的 `manifest.json` 只用于多平台构建清单，不能替代生产包校验。
 
 ## 6. 可选：在这台机器从源码构建发布物
 
@@ -406,11 +464,15 @@ Pop-Location
 ```powershell
 $version = 'windows-' + (git rev-parse --short HEAD)
 $distRoot = Join-Path $PWD "backend\dist\steward-$version"
+$signingThumbprint = '<组织代码签名证书 SHA-1 Thumbprint>'
 
 .\deploy\build-steward.ps1 `
   -Targets @('windows/amd64') `
   -Version $version `
   -OutputDir $distRoot `
+  -SigningCertificateThumbprint $signingThumbprint `
+  -TimestampServer 'https://timestamp.digicert.com' `
+  -RequireSignedPackage `
   -Clean
 
 .\deploy\verify-steward-dist.ps1 `
@@ -421,11 +483,33 @@ $distRoot = Join-Path $PWD "backend\dist\steward-$version"
 
 $manifest = Get-Content (Join-Path $distRoot 'manifest.json') -Raw | ConvertFrom-Json
 $artifact = $manifest.artifacts | Where-Object target -eq 'windows/amd64'
-$release = Join-Path $distRoot (Split-Path $artifact.path -Parent)
-$release
+$builtRelease = Join-Path $distRoot (Split-Path $artifact.path -Parent)
+$builtRelease
+
+.\deploy\verify-steward-dist.ps1 `
+  -DistDir $builtRelease `
+  -ExpectedVersion $version `
+  -TrustedSignerThumbprint $signingThumbprint `
+  -RequirePackageMode `
+  -RunCurrentBinary
+
+$release = New-VerifiedStewardBootstrap `
+  -SourceDir $builtRelease `
+  -TrustedSignerThumbprint $signingThumbprint
 ```
 
-验证脚本会检查 Manifest、每个文件的 SHA-256、目标架构、版本、Git commit、Go 版本以及当前 Windows 二进制的真实启动结果。
+构建脚本默认拒绝包含已修改或未跟踪文件的 Git worktree。生产签名模式不能跳过完整 Go 测试、前端测试、lint 或全新构建。每个平台目录会生成独立的 `release-manifest.json` 与 `SHA256SUMS.txt`，并对 Manifest 生成 CMS detached signature；Windows 包还会生成覆盖整包的 Catalog，并用同一证书做带可信时间戳的 Authenticode 签名。Steward 自有的 EXE 和安装脚本也使用同一证书和时间戳。验证脚本会检查可信发布者、时间戳、Catalog、Manifest 签名、每个文件的 SHA-256、目标架构、版本、Git commit、Go 版本以及当前 Windows 二进制的真实启动结果。
+
+没有代码签名证书的本地开发只能显式使用：
+
+```powershell
+$devDist = Join-Path $PWD 'backend\dist\steward-local-dev'
+.\deploy\build-steward.ps1 -Targets @('windows/amd64') -OutputDir $devDist -Version local-dev -AllowDirtyWorktree
+$devRelease = (Get-ChildItem $devDist -Directory -Filter '*windows-amd64' | Select-Object -First 1).FullName
+.\deploy\verify-steward-dist.ps1 -DistDir $devRelease -AllowUnsignedPackage -AllowDirtyPackage -RunCurrentBinary
+```
+
+这种发布物会被标记为 `development_unsigned` 或 `development_dirty`，生产安装和更新默认拒绝。`-AllowUnsignedPackage` 与 `-AllowDirtyPackage` 只能用于本机开发，不能写入生产自动化。
 
 ## 7. 原生安装智能管家
 
@@ -446,13 +530,32 @@ $release
 确认当前 PowerShell 仍然是管理员，并且第 4 节生成的 `$databaseURL` 与第 5/6 节生成的 `$release` 变量仍然存在：
 
 ```powershell
-& "$release\install-steward-production.ps1" `
-  -SourceDir $release `
-  -DatabaseURL $databaseURL `
-  -InstallCompanion `
-  -Start `
-  -Verify
+$installer = Join-Path $release 'install-steward-production.ps1'
+$pin = ($signingThumbprint -replace '\s','').ToUpperInvariant()
+$signature = Get-AuthenticodeSignature -LiteralPath $installer
+$actualSigner = if ($signature.SignerCertificate) {
+  ($signature.SignerCertificate.Thumbprint -replace '\s','').ToUpperInvariant()
+} else { '' }
+if ($signature.Status -ne 'Valid' -or $actualSigner -ne $pin) {
+  throw '安装器没有由预期的 Steward 发布证书签名。'
+}
+
+try {
+  & $installer `
+    -SourceDir $release `
+    -TrustedSignerThumbprint $pin `
+    -DatabaseURL $databaseURL `
+    -InstallCompanion `
+    -Start `
+    -Verify
+} finally {
+  if (Test-Path -LiteralPath $release) {
+    Remove-Item -LiteralPath $release -Recurse -Force
+  }
+}
 ```
+
+第 5 节已经把发布包复制到仅 SYSTEM 和 Administrators 可写的 bootstrap，并验证固定发布者和整包内容。安装器内部还会再次复制到独立管理员 staging、拒绝 reparse point、验证 package-local `release-manifest.json` 与所有哈希，随后只从已经验证的 staging/安装目录执行文件。生产模式不接受旧的发布根 `manifest.json`，也不接受未固定发布者的“系统信任证书”。首次安装会把固定发布者写入受 ACL 保护的 `C:\Program Files\MongojsonSteward\release-trust.json`。
 
 > 全新机器只使用 `install-steward-production.ps1`。不要使用 `migrate-steward-production.ps1`；`migrate` 只用于把已有的旧 LocalSystem 单服务安装迁移到新隔离架构。
 
@@ -470,7 +573,29 @@ $release
 
 安装失败时，脚本会回滚本次创建的服务和 Companion，不会假装完成。
 
-### 7.3 配置数据库晚启动恢复
+### 7.3 获取管理密钥并解锁浏览器
+
+生产安装会为主服务生成独立高熵管理密钥，并把给当前登录用户使用的副本写入：
+
+```text
+%LOCALAPPDATA%\MongojsonSteward\management-access-token.txt
+```
+
+不要把密钥放进 URL、截图、日志或 PowerShell 历史。下面把它直接复制到剪贴板，不在终端明文显示：
+
+```powershell
+$managementTokenFile = Join-Path $env:LOCALAPPDATA 'MongojsonSteward\management-access-token.txt'
+$managementToken = (Get-Content -Raw -LiteralPath $managementTokenFile).Trim()
+if ($managementToken.Length -lt 32) { throw '管理密钥不存在或无效。' }
+$managementToken | Set-Clipboard
+$managementHeaders = @{ Authorization = "Bearer $managementToken" }
+```
+
+打开 `http://127.0.0.1:18080/`，把剪贴板内容粘贴到“解锁本机管理界面”。浏览器只用它换取随机的短期 Bearer 会话令牌，并只保存在当前页面内存中；不写 Cookie、`localStorage` 或 `sessionStorage`，刷新或关闭页面后需要重新解锁。这样可避免明文 loopback 上的 Cookie 被其他本机端口接收。会话过期或 API 返回 401 时，界面也会重新锁定。
+
+PowerShell、CLI 或自动化调用 `/api/...` 时必须使用 `$managementHeaders`。`/healthz` 与 `/readyz` 保持匿名可读，但业务和管家 API 不允许匿名访问。
+
+### 7.4 配置数据库晚启动恢复
 
 Docker Desktop 可能在登录后才启动 PostgreSQL，而 `MongojsonSteward` 是开机服务。为主服务设置延迟自动启动和持续失败恢复：
 
@@ -555,7 +680,8 @@ Get-Process steward-companion -IncludeUserName
 管理员 PowerShell：
 
 ```powershell
-& "$release\test-steward-production.ps1" -RequireCompanion
+$installedRoot = 'C:\Program Files\MongojsonSteward'
+& "$installedRoot\test-steward-production.ps1" -RequireCompanion
 ```
 
 该脚本不仅看服务是否存在，还会核验：
@@ -563,7 +689,7 @@ Get-Process steward-companion -IncludeUserName
 - 主服务 LocalService 与 Restricted Service SID。
 - Broker LocalSystem。
 - 主/Broker 私密环境文件和 SCM 无密钥泄漏。
-- Broker secret ACL 不向 SYSTEM 泛化。
+- 主服务和 Broker 私密环境文件启用继承保护，只允许 SYSTEM、Administrators 和对应 Service SID。
 - System Tool Host 目录和参数化 policy。
 - 真实执行 `system.uptime`。
 - 工具输出、审计持久化和 Broker 签名 receipt 同时有效。
@@ -620,10 +746,13 @@ Windows 原生 `windows-activity` 采集器默认启用，每 15 秒记录前台
 ```powershell
 Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:18080/api/steward/proactive/run `
+  -Headers $managementHeaders `
   -ContentType 'application/json' `
   -Body '{"force":true,"cadence":"daily"}'
 
-Invoke-RestMethod 'http://127.0.0.1:18080/api/steward/proactive/runs?limit=20'
+Invoke-RestMethod `
+  -Uri 'http://127.0.0.1:18080/api/steward/proactive/runs?limit=20' `
+  -Headers $managementHeaders
 ```
 
 ### 可选 ActivityWatch
@@ -668,7 +797,8 @@ Get-FileHash -Algorithm SHA256 $backup
 
 - `C:\ProgramData\MongojsonSteward`。
 - `C:\ProgramData\MongoJSON\StewardBroker`。
-- 当前发布根目录的 `manifest.json` 与 `SHA256SUMS.txt`。
+- `C:\Program Files\MongojsonSteward\release-manifest.json`、`SHA256SUMS.txt` 与 `release-trust.json`。
+- `%LOCALAPPDATA%\MongojsonSteward\management-access-token.txt`；必须单独加密保存，不能与普通日志放在一起。
 
 这些目录含密钥和审计，不应上传公共网盘或 Git；备份介质必须加密。
 
@@ -678,20 +808,37 @@ Get-FileHash -Algorithm SHA256 $backup
 
 ```powershell
 $newRelease = 'C:\Deploy\MongojsonSteward\steward-<new-version>-windows-amd64'
+$installedUpdater = 'C:\Program Files\MongojsonSteward\update-steward-production.ps1'
 
 sudo pwsh -NoProfile -Command `
-  "& '$newRelease\update-steward-production.ps1' -SourceDir '$newRelease'"
+  "& '$installedUpdater' -SourceDir '$newRelease'"
 ```
 
-Updater 只接受已经采用 R5.1 隔离的安装：主服务必须是 LocalService、Broker 必须是 LocalSystem。它会备份旧二进制和 policy，刷新 System Tool Host 哈希，重装 Companion，执行真实验收；失败时恢复旧版本。
+必须运行当前安装目录内的 Updater，不能执行新发布目录里尚未验证的脚本。Updater 从受保护的 `release-trust.json` 读取固定发布者；显式提供不同 Thumbprint 会被拒绝。它先把新包复制到同卷管理员 staging，在 staging 内验证新 verifier 的 Authenticode 签名、package-local Manifest 和全部文件哈希，全部通过后才停止服务。随后原子切换主目录和 Broker，刷新 System Tool Host 哈希。已安装 Companion 时会停止任务和进程、备份整个用户目录后原子更新；未安装 Companion 时保持未安装，除非显式传入 `-InstallCompanion`。任一步失败都会恢复主程序、Broker、policy、Companion 目录与原计划任务。
 
 ### 11.4 旧版单服务迁移
 
 仅当旧 `MongojsonSteward` 仍以 LocalSystem 运行、尚未安装新 Broker 时使用：
 
 ```powershell
-sudo pwsh -NoProfile -Command `
-  "& '$release\migrate-steward-production.ps1' -SourceDir '$release' -InstallCompanion -Verify"
+$downloadedMigrationRelease = 'C:\Deploy\MongojsonSteward\steward-<version>-windows-amd64'
+$migrationRelease = New-VerifiedStewardBootstrap `
+  -SourceDir $downloadedMigrationRelease `
+  -TrustedSignerThumbprint $signingThumbprint
+$migration = Join-Path $migrationRelease 'migrate-steward-production.ps1'
+$migrationSignature = Get-AuthenticodeSignature -LiteralPath $migration
+if ($migrationSignature.Status -ne 'Valid' -or
+    (($migrationSignature.SignerCertificate.Thumbprint -replace '\s','') -ne ($signingThumbprint -replace '\s',''))) {
+  throw '迁移器没有由预期的 Steward 发布证书签名。'
+}
+try {
+  sudo pwsh -NoProfile -Command `
+    "& '$migration' -SourceDir '$migrationRelease' -TrustedSignerThumbprint '$signingThumbprint' -InstallCompanion -Verify"
+} finally {
+  if (Test-Path -LiteralPath $migrationRelease) {
+    Remove-Item -LiteralPath $migrationRelease -Recurse -Force
+  }
+}
 ```
 
 全新机器和已经是 LocalService 的机器都不要执行它。
@@ -700,7 +847,7 @@ sudo pwsh -NoProfile -Command `
 
 ```powershell
 sudo pwsh -NoProfile -Command `
-  "& '$release\rotate-steward-broker-keys.ps1'"
+  "& 'C:\Program Files\MongojsonSteward\rotate-steward-broker-keys.ps1'"
 ```
 
 轮换会保留签名身份，以保持历史 audit/checkpoint 连续性。轮换前仍应备份 Broker 数据目录。
@@ -711,14 +858,14 @@ sudo pwsh -NoProfile -Command `
 
 ```powershell
 sudo pwsh -NoProfile -Command `
-  "& '$release\uninstall-steward-production.ps1'"
+  "& 'C:\Program Files\MongojsonSteward\uninstall-steward-production.ps1'"
 ```
 
 只有明确要永久销毁主服务、Broker 与 Companion 数据时才使用：
 
 ```powershell
 sudo pwsh -NoProfile -Command `
-  "& '$release\uninstall-steward-production.ps1' -RemoveData -RemoveCompanionData"
+  "& 'C:\Program Files\MongojsonSteward\uninstall-steward-production.ps1' -RemoveData -RemoveCompanionData"
 ```
 
 卸载脚本不会删除 PostgreSQL 容器或 volume。删除 `mongojson-postgres-data` 会永久删除对话、记忆、任务、工具目录元数据和证据索引，因此不应作为普通卸载步骤。
@@ -781,7 +928,7 @@ Get-Process steward-companion -IncludeUserName
 
 ```powershell
 sudo pwsh -NoProfile -Command `
-  "& '$release\test-steward-broker-session0.ps1' -SourceDir '$release'"
+  "& 'C:\Program Files\MongojsonSteward\test-steward-broker-session0.ps1' -SourceDir 'C:\Program Files\MongojsonSteward'"
 ```
 
 检查输出中 `default`、`privileges-only` 和 `system-restricting-sid` 的差异，并检查杀毒/EDR 是否拦截临时服务、受限 Token、Windows PowerShell 或 System Tool Host。不要通过关闭 Broker 校验或放宽密钥 ACL 来绕过。
@@ -791,12 +938,14 @@ sudo pwsh -NoProfile -Command `
 | 内容 | 默认位置 |
 |---|---|
 | 主程序 | `C:\Program Files\MongojsonSteward` |
+| 固定发布者与安装信任记录 | `C:\Program Files\MongojsonSteward\release-trust.json` |
 | 主数据、上传、日志、私密环境 | `C:\ProgramData\MongojsonSteward` |
 | 主服务私密环境 | `C:\ProgramData\MongojsonSteward\config\service-secrets.json` |
 | 主日志 | `C:\ProgramData\MongojsonSteward\logs\MongojsonSteward.log` |
 | Broker 程序 | `C:\Program Files\MongoJSON\StewardBroker` |
 | Broker policy/key/state/audit/checkpoint | `C:\ProgramData\MongoJSON\StewardBroker` |
 | Companion 程序、密钥、日志 | `%LOCALAPPDATA%\MongojsonSteward` |
+| 当前用户管理密钥 | `%LOCALAPPDATA%\MongojsonSteward\management-access-token.txt` |
 | PostgreSQL 数据 | Docker volume `mongojson-postgres-data` |
 | 完整工作台 | `http://127.0.0.1:18080/` |
 | 私人管家 | `http://127.0.0.1:18080/tools/steward` |
@@ -809,15 +958,16 @@ sudo pwsh -NoProfile -Command `
 - [ ] Docker Desktop 使用 Linux/WSL 2 后端并设置登录后启动。
 - [ ] 只有 PostgreSQL 在 Docker 中运行，没有容器 backend/frontend/nginx。
 - [ ] PostgreSQL 17 为 `healthy`，named volume 存在，只绑定 `127.0.0.1:55439`。
-- [ ] Windows 发布物的 Manifest、SHA-256、版本和 commit 已核对。
+- [ ] Windows 发布物先进入受保护 bootstrap，固定发布者、package-local Manifest、SHA-256、版本和 commit 均通过。
 - [ ] Session 0 三种 Token case 全部通过。
 - [ ] 主服务是 LocalService + Restricted Service SID。
 - [ ] Broker 是 LocalSystem，系统工具执行返回已审计签名 receipt。
 - [ ] Companion 是当前用户 + Limited，并能执行通知/剪贴板等会话工具。
 - [ ] `/healthz`、`/readyz` 和完整工作台正常。
+- [ ] 管理密钥文件 ACL 正确，浏览器可解锁，匿名 `/api/...` 请求返回 401。
 - [ ] 模型配置已测试、保存并完成至少一次多轮工具调用。
 - [ ] Windows 原生活动采集和一次主动 daily 归纳已验证。
-- [ ] 数据库、ProgramData、Manifest 和 checksum 已建立备份。
+- [ ] 数据库、ProgramData、release trust、Manifest、checksum 和加密保存的管理密钥已建立备份。
 - [ ] Windows 重启、用户重新登录后再次完成生产验收。
 
 安全隔离的实现细节见 [R5.1 Windows 生产安装与权限隔离](steward-r5.1-windows-production-isolation.md)。

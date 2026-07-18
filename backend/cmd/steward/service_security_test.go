@@ -357,10 +357,31 @@ func TestServiceInstallOptionsFromEnvSupportsStrictValidation(t *testing.T) {
 	}
 	fixture := strictServiceSecurityFixture(publicKey, privateKey)
 	env := servicecontrol.Environment(fixture)
+	env["STEWARD_MANAGEMENT_AUTH_REQUIRED"] = "true"
+	env["STEWARD_MANAGEMENT_AUTH_TOKEN"] = "management-token-0123456789abcdef"
+	env["STEWARD_ORCHESTRATION_SIGNING_KEY"] = "orchestration-seed"
+	env["STEWARD_RUNTIME_V2"] = "true"
+	env["STEWARD_OWNER_MODE"] = "true"
+	env["STEWARD_ORCHESTRATION_REMOTE"] = "true"
+	env["STEWARD_ALLOW_REMOTE_MANAGEMENT"] = "true"
+	env["STEWARD_RESTRICTED_SERVICE"] = "true"
+	env["STEWARD_API_TIMEOUT"] = "45s"
+	env["STEWARD_PAIRING_PUBLIC_KEY"] = "pairing-public-key"
 
 	options := serviceInstallOptionsFromEnv("MongojsonSteward", env)
 	if options.UIDir != fixture.UIDir {
 		t.Fatalf("ui dir from service env = %q, want %q", options.UIDir, fixture.UIDir)
+	}
+	for _, key := range []string{
+		"STEWARD_MANAGEMENT_AUTH_REQUIRED", "STEWARD_MANAGEMENT_AUTH_TOKEN",
+		"STEWARD_ORCHESTRATION_SIGNING_KEY", "STEWARD_RUNTIME_V2",
+		"STEWARD_OWNER_MODE", "STEWARD_ORCHESTRATION_REMOTE",
+		"STEWARD_ALLOW_REMOTE_MANAGEMENT", "STEWARD_RESTRICTED_SERVICE",
+		"STEWARD_API_TIMEOUT", "STEWARD_PAIRING_PUBLIC_KEY",
+	} {
+		if options.ExtraEnv[key] != env[key] {
+			t.Fatalf("runtime security env %s was lost: got %q want %q", key, options.ExtraEnv[key], env[key])
+		}
 	}
 	if err := validateStrictServiceSecurity(options); err != nil {
 		t.Fatalf("strict validation from service env failed: %v", err)

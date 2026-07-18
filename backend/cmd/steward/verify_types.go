@@ -105,6 +105,7 @@ type peerVerificationDevice struct {
 
 type meshVerifyOptions struct {
 	NodeAPIs                  []string      `json:"node_apis"`
+	NodeManagementTokens      []string      `json:"-"`
 	StrictSecurity            bool          `json:"strict_security"`
 	StrictPeers               bool          `json:"strict_peers"`
 	RequirePeers              bool          `json:"require_peers"`

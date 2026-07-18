@@ -17,7 +17,7 @@ type windowsFoundationToolDefinition struct {
 	properties                            map[string]any
 }
 
-const windowsFoundationToolVersion = "1.0.4"
+const windowsFoundationToolVersion = "1.0.5"
 
 func (s *Service) ensureWindowsFoundationTools(ctx context.Context, now time.Time) error {
 	if runtime.GOOS != "windows" || !s.runtimeR2 {
@@ -258,7 +258,7 @@ try {
   'fs.exists' { $r=[ordered]@{path=(A 'path');exists=(Test-Path -LiteralPath (A 'path'));type=if(Test-Path -LiteralPath (A 'path') -PathType Container){'directory'}elseif(Test-Path -LiteralPath (A 'path') -PathType Leaf){'file'}else{'missing'}} }
   'fs.stat' { $i=Get-Item -LiteralPath (A 'path') -Force; $r=[ordered]@{path=$i.FullName;name=$i.Name;is_directory=$i.PSIsContainer;length=if($i.PSIsContainer){0}else{$i.Length};created_at=$i.CreationTimeUtc;modified_at=$i.LastWriteTimeUtc;attributes=$i.Attributes.ToString()} }
   'fs.search' { $max=[int](A 'max_results' 200); $pattern=[string](A 'pattern' '*'); $content=[string](A 'content' ''); $items=Get-ChildItem -LiteralPath (A 'root') -Recurse -Force -File -Filter $pattern -ErrorAction SilentlyContinue; if($content){$items=$items|Select-String -SimpleMatch $content|ForEach-Object{$_.Path}|Sort-Object -Unique|ForEach-Object{Get-Item -LiteralPath $_}}; $r=[ordered]@{matches=@($items|Select-Object -First $max|ForEach-Object{[ordered]@{path=$_.FullName;length=$_.Length;modified_at=$_.LastWriteTimeUtc}})} }
-  'fs.get_known_folders' { $home=[Environment]::GetFolderPath('UserProfile'); $r=[ordered]@{home=$home;desktop=[Environment]::GetFolderPath('Desktop');documents=[Environment]::GetFolderPath('MyDocuments');downloads=(Join-Path $home 'Downloads');pictures=[Environment]::GetFolderPath('MyPictures');music=[Environment]::GetFolderPath('MyMusic');videos=[Environment]::GetFolderPath('MyVideos');app_data=[Environment]::GetFolderPath('ApplicationData')} }
+  'fs.get_known_folders' { $userProfile=[Environment]::GetFolderPath('UserProfile'); $r=[ordered]@{home=$userProfile;desktop=[Environment]::GetFolderPath('Desktop');documents=[Environment]::GetFolderPath('MyDocuments');downloads=(Join-Path $userProfile 'Downloads');pictures=[Environment]::GetFolderPath('MyPictures');music=[Environment]::GetFolderPath('MyMusic');videos=[Environment]::GetFolderPath('MyVideos');app_data=[Environment]::GetFolderPath('ApplicationData')} }
   'fs.read_bytes' { $b=[IO.File]::ReadAllBytes((A 'path')); $r=[ordered]@{path=(A 'path');size=$b.Length;base64=[Convert]::ToBase64String($b)} }
   'fs.write_text' { $p=[string](A 'path'); if(A 'create_parents' $false){[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($p)))|Out-Null}; [IO.File]::WriteAllText($p,[string](A 'content'),[Text.UTF8Encoding]::new($false)); $r=[ordered]@{path=[IO.Path]::GetFullPath($p);bytes=(Get-Item $p).Length} }
   'fs.append_text' { [IO.File]::AppendAllText((A 'path'),[string](A 'content'),[Text.UTF8Encoding]::new($false)); $r=[ordered]@{path=[IO.Path]::GetFullPath((A 'path'));bytes=(Get-Item (A 'path')).Length} }

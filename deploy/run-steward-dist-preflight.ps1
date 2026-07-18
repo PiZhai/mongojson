@@ -3,7 +3,17 @@ param(
 
   [string]$Version = "",
 
-  [switch]$SkipFrontendBuild
+  [switch]$SkipFrontendBuild,
+
+  [string]$SigningCertificateThumbprint = "",
+
+  [string]$TimestampServer = "",
+
+  [string]$TrustedSignerThumbprint = "",
+
+  [switch]$DevelopmentUnsigned,
+
+  [switch]$AllowDirtyWorktree
 )
 
 $ErrorActionPreference = "Stop"
@@ -95,9 +105,31 @@ $startedAt = (Get-Date).ToUniversalTime()
 $checks = New-Object System.Collections.ArrayList
 $buildOutput = @()
 $verification = $null
+$packageVerification = $null
 $errorMessage = ""
+$preflightMode = if ($DevelopmentUnsigned) { "development_unsigned" } else { "production_signed" }
 
 try {
+  if ($DevelopmentUnsigned) {
+    if (-not [string]::IsNullOrWhiteSpace($SigningCertificateThumbprint) -or -not [string]::IsNullOrWhiteSpace($TrustedSignerThumbprint)) {
+      throw "-DevelopmentUnsigned cannot be combined with release signer parameters"
+    }
+    Write-Warning "DEVELOPMENT PREFLIGHT: the Windows package may be unsigned and is not production eligible."
+  } else {
+    if ($AllowDirtyWorktree) {
+      throw "Production dist preflight does not allow -AllowDirtyWorktree"
+    }
+    if ([string]::IsNullOrWhiteSpace($SigningCertificateThumbprint)) {
+      throw "Production dist preflight requires -SigningCertificateThumbprint; use -DevelopmentUnsigned only for an explicit local development run"
+    }
+    if ([string]::IsNullOrWhiteSpace($TimestampServer)) {
+      throw "Production dist preflight requires -TimestampServer"
+    }
+    if ([string]::IsNullOrWhiteSpace($TrustedSignerThumbprint)) {
+      $TrustedSignerThumbprint = $SigningCertificateThumbprint
+    }
+  }
+
   $buildParameters = @{
     OutputDir = $distRoot
     Version = $Version
@@ -106,13 +138,29 @@ try {
   if ($SkipFrontendBuild) {
     $buildParameters.SkipFrontendBuild = $true
   }
+  if ($AllowDirtyWorktree) {
+    $buildParameters.AllowDirtyWorktree = $true
+  }
+  if (-not $DevelopmentUnsigned) {
+    $buildParameters.SigningCertificateThumbprint = $SigningCertificateThumbprint
+    $buildParameters.TimestampServer = $TimestampServer
+    $buildParameters.RequireSignedPackage = $true
+  }
   $buildOutput = @(& (Join-Path $PSScriptRoot "build-steward.ps1") @buildParameters *>&1 | ForEach-Object { "$_" })
   if ($LASTEXITCODE -ne 0) {
     throw "steward dist build failed with exit code $LASTEXITCODE"
   }
   Add-Check $checks "dist_preflight.build" "ok" "five target steward distribution directories were built" @{ dist_dir = $distRoot }
 
-  $verifyOutput = @(& (Join-Path $PSScriptRoot "verify-steward-dist.ps1") -DistDir $distRoot -ExpectedVersion $Version -RunCurrentBinary *>&1 | ForEach-Object { "$_" })
+  $aggregateVerifyParameters = @{
+    DistDir = $distRoot
+    ExpectedVersion = $Version
+    RunCurrentBinary = $true
+  }
+  if ($AllowDirtyWorktree) {
+    $aggregateVerifyParameters.AllowDirtyPackage = $true
+  }
+  $verifyOutput = @(& (Join-Path $PSScriptRoot "verify-steward-dist.ps1") @aggregateVerifyParameters)
   if ($LASTEXITCODE -ne 0) {
     throw "steward dist verification failed with exit code $LASTEXITCODE"
   }
@@ -154,6 +202,63 @@ try {
   }
   Add-Check $checks "dist_preflight.companion" "ok" "every target directory contains a checksum-verified companion buffer" @{
     companion_paths = @($verification.artifacts | ForEach-Object { $_.companion_path })
+  }
+
+  $windowsArtifact = @($verification.artifacts | Where-Object { $_.target -eq "windows/amd64" }) | Select-Object -First 1
+  if ($null -eq $windowsArtifact -or [string]::IsNullOrWhiteSpace([string]$windowsArtifact.path)) {
+    throw "distribution verification did not return the Windows amd64 artifact path"
+  }
+  $windowsArtifactPath = ([string]$windowsArtifact.path) -replace "/", [IO.Path]::DirectorySeparatorChar
+  $windowsPackageDir = Split-Path -Parent (Join-Path $distRoot $windowsArtifactPath)
+  $packageVerifyParameters = @{
+    DistDir = $windowsPackageDir
+    ExpectedVersion = $Version
+    RequirePackageMode = $true
+  }
+  if ((Get-HostPlatform) -eq "windows") {
+    $packageVerifyParameters.RunCurrentBinary = $true
+  }
+  if ($DevelopmentUnsigned) {
+    $packageVerifyParameters.AllowUnsignedPackage = $true
+  } else {
+    $packageVerifyParameters.TrustedSignerThumbprint = $TrustedSignerThumbprint
+  }
+  if ($AllowDirtyWorktree) {
+    $packageVerifyParameters.AllowDirtyPackage = $true
+  }
+  $packageVerifyOutput = @(& (Join-Path $PSScriptRoot "verify-steward-dist.ps1") @packageVerifyParameters)
+  if ($LASTEXITCODE -ne 0) {
+    throw "Windows package verification failed with exit code $LASTEXITCODE"
+  }
+  $packageVerification = ($packageVerifyOutput -join "`n") | ConvertFrom-Json
+  if (-not $packageVerification.ok -or -not $packageVerification.package_mode) {
+    throw "Windows package verifier did not complete package-local verification"
+  }
+  if (-not $DevelopmentUnsigned -and (-not $packageVerification.signed -or [string]::IsNullOrWhiteSpace([string]$packageVerification.signer_thumbprint))) {
+    throw "Production Windows package did not produce a pinned signed verification result"
+  }
+  $packageIntegrityMessage = if ($DevelopmentUnsigned) {
+    "Windows package-local manifest and hashes passed with explicit unsigned development overrides"
+  } else {
+    "Windows package-local manifest, hashes, executable signatures, and pinned publisher policy passed"
+  }
+  Add-Check $checks "dist_preflight.package_integrity" "ok" $packageIntegrityMessage @{
+    package_dir = $windowsPackageDir
+    signed = [bool]$packageVerification.signed
+    signer_thumbprint = $packageVerification.signer_thumbprint
+    source_clean = [bool]$packageVerification.source_clean
+    development_override = [bool]$DevelopmentUnsigned
+  }
+  if (-not $DevelopmentUnsigned) {
+    if (-not [bool]$packageVerification.source_clean) {
+      throw "Production Windows package was not built from a clean source worktree"
+    }
+    Add-Check $checks "dist_preflight.production_eligibility" "ok" "Windows release is clean, signed, package-local verified, and pinned to the expected publisher" @{
+      signer_thumbprint = $packageVerification.signer_thumbprint
+      release_kind = $packageVerification.release_kind
+    }
+  } else {
+    Add-Check $checks "dist_preflight.development_override" "ok" "Unsigned development mode was explicitly requested and recorded; this evidence is not production eligible" $null
   }
 
   $missingBrokers = @($verification.artifacts | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.broker_path) })
@@ -201,16 +306,27 @@ $payload = [ordered]@{
     completed_at = $completedAt.ToString("o")
     duration_ms = [int64]($completedAt - $startedAt).TotalMilliseconds
     version = $Version
+    mode = $preflightMode
+    production_eligible = (-not $DevelopmentUnsigned -and $null -ne $packageVerification -and [bool]$packageVerification.signed -and [bool]$packageVerification.source_clean)
+    trusted_signer_thumbprint = if ($DevelopmentUnsigned) { $null } else { $TrustedSignerThumbprint }
     dist_dir = $distRoot
     distribution = $verification
+    windows_package = $packageVerification
     error = $errorMessage
     checks = @($checks)
   }
 }
+$recordedCommand = @("deploy/run-steward-dist-preflight.ps1", "-Version", $Version)
+if ($DevelopmentUnsigned) {
+  $recordedCommand += "-DevelopmentUnsigned"
+  if ($AllowDirtyWorktree) { $recordedCommand += "-AllowDirtyWorktree" }
+} else {
+  $recordedCommand += @("-SigningCertificateThumbprint", $SigningCertificateThumbprint, "-TimestampServer", $TimestampServer, "-TrustedSignerThumbprint", $TrustedSignerThumbprint)
+}
 $envelope = [ordered]@{
   kind = "dist-preflight"
   ok = $ok
-  command = @("deploy/run-steward-dist-preflight.ps1", "-Version", $Version)
+  command = $recordedCommand
   created_at = $startedAt.ToString("o")
   payload = $payload
 }
@@ -222,8 +338,11 @@ $envelope | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $evidencePath -E
   evidence_path = $evidencePath
   dist_dir = $distRoot
   version = $Version
+  mode = $preflightMode
   artifact_count = if ($null -ne $verification) { $verification.artifact_count } else { 0 }
   ui_included = if ($null -ne $verification) { $verification.ui_included } else { $false }
+  windows_package_verified = if ($null -ne $packageVerification) { [bool]$packageVerification.package_mode } else { $false }
+  production_eligible = if ($null -ne $packageVerification) { [bool]$packageVerification.signed -and [bool]$packageVerification.source_clean -and -not $DevelopmentUnsigned } else { $false }
   error = $errorMessage
 } | ConvertTo-Json -Depth 5
 

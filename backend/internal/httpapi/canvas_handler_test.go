@@ -53,7 +53,7 @@ func TestCreateCanvasBoardReturnsCreatedRecord(t *testing.T) {
 	}}
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{CanvasService: store})
-	req := httptest.NewRequest(http.MethodPost, "/api/canvas/boards", strings.NewReader(`{"title":"Ideas"}`))
+	req := newHTTPAPITestRequest(http.MethodPost, "/api/canvas/boards", strings.NewReader(`{"title":"Ideas"}`))
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -71,7 +71,7 @@ func TestSaveCanvasBoardMapsRevisionConflict(t *testing.T) {
 	}}
 	router := chi.NewRouter()
 	RegisterRoutes(router, Dependencies{CanvasService: store})
-	req := httptest.NewRequest(http.MethodPut, "/api/canvas/boards/board-1", strings.NewReader(`{"title":"Ideas","revision":1,"scene":{"elements":[],"appState":{},"files":{}}}`))
+	req := newHTTPAPITestRequest(http.MethodPut, "/api/canvas/boards/board-1", strings.NewReader(`{"title":"Ideas","revision":1,"scene":{"elements":[],"appState":{},"files":{}}}`))
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)

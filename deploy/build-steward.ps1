@@ -11,7 +11,15 @@ param(
 
   [switch]$SkipFrontendBuild,
 
-  [switch]$Clean
+  [switch]$Clean,
+
+  [switch]$AllowDirtyWorktree,
+
+  [string]$SigningCertificateThumbprint = "",
+
+  [string]$TimestampServer = "",
+
+  [switch]$RequireSignedPackage
 )
 
 $ErrorActionPreference = "Stop"
@@ -124,6 +132,145 @@ function Invoke-CompanionGoBuild {
   }
 }
 
+function New-ProtectedBuildStage {
+  param([string]$FinalOutputRoot)
+
+  $finalRoot = [System.IO.Path]::GetFullPath($FinalOutputRoot).TrimEnd($PathSeparators)
+  $parent = Split-Path -Parent $finalRoot
+  $leaf = Split-Path -Leaf $finalRoot
+  if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($leaf)) {
+    throw "Unable to derive a staging location for output path: $finalRoot"
+  }
+  New-Item -ItemType Directory -Force -Path $parent | Out-Null
+
+  $stage = Join-Path $parent ("." + $leaf + ".stage-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path $stage | Out-Null
+  try {
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+      $currentSID = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+      & icacls.exe $stage /inheritance:r /grant:r "*$($currentSID):(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+        throw "icacls failed with exit code $LASTEXITCODE"
+      }
+    } else {
+      & chmod 700 -- $stage
+      if ($LASTEXITCODE -ne 0) {
+        throw "chmod failed with exit code $LASTEXITCODE"
+      }
+    }
+    return [System.IO.Path]::GetFullPath($stage)
+  } catch {
+    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    throw "Unable to protect release staging directory '$stage': $($_.Exception.Message)"
+  }
+}
+
+function Publish-StagedBuild {
+  param(
+    [string]$StageRoot,
+    [string]$FinalOutputRoot
+  )
+
+  $stage = [System.IO.Path]::GetFullPath($StageRoot).TrimEnd($PathSeparators)
+  $final = [System.IO.Path]::GetFullPath($FinalOutputRoot).TrimEnd($PathSeparators)
+  $stageParent = Split-Path -Parent $stage
+  $finalParent = Split-Path -Parent $final
+  if (-not $stageParent.Equals($finalParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Release stage and final output must be siblings so publication is an atomic same-volume rename"
+  }
+  if (-not (Test-Path -LiteralPath $stage -PathType Container)) {
+    throw "Release stage is missing before publication: $stage"
+  }
+
+  $backup = Join-Path $finalParent ("." + (Split-Path -Leaf $final) + ".previous-" + [guid]::NewGuid().ToString("N"))
+  $previousMoved = $false
+  try {
+    if (Test-Path -LiteralPath $final) {
+      $existing = Get-Item -LiteralPath $final -Force
+      if (-not $existing.PSIsContainer -or ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing to replace a non-directory or reparse-point output path: $final"
+      }
+      [System.IO.Directory]::Move($final, $backup)
+      $previousMoved = $true
+    }
+    [System.IO.Directory]::Move($stage, $final)
+  } catch {
+    $publishError = $_.Exception.Message
+    if ($previousMoved -and -not (Test-Path -LiteralPath $final) -and (Test-Path -LiteralPath $backup -PathType Container)) {
+      try {
+        [System.IO.Directory]::Move($backup, $final)
+      } catch {
+        throw "Atomic release publication failed ('$publishError') and restoring the previous output also failed: $($_.Exception.Message)"
+      }
+    }
+    throw "Atomic release publication failed: $publishError"
+  }
+
+  if ($previousMoved -and (Test-Path -LiteralPath $backup)) {
+    try {
+      Remove-Item -LiteralPath $backup -Recurse -Force
+    } catch {
+      Write-Warning "The new release was published, but the isolated previous output could not be removed: $backup ($($_.Exception.Message))"
+    }
+  }
+}
+
+function Get-ReleaseSigningCertificate {
+  param([string]$Thumbprint)
+  if ([string]::IsNullOrWhiteSpace($Thumbprint)) {
+    return $null
+  }
+  if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+    throw "Authenticode release signing is only supported by this build script on Windows"
+  }
+  $normalized = ($Thumbprint -replace '\s', '').ToUpperInvariant()
+  foreach ($store in @("Cert:\CurrentUser\My", "Cert:\LocalMachine\My")) {
+    $candidate = Get-ChildItem -LiteralPath $store -ErrorAction SilentlyContinue |
+      Where-Object { $_.Thumbprint -eq $normalized -and $_.HasPrivateKey } |
+      Select-Object -First 1
+    if ($null -ne $candidate) {
+      return $candidate
+    }
+  }
+  throw "Release signing certificate '$normalized' with a private key was not found in CurrentUser or LocalMachine My stores"
+}
+
+function Set-ReleaseAuthenticodeSignature {
+  param(
+    [string[]]$Paths,
+    [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+    [string]$TimestampURL
+  )
+  foreach ($path in $Paths) {
+    $parameters = @{ FilePath = $path; Certificate = $Certificate; HashAlgorithm = "SHA256" }
+    if (-not [string]::IsNullOrWhiteSpace($TimestampURL)) {
+      $parameters.TimestampServer = $TimestampURL
+    }
+    $signature = Set-AuthenticodeSignature @parameters
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+      throw "Authenticode signing failed for '$path': $($signature.StatusMessage)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TimestampURL) -and $null -eq $signature.TimeStamperCertificate) {
+      throw "Authenticode signing did not produce a trusted timestamp for '$path'"
+    }
+  }
+}
+
+function Write-DetachedManifestSignature {
+  param(
+    [string]$ManifestPath,
+    [string]$SignaturePath,
+    [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+  )
+  Add-Type -AssemblyName System.Security.Cryptography.Pkcs
+  $content = [System.Security.Cryptography.Pkcs.ContentInfo]::new([IO.File]::ReadAllBytes($ManifestPath))
+  $cms = [System.Security.Cryptography.Pkcs.SignedCms]::new($content, $true)
+  $signer = [System.Security.Cryptography.Pkcs.CmsSigner]::new($Certificate)
+  $signer.IncludeOption = [System.Security.Cryptography.X509Certificates.X509IncludeOption]::ExcludeRoot
+  $cms.ComputeSignature($signer)
+  [IO.File]::WriteAllBytes($SignaturePath, $cms.Encode())
+}
+
 function Invoke-BrokerGoBuild {
   param(
     [string]$GOOSValue,
@@ -204,8 +351,26 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
   $OutputDir = Join-Path $backendDir "dist\steward"
 }
 
-$outputRoot = [System.IO.Path]::GetFullPath($OutputDir)
-Assert-ChildPath -Parent $repoRoot -Child $outputRoot
+$finalOutputRoot = [System.IO.Path]::GetFullPath($OutputDir)
+Assert-ChildPath -Parent $repoRoot -Child $finalOutputRoot
+
+$gitTopLevel = (git -C $repoRoot rev-parse --show-toplevel 2>$null | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitTopLevel)) {
+  throw "Steward production artifacts must be built from a Git worktree"
+}
+$gitStatus = @(git -C $repoRoot status --porcelain=v1 --untracked-files=all 2>$null)
+if ($LASTEXITCODE -ne 0) {
+  throw "Unable to inspect Git worktree state"
+}
+$sourceDirty = $gitStatus.Count -gt 0
+$initialGitStatus = $gitStatus -join "`n"
+if ($sourceDirty -and -not $AllowDirtyWorktree) {
+  $preview = ($gitStatus | Select-Object -First 20) -join [Environment]::NewLine
+  throw "Refusing to build a release from a dirty Git worktree. Commit or remove all changes, or use -AllowDirtyWorktree for an explicitly marked development package.`n$preview"
+}
+if ($sourceDirty) {
+  Write-Warning "DEVELOPMENT BUILD: the Git worktree is dirty. The package will be marked source_clean=false and production installers will reject it by default."
+}
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
   $Version = Get-DefaultVersion
@@ -215,21 +380,58 @@ if ([string]::IsNullOrWhiteSpace($safeVersion)) {
   throw "Version resolved to an empty artifact suffix"
 }
 $buildCommit = Get-GitCommit
+if ($buildCommit -notmatch '^[a-fA-F0-9]{40}$') {
+  throw "Unable to resolve a full Git commit for the release"
+}
 $buildDate = (Get-Date).ToUniversalTime().ToString("o")
-
-if ($Clean -and (Test-Path -LiteralPath $outputRoot)) {
-  $resolvedOutputRoot = [System.IO.Path]::GetFullPath($outputRoot)
-  Assert-ChildPath -Parent $repoRoot -Child $resolvedOutputRoot
-  Remove-Item -LiteralPath $resolvedOutputRoot -Recurse -Force
+$signingCertificate = Get-ReleaseSigningCertificate -Thumbprint $SigningCertificateThumbprint
+if ($RequireSignedPackage -and $null -eq $signingCertificate) {
+  throw "-RequireSignedPackage requires -SigningCertificateThumbprint"
+}
+$packageSigned = $null -ne $signingCertificate
+if ($packageSigned -and [string]::IsNullOrWhiteSpace($TimestampServer)) {
+  throw "Every signed package requires -TimestampServer so executable and package-catalog signatures remain valid after certificate expiry"
+}
+if ($packageSigned -and ($SkipTests -or $SkipFrontendBuild -or $SkipUI)) {
+  throw "Signed release packages require the full Go test suite and a freshly tested, linted, and built frontend; do not use -SkipTests, -SkipFrontendBuild, or -SkipUI"
+}
+if (-not $packageSigned) {
+  Write-Warning "DEVELOPMENT UNSIGNED PACKAGE: no signing certificate was configured. Production installation requires a signed package unless -AllowUnsignedPackage is explicitly supplied."
 }
 
-New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+if (Test-Path -LiteralPath $finalOutputRoot) {
+  $existingOutput = Get-Item -LiteralPath $finalOutputRoot -Force
+  if (-not $existingOutput.PSIsContainer -or ($existingOutput.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+    throw "Refusing to use a non-directory or reparse-point output path: $finalOutputRoot"
+  }
+}
+
+$stageRoot = New-ProtectedBuildStage -FinalOutputRoot $finalOutputRoot
+$outputRoot = $stageRoot
+$published = $false
+try {
+# A release is always assembled from an empty stage. Carrying files forward
+# from a previous output would let stale or unrelated payloads become part of
+# the new manifest and (for signed Windows builds) the trusted package catalog.
+# -Clean is retained for command-line compatibility; atomic publication replaces
+# the previous output only after the new package has passed all checks.
 
 if (-not $SkipUI) {
   if (-not $SkipFrontendBuild) {
     Require-Command "npm"
     Push-Location $frontendDir
     try {
+      if (-not $SkipTests) {
+        Write-Host "[steward] Testing and linting bundled workspace"
+        npm test -- --run
+        if ($LASTEXITCODE -ne 0) {
+          throw "npm test failed with exit code $LASTEXITCODE"
+        }
+        npm run lint
+        if ($LASTEXITCODE -ne 0) {
+          throw "npm run lint failed with exit code $LASTEXITCODE"
+        }
+      }
       Write-Host "[steward] Building bundled workspace"
       npm run build
       if ($LASTEXITCODE -ne 0) {
@@ -252,8 +454,8 @@ try {
     throw "go env GOVERSION failed"
   }
   if (-not $SkipTests) {
-    Write-Host "[steward] Running CLI, Broker, and companion tests"
-    go test ./cmd/steward ./cmd/steward-broker ./cmd/steward-companion ./cmd/steward-system-tool-host ./internal/privilegebroker ./internal/service/stewardcompanion
+    Write-Host "[steward] Running the complete backend test suite"
+    go test ./...
     if ($LASTEXITCODE -ne 0) {
       throw "steward packaging tests failed with exit code $LASTEXITCODE"
     }
@@ -312,7 +514,8 @@ try {
 	  foreach ($scriptName in @(
 	    "install-steward-production.ps1", "update-steward-production.ps1", "uninstall-steward-production.ps1",
 	    "test-steward-production.ps1", "install-steward-companion.ps1", "uninstall-steward-companion.ps1",
-	    "migrate-steward-production.ps1", "rotate-steward-broker-keys.ps1", "test-steward-broker-session0.ps1"
+	    "migrate-steward-production.ps1", "rotate-steward-broker-keys.ps1", "test-steward-broker-session0.ps1",
+	    "verify-steward-dist.ps1"
 	  )) {
 	    $scriptSource = Join-Path $repoRoot ("deploy\" + $scriptName)
 	    $scriptTarget = Join-Path $artifactDir $scriptName
@@ -321,14 +524,79 @@ try {
 	  }
 	}
 
-    $artifactFiles = @()
-    $paths = @($binaryPath, $companionPath, $brokerPath, $approvalPath, $systemToolHostPath) + $deploymentScriptPaths
+    $ownedSignablePaths = @($binaryPath, $companionPath, $brokerPath, $approvalPath, $systemToolHostPath) + $deploymentScriptPaths
     if ($null -ne $notifierDirectory) {
-	  $paths += @(Get-ChildItem -LiteralPath $notifierDirectory -Recurse -File | Select-Object -ExpandProperty FullName)
-	}
-    if (-not $SkipUI) {
-      $paths += @(Get-ChildItem -LiteralPath (Join-Path $artifactDir "ui") -Recurse -File | Select-Object -ExpandProperty FullName)
+      $notifierExecutable = Join-Path $notifierDirectory "steward-windows-notifier.exe"
+      if (Test-Path -LiteralPath $notifierExecutable -PathType Leaf) {
+        $ownedSignablePaths += $notifierExecutable
+      }
     }
+    if ($packageSigned -and $goos -eq "windows") {
+      Write-Host "[steward] Authenticode signing owned Windows release files"
+      Set-ReleaseAuthenticodeSignature -Paths $ownedSignablePaths -Certificate $signingCertificate -TimestampURL $TimestampServer
+    }
+
+    $payloadPaths = @(Get-ChildItem -LiteralPath $artifactDir -Recurse -File | Select-Object -ExpandProperty FullName)
+    $packageFiles = @()
+    foreach ($path in $payloadPaths) {
+      $fileRelativePath = $path.Substring($artifactDir.Length).TrimStart($PathSeparators) -replace "\\", "/"
+      $packageFiles += [pscustomobject]@{
+        path = $fileRelativePath
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+      }
+    }
+    $packageChecksumsPath = Join-Path $artifactDir "SHA256SUMS.txt"
+    $packageChecksumLines = $packageFiles | Sort-Object path | ForEach-Object { "$($_.sha256)  $($_.path)" }
+    Set-Content -LiteralPath $packageChecksumsPath -Value $packageChecksumLines -Encoding ASCII
+
+    $packageManifestPath = Join-Path $artifactDir "release-manifest.json"
+    $packageSignaturePath = Join-Path $artifactDir "release-manifest.p7s"
+    $packageCatalogPath = Join-Path $artifactDir "release-catalog.cat"
+    $packageCatalogRelativePath = if ($packageSigned -and $goos -eq "windows") { "release-catalog.cat" } else { "" }
+    $signedRelativePaths = @()
+    if ($packageSigned -and $goos -eq "windows") {
+      $signedRelativePaths = @($ownedSignablePaths | ForEach-Object {
+        $_.Substring($artifactDir.Length).TrimStart($PathSeparators) -replace "\\", "/"
+      } | Sort-Object -Unique)
+    }
+    $releaseKind = if (-not $packageSigned) { "development_unsigned" } elseif ($sourceDirty) { "development_dirty" } else { "production_signed" }
+    $packageManifest = [ordered]@{
+      schema = "mongojson.steward.release/v1"
+      name = "steward"
+      target = $target
+      package_target = $target
+      ui_included = -not $SkipUI
+      version = $safeVersion
+      commit = $buildCommit
+      built_at = $buildDate
+      go_version = $goVersion
+      source_clean = -not $sourceDirty
+      release_kind = $releaseKind
+      files = @($packageFiles)
+      signing = [ordered]@{
+        required = $packageSigned
+        signer_thumbprint = if ($packageSigned) { $signingCertificate.Thumbprint.ToUpperInvariant() } else { "" }
+        manifest_signature = if ($packageSigned) { "release-manifest.p7s" } else { "" }
+        package_catalog = $packageCatalogRelativePath
+        signed_files = @($signedRelativePaths)
+      }
+    }
+    [IO.File]::WriteAllText($packageManifestPath, ($packageManifest | ConvertTo-Json -Depth 7), [Text.UTF8Encoding]::new($false))
+    if ($packageSigned) {
+      Write-DetachedManifestSignature -ManifestPath $packageManifestPath -SignaturePath $packageSignaturePath -Certificate $signingCertificate
+    }
+    if ($packageSigned -and $goos -eq "windows") {
+      Write-Host "[steward] Creating and timestamp-signing the Windows package catalog"
+      New-FileCatalog -Path $artifactDir -CatalogFilePath $packageCatalogPath -CatalogVersion 2 | Out-Null
+      Set-ReleaseAuthenticodeSignature -Paths @($packageCatalogPath) -Certificate $signingCertificate -TimestampURL $TimestampServer
+      $catalogStatus = Test-FileCatalog -Path $artifactDir -CatalogFilePath $packageCatalogPath
+      if ($catalogStatus -ne [System.Management.Automation.CatalogValidationStatus]::Valid) {
+        throw "Generated Windows package catalog is not valid: $catalogStatus"
+      }
+    }
+
+    $artifactFiles = @()
+    $paths = @(Get-ChildItem -LiteralPath $artifactDir -Recurse -File | Select-Object -ExpandProperty FullName)
     foreach ($path in $paths) {
       $fileHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
       $fileRelativePath = $path.Substring($outputRoot.Length).TrimStart($PathSeparators) -replace "\\", "/"
@@ -337,13 +605,24 @@ try {
         sha256 = $fileHash
       }
     }
-    $binaryRecord = $artifactFiles[0]
-    $companionRecord = $artifactFiles[1]
-    $brokerRecord = $artifactFiles[2]
-	$approvalRecord = $artifactFiles[3]
-	$systemToolHostRecord = $artifactFiles[4]
+    $toRootRelative = {
+      param([string]$Path)
+      return $Path.Substring($outputRoot.Length).TrimStart($PathSeparators) -replace "\\", "/"
+    }
+    $binaryRelative = & $toRootRelative $binaryPath
+    $companionRelative = & $toRootRelative $companionPath
+    $brokerRelative = & $toRootRelative $brokerPath
+    $approvalRelative = & $toRootRelative $approvalPath
+    $systemToolHostRelative = & $toRootRelative $systemToolHostPath
+    $binaryRecord = $artifactFiles | Where-Object { $_.path -eq $binaryRelative } | Select-Object -First 1
+    $companionRecord = $artifactFiles | Where-Object { $_.path -eq $companionRelative } | Select-Object -First 1
+    $brokerRecord = $artifactFiles | Where-Object { $_.path -eq $brokerRelative } | Select-Object -First 1
+	$approvalRecord = $artifactFiles | Where-Object { $_.path -eq $approvalRelative } | Select-Object -First 1
+	$systemToolHostRecord = $artifactFiles | Where-Object { $_.path -eq $systemToolHostRelative } | Select-Object -First 1
     $artifacts += [pscustomobject]@{
       target = $target
+      package_target = $target
+      ui_included = -not $SkipUI
       path = $binaryRecord.path
       sha256 = $binaryRecord.sha256
       companion_path = $companionRecord.path
@@ -352,9 +631,15 @@ try {
 	  system_tool_host_path = $systemToolHostRecord.path
 	  production_installer = if ($goos -eq "windows") { ($deploymentScriptPaths[0].Substring($outputRoot.Length).TrimStart($PathSeparators) -replace "\\", "/") } else { $null }
       ui_dir = $uiRelativePath
+      source_clean = -not $sourceDirty
+      release_kind = $releaseKind
+      signer_thumbprint = if ($packageSigned) { $signingCertificate.Thumbprint.ToUpperInvariant() } else { $null }
       files = @($artifactFiles)
     }
   }
+} finally {
+  Pop-Location
+}
 
   $checksumsPath = Join-Path $outputRoot "SHA256SUMS.txt"
   $manifestPath = Join-Path $outputRoot "manifest.json"
@@ -375,16 +660,42 @@ try {
     commit = $buildCommit
     built_at = $buildDate
     go_version = $goVersion
+    source_clean = -not $sourceDirty
+    release_kind = if (-not $packageSigned) { "development_unsigned" } elseif ($sourceDirty) { "development_dirty" } else { "production_signed" }
+    signer_thumbprint = if ($packageSigned) { $signingCertificate.Thumbprint.ToUpperInvariant() } else { $null }
     ui_included = -not $SkipUI
     artifacts = $artifacts
   }
   $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding ASCII
 
+  if ($env:STEWARD_BUILD_TEST_FAULT_INJECTION -eq "before_publish") {
+    throw "Injected release build failure before atomic publication"
+  }
+
+  # This is deliberately the last operation before the same-volume rename.
+  # A source change at any earlier point invalidates every already-built and
+  # already-signed artifact, so the stage must never become a formal release.
+  $finalCommit = (git -C $repoRoot rev-parse HEAD 2>$null | Out-String).Trim()
+  $finalStatus = @(git -C $repoRoot status --porcelain=v1 --untracked-files=all 2>$null)
+  $finalGitStatus = $finalStatus -join "`n"
+  if ($LASTEXITCODE -ne 0 -or $finalCommit -ne $buildCommit -or $finalGitStatus -cne $initialGitStatus) {
+    throw "Source Git HEAD or worktree changed while the release was being built; refusing to publish mixed-provenance artifacts"
+  }
+
+  Publish-StagedBuild -StageRoot $stageRoot -FinalOutputRoot $finalOutputRoot
+  $published = $true
+
   Write-Host ""
   Write-Host "[steward] Built $($artifacts.Count) artifact(s)"
-  Write-Host "[steward] Output: $outputRoot"
-  Write-Host "[steward] Checksums: $checksumsPath"
-  Write-Host "[steward] Manifest: $manifestPath"
+  Write-Host "[steward] Output: $finalOutputRoot"
+  Write-Host "[steward] Checksums: $(Join-Path $finalOutputRoot 'SHA256SUMS.txt')"
+  Write-Host "[steward] Manifest: $(Join-Path $finalOutputRoot 'manifest.json')"
 } finally {
-  Pop-Location
+  if (-not $published -and (Test-Path -LiteralPath $stageRoot)) {
+    try {
+      Remove-Item -LiteralPath $stageRoot -Recurse -Force
+    } catch {
+      Write-Warning "Failed to remove isolated release stage '$stageRoot': $($_.Exception.Message)"
+    }
+  }
 }
