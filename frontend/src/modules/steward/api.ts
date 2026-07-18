@@ -1032,10 +1032,38 @@ export async function updateStewardModelSettings(payload: {
   })
 }
 
+export type StewardModelProbe = {
+  ok: boolean
+  error?: string
+  duration_ms: number
+  protocol_checked: boolean
+  tool_count: number
+  response_mode?: 'text' | 'tool_call' | string
+  failure?: {
+    code: string
+    title: string
+    message: string
+    suggestions: string[]
+    retryable: boolean
+    technical_summary?: string
+  }
+  status: StewardModelSettings['advisor']
+}
+
+export function stewardModelProbeError(probe: StewardModelProbe) {
+  const failure = probe.failure
+  const suggestions = failure?.suggestions?.map((item) => `- ${item}`).join('\n')
+  return [
+    failure?.title || '模型连接检查失败',
+    failure?.message,
+    suggestions ? `处理建议：\n${suggestions}` : '',
+    failure?.code ? `错误代码：${failure.code}` : '',
+    !failure && probe.error ? probe.error : '',
+  ].filter(Boolean).join('\n')
+}
+
 export async function probeStewardModelConnection() {
-  return request<{
-    probe: { ok: boolean; error?: string; duration_ms: number; status: StewardModelSettings['advisor'] }
-  }>(`${API_BASE}/steward/autonomy/advisor/probe`, {
+  return request<{ probe: StewardModelProbe }>(`${API_BASE}/steward/autonomy/advisor/probe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ data_level: 'D0' }),

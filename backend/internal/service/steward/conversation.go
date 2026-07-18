@@ -300,7 +300,7 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 			}
 		} else {
 			s.recordConversationAdvisorFailure(ctx, userMessage.ID, level, advisorErr)
-			response.Reply = "模型暂时不可用，消息已安全保存在本地。当前无法可靠理解新的自然语言任务，请稍后重试。"
+			response.Reply = conversationAdvisorFailureReply(advisorErr)
 		}
 	} else if !modelAllowed {
 		cause := ErrDataPolicyDenied
@@ -310,7 +310,7 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 			cause = permissionErr
 		}
 		s.recordConversationAdvisorFailure(ctx, userMessage.ID, level, cause)
-		response.Reply = "消息已保存在本地；当前模型策略未允许本次理解请求。"
+		response.Reply = conversationAdvisorFailureReply(cause)
 	}
 	if response.Intent == "clarify" {
 		response.Reply = defaultString(response.Clarification, response.Reply)
@@ -648,7 +648,7 @@ func (s *Service) getConversationSuggestion(ctx context.Context, id string) (dom
 }
 
 func localConversationFallback(content string) ConversationAdvisorResponse {
-	return ConversationAdvisorResponse{Reply: "消息已安全保存在本地。当前模型未启用，无法可靠理解或执行新的自然语言请求。"}
+	return ConversationAdvisorResponse{Reply: "模型请求未完成：模型未启用\n原因：当前没有可用的模型配置。\n处理建议：\n- 打开“模型”配置\n- 填写接口地址、模型名称和 API Key\n- 保存后运行完整协议检查\n本次消息已保存在本地，且没有执行任何工具。\n错误代码：MODEL_DISABLED"}
 }
 
 func conversationDataLevel(value string) (string, error) {

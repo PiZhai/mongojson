@@ -764,6 +764,8 @@
   padding: 10px 12px;
   border-radius: 8px;
   font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .steward-model-feedback.is-error {
@@ -3732,6 +3734,8 @@
   box-shadow: 0 8px 24px rgba(190, 18, 60, 0.12);
   color: #be123c;
   font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .steward-conversation-workspace .steward-conversation-list-header {

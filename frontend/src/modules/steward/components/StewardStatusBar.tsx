@@ -5,6 +5,7 @@ import {
   getStewardOverview,
   getStewardRuntimePlanner,
   probeStewardModelConnection,
+  stewardModelProbeError,
 } from '../api'
 import type {
   StewardAgentStatus,
@@ -38,7 +39,7 @@ export function StewardStatusBar({ refreshToken }: Props) {
     try {
       if (probeModel) {
         const { probe } = await probeStewardModelConnection()
-        if (!probe.ok) throw new Error(probe.error || '模型连接检查失败')
+        if (!probe.ok) throw new Error(stewardModelProbeError(probe))
       }
       const [overview, model, planner, control] = await Promise.all([
         getStewardOverview(),
@@ -77,6 +78,13 @@ export function StewardStatusBar({ refreshToken }: Props) {
   const activityLoop = snapshot?.agent.background_loops?.find((loop) => loop.name === 'activity-sample')
   const proactiveLoop = snapshot?.agent.background_loops?.find((loop) => loop.name === 'proactive')
   const activityEnabled = snapshot?.agent.enabled_collectors?.includes('windows-activity') ?? false
+  const modelFailures = snapshot?.model.advisor.consecutive_failures ?? 0
+  const modelReady = snapshot?.model.advisor.enabled === true && !snapshot?.model.advisor.circuit_open && modelFailures === 0
+  const modelLabel = snapshot?.model.advisor.circuit_open
+    ? '已熔断'
+    : modelFailures > 0
+      ? `连续失败 ${modelFailures} 次`
+      : snapshot?.model.model || '未配置'
 
   return (
     <section className="steward-status-bar" aria-label="管家运行状态">
@@ -91,7 +99,7 @@ export function StewardStatusBar({ refreshToken }: Props) {
 
         <div className="steward-status-chips" aria-live="polite">
           <StatusChip ready={snapshot?.agent.status === 'running'} label="Agent" value={agentLabel(snapshot?.agent.status)} />
-          <StatusChip ready={snapshot?.model.advisor.enabled === true} label="模型" value={snapshot?.model.model || '未配置'} />
+          <StatusChip ready={modelReady} label="模型" title={snapshot?.model.advisor.last_error} value={modelLabel} />
           <StatusChip ready={snapshot?.planner.enabled === true} label="规划" value={snapshot?.planner.enabled ? '可用' : '不可用'} />
           <StatusChip ready={activityEnabled && activityLoop?.running === true} label="活动采集" value={activityEnabled ? activityLoop?.running ? '运行中' : '等待' : '未启用'} />
           <StatusChip ready={proactiveLoop?.running === true} label="主动管家" value={proactiveLoop?.running ? '运行中' : '未启用'} />
@@ -112,9 +120,9 @@ export function StewardStatusBar({ refreshToken }: Props) {
   )
 }
 
-function StatusChip({ label, ready, value }: { label: string; ready: boolean; value: string }) {
+function StatusChip({ label, ready, title, value }: { label: string; ready: boolean; title?: string; value: string }) {
   return (
-    <span className={`steward-status-chip ${ready ? 'is-ready' : 'is-warning'}`}>
+    <span className={`steward-status-chip ${ready ? 'is-ready' : 'is-warning'}`} title={title}>
       <span aria-hidden="true" />
       <strong>{label}</strong>
       <small>{value}</small>

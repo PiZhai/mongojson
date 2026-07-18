@@ -228,13 +228,17 @@ type ProbeAutonomyAdvisorInput struct {
 }
 
 type ProbeAutonomyAdvisorResult struct {
-	OK             bool                                `json:"ok"`
-	Status         domain.StewardAutonomyAdvisorStatus `json:"status"`
-	DataLevel      string                              `json:"data_level"`
-	DurationMillis int64                               `json:"duration_ms"`
-	Suggestion     *AutonomyAdvisorSuggestion          `json:"suggestion,omitempty"`
-	Error          string                              `json:"error,omitempty"`
-	ProbedAt       time.Time                           `json:"probed_at"`
+	OK              bool                                `json:"ok"`
+	Status          domain.StewardAutonomyAdvisorStatus `json:"status"`
+	DataLevel       string                              `json:"data_level"`
+	DurationMillis  int64                               `json:"duration_ms"`
+	ProtocolChecked bool                                `json:"protocol_checked"`
+	ToolCount       int                                 `json:"tool_count"`
+	ResponseMode    string                              `json:"response_mode,omitempty"`
+	Suggestion      *AutonomyAdvisorSuggestion          `json:"suggestion,omitempty"`
+	Failure         *AdvisorFailureDetails              `json:"failure,omitempty"`
+	Error           string                              `json:"error,omitempty"`
+	ProbedAt        time.Time                           `json:"probed_at"`
 }
 
 type disabledAutonomyAdvisor struct {
@@ -276,14 +280,52 @@ func (s *Service) ProbeAutonomyAdvisor(ctx context.Context, input ProbeAutonomyA
 	}
 	startedAt := time.Now()
 	if !status.Enabled {
-		result.Error = defaultString(status.Reason, "autonomy advisor is disabled")
+		cause := fmt.Errorf("autonomy advisor disabled: %s", defaultString(status.Reason, "disabled"))
+		result.setFailure(cause)
+		s.recordAdvisorProbeAudit(ctx, result)
+		return result, nil
+	}
+	if supportsNativeAgentTurns(advisor) {
+		turnAdvisor, ok := advisor.(AgentTurnAdvisor)
+		if !ok {
+			result.setFailure(fmt.Errorf("configured advisor does not expose agent turns"))
+			s.recordAdvisorProbeAudit(ctx, result)
+			return result, nil
+		}
+		tools, catalog, err := s.agentToolContext(ctx, nil)
+		if err != nil {
+			result.setFailure(fmt.Errorf("load agent tool catalog: %w", err))
+			s.recordAdvisorProbeAudit(ctx, result)
+			return result, nil
+		}
+		result.ProtocolChecked = true
+		result.ToolCount = len(tools)
+		decision, err := turnAdvisor.NextTurn(ctx, AgentTurnInput{
+			Message:   "这是模型连接与工具调用协议检查。不要执行真实操作；请直接简短回复连接与工具协议可用。",
+			DataLevel: probeInput.DataLevel, TriggerKind: "verification_probe", Tools: tools, ToolCatalog: catalog,
+			Devices: s.conversationAdvisorDevices(ctx), KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(), Round: 1,
+		})
+		result.DurationMillis = time.Since(startedAt).Milliseconds()
+		result.Status = advisor.Status()
+		if err != nil {
+			result.setFailure(err)
+			s.recordAdvisorProbeAudit(ctx, result)
+			return result, nil
+		}
+		result.OK = true
+		if len(decision.ToolCalls) > 0 {
+			result.ResponseMode = "tool_call"
+		} else {
+			result.ResponseMode = "text"
+		}
 		s.recordAdvisorProbeAudit(ctx, result)
 		return result, nil
 	}
 	suggestion, err := advisor.Suggest(ctx, probeInput)
 	result.DurationMillis = time.Since(startedAt).Milliseconds()
+	result.Status = advisor.Status()
 	if err != nil {
-		result.Error = err.Error()
+		result.setFailure(err)
 		s.recordAdvisorProbeAudit(ctx, result)
 		return result, nil
 	}
@@ -291,6 +333,12 @@ func (s *Service) ProbeAutonomyAdvisor(ctx context.Context, input ProbeAutonomyA
 	result.Suggestion = &suggestion
 	s.recordAdvisorProbeAudit(ctx, result)
 	return result, nil
+}
+
+func (r *ProbeAutonomyAdvisorResult) setFailure(cause error) {
+	detail := describeAdvisorFailure(cause)
+	r.Error = detail.TechnicalSummary
+	r.Failure = &detail
 }
 
 func (s *Service) recordAdvisorProbeAudit(ctx context.Context, result ProbeAutonomyAdvisorResult) {
@@ -465,7 +513,7 @@ func (a openAICompatibleAutonomyAdvisor) Suggest(ctx context.Context, input Auto
 		return AutonomyAdvisorSuggestion{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return AutonomyAdvisorSuggestion{}, fmt.Errorf("advisor request failed with %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return AutonomyAdvisorSuggestion{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data)
 	}
 	content, err := openAICompatibleMessageContent(data)
 	if err != nil {
@@ -591,7 +639,10 @@ func (a openAICompatibleAutonomyAdvisor) NextTurn(ctx context.Context, input Age
 		"temperature": 0.3,
 		"messages":    messages,
 	}
-	tools, toolNames := openAIAgentTools(input.Tools)
+	tools, toolNames, err := openAIAgentTools(input.Tools)
+	if err != nil {
+		return AgentTurnDecision{}, fmt.Errorf("agent tool schema preflight failed: %w", err)
+	}
 	if len(tools) > 0 {
 		payload["tools"] = tools
 		payload["tool_choice"] = "auto"
@@ -618,7 +669,7 @@ func (a openAICompatibleAutonomyAdvisor) NextTurn(ctx context.Context, input Age
 		return AgentTurnDecision{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return AgentTurnDecision{}, fmt.Errorf("advisor request failed with %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return AgentTurnDecision{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data)
 	}
 	return parseOpenAIAgentTurn(data, toolNames)
 }
@@ -716,6 +767,11 @@ type openAIConversationToolCall struct {
 }
 
 func openAIConversationTools(specs []domain.StewardToolSpec) ([]map[string]any, map[string]domain.StewardToolSpec) {
+	tools, names, _ := openAIConversationToolsValidated(specs)
+	return tools, names
+}
+
+func openAIConversationToolsValidated(specs []domain.StewardToolSpec) ([]map[string]any, map[string]domain.StewardToolSpec, error) {
 	tools := make([]map[string]any, 0, len(specs))
 	byFunctionName := make(map[string]domain.StewardToolSpec, len(specs))
 	for index, raw := range specs {
@@ -726,6 +782,10 @@ func openAIConversationTools(specs []domain.StewardToolSpec) ([]map[string]any, 
 		name := openAIFunctionName(spec.Name)
 		if _, exists := byFunctionName[name]; exists {
 			name = fmt.Sprintf("%s_%d", name, index+1)
+		}
+		parameters, err := normalizeOpenAIToolParameters(spec.InputSchema)
+		if err != nil {
+			return nil, nil, fmt.Errorf("tool %s has invalid function parameters: %w", spec.Name, err)
 		}
 		byFunctionName[name] = spec
 		outputSchema, _ := json.Marshal(spec.OutputSchema)
@@ -739,11 +799,11 @@ func openAIConversationTools(specs []domain.StewardToolSpec) ([]map[string]any, 
 		tools = append(tools, map[string]any{
 			"type": "function",
 			"function": map[string]any{
-				"name": name, "description": truncateAdvisorText(description, 1800), "parameters": cloneStringAnyMap(spec.InputSchema),
+				"name": name, "description": truncateAdvisorText(description, 1800), "parameters": parameters,
 			},
 		})
 	}
-	return tools, byFunctionName
+	return tools, byFunctionName, nil
 }
 
 func cloneStringAnyMap(value map[string]any) map[string]any {
@@ -761,8 +821,11 @@ func cloneStringAnyMap(value map[string]any) map[string]any {
 	return result
 }
 
-func openAIAgentTools(specs []domain.StewardToolSpec) ([]map[string]any, map[string]domain.StewardToolSpec) {
-	tools, names := openAIConversationTools(specs)
+func openAIAgentTools(specs []domain.StewardToolSpec) ([]map[string]any, map[string]domain.StewardToolSpec, error) {
+	tools, names, err := openAIConversationToolsValidated(specs)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, tool := range tools {
 		function, _ := tool["function"].(map[string]any)
 		parameters, _ := function["parameters"].(map[string]any)
@@ -785,10 +848,14 @@ func openAIAgentTools(specs []domain.StewardToolSpec) ([]map[string]any, map[str
 	}
 	for _, item := range internal {
 		name := openAIFunctionName(item.name)
-		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{"name": name, "description": item.description, "parameters": item.parameters}})
-		names[name] = domain.StewardToolSpec{Name: item.name, Description: item.description, InputSchema: item.parameters}
+		parameters, err := normalizeOpenAIToolParameters(item.parameters)
+		if err != nil {
+			return nil, nil, fmt.Errorf("internal tool %s has invalid function parameters: %w", item.name, err)
+		}
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{"name": name, "description": item.description, "parameters": parameters}})
+		names[name] = domain.StewardToolSpec{Name: item.name, Description: item.description, InputSchema: parameters}
 	}
-	return tools, names
+	return tools, names, nil
 }
 
 func openAIFunctionName(toolName string) string {
@@ -964,7 +1031,7 @@ func (a openAICompatibleAutonomyAdvisor) AnalyzeObservation(ctx context.Context,
 		return ObservationModelOutput{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return ObservationModelOutput{}, fmt.Errorf("advisor request failed with %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return ObservationModelOutput{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data)
 	}
 	content, err := openAICompatibleMessageContent(data)
 	if err != nil {

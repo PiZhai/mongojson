@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import {
   getStewardModelSettings,
   probeStewardModelConnection,
+  stewardModelProbeError,
   updateStewardModelSettings,
 } from '../api'
 import type { StewardModelSettings } from '../types'
@@ -118,8 +119,12 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
     setNotice('')
     try {
       const { probe: result } = await probeStewardModelConnection()
-      if (!result.ok) throw new Error(result.error || '模型连接测试失败')
-      setNotice(`连接成功，模型在 ${result.duration_ms} ms 内返回了有效响应。`)
+      if (!result.ok) {
+        throw new Error(stewardModelProbeError(result))
+      }
+      setNotice(result.protocol_checked
+        ? `连接和工具协议检查通过：模型在 ${result.duration_ms} ms 内接受了 ${result.tool_count} 个真实工具定义并返回有效响应。`
+        : `连接成功，模型在 ${result.duration_ms} ms 内返回了有效响应。`)
       const refreshed = await getStewardModelSettings()
       applySettings(refreshed.settings)
     } catch (reason) {
@@ -237,7 +242,7 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
           {notice ? <div className="steward-model-feedback is-success" role="status">{notice}</div> : null}
 
           <footer className="steward-model-actions">
-            <button className="steward-button steward-button-secondary" disabled={busy || !settings?.advisor.enabled} onClick={() => void probe()} type="button">测试连接</button>
+            <button className="steward-button steward-button-secondary" disabled={busy || !settings?.advisor.enabled} onClick={() => void probe()} type="button">完整协议检查</button>
             <button className="steward-button" disabled={busy} type="submit">{busy ? '处理中…' : '保存并生效'}</button>
           </footer>
         </form>
