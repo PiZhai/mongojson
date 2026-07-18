@@ -985,6 +985,96 @@ func (h *Handler) listStewardRuntimeTools(w http.ResponseWriter, r *http.Request
 	respondJSON(w, http.StatusOK, map[string][]domain.StewardToolSpec{"tools": items})
 }
 
+func (h *Handler) listStewardTools(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListTools(r.Context(), r.URL.Query().Get("query"), r.URL.Query().Get("origin"), r.URL.Query().Get("status"))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"tools": items, "hosts": service.GetToolHostStatuses(r.Context())})
+}
+
+func (h *Handler) getStewardTool(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	item, err := service.GetTool(r.Context(), chi.URLParam(r, "name"))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"tool": item})
+}
+
+func (h *Handler) listStewardToolVersions(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListToolVersions(r.Context(), chi.URLParam(r, "name"))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"versions": items})
+}
+
+func (h *Handler) getStewardToolVersion(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListToolVersions(r.Context(), chi.URLParam(r, "name"))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	wanted := chi.URLParam(r, "version")
+	for _, item := range items {
+		if item.Version == wanted {
+			respondJSON(w, http.StatusOK, map[string]any{"version": item})
+			return
+		}
+	}
+	httpError(w, http.StatusNotFound, "tool version not found")
+}
+
+func (h *Handler) listStewardToolTestRuns(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListToolTestRuns(r.Context(), chi.URLParam(r, "name"), queryLimit(r, 40))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"test_runs": items})
+}
+
+func (h *Handler) decideStewardTool(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	var body steward.ToolCatalogDecisionInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.DecideTool(r.Context(), chi.URLParam(r, "name"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"tool": item})
+}
+
 func (h *Handler) getStewardRuntimePlanner(w http.ResponseWriter, _ *http.Request) {
 	service, ok := h.requireStewardRuntimeService(w)
 	if !ok {

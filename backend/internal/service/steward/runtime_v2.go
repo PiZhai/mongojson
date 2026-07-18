@@ -110,8 +110,9 @@ type RuntimeTool interface {
 }
 
 type runtimeToolRegistry struct {
-	mu    sync.RWMutex
-	tools map[string]RuntimeTool
+	mu         sync.RWMutex
+	tools      map[string]RuntimeTool
+	generation int64
 }
 
 func newRuntimeToolRegistry(tools ...RuntimeTool) *runtimeToolRegistry {
@@ -133,6 +134,7 @@ func (r *runtimeToolRegistry) register(tool RuntimeTool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[name] = tool
+	r.generation++
 }
 
 func (r *runtimeToolRegistry) registerIfAbsent(tool RuntimeTool) {
@@ -147,7 +149,29 @@ func (r *runtimeToolRegistry) registerIfAbsent(tool RuntimeTool) {
 	defer r.mu.Unlock()
 	if _, exists := r.tools[name]; !exists {
 		r.tools[name] = tool
+		r.generation++
 	}
+}
+
+func (r *runtimeToolRegistry) unregister(name string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[strings.TrimSpace(name)]; exists {
+		delete(r.tools, strings.TrimSpace(name))
+		r.generation++
+	}
+}
+
+func (r *runtimeToolRegistry) generationValue() int64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.generation
 }
 
 func (r *runtimeToolRegistry) get(name string) (RuntimeTool, bool) {

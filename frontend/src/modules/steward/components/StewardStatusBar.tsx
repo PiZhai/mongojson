@@ -12,6 +12,7 @@ import type {
   StewardRuntimeExecutionControl,
   StewardRuntimePlannerStatus,
 } from '../types'
+import { ToolLibraryDialog } from './ToolLibraryDialog'
 
 type Props = {
   refreshToken: number
@@ -29,6 +30,7 @@ export function StewardStatusBar({ refreshToken }: Props) {
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState('')
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)
+  const [toolsOpen, setToolsOpen] = useState(false)
 
   const refresh = useCallback(async (probeModel = false) => {
     setChecking(true)
@@ -59,7 +61,8 @@ export function StewardStatusBar({ refreshToken }: Props) {
   }, [])
 
   useEffect(() => {
-    void refresh(false)
+    const timer = window.setTimeout(() => void refresh(false), 0)
+    return () => window.clearTimeout(timer)
   }, [refresh, refreshToken])
 
   useEffect(() => {
@@ -98,16 +101,13 @@ export function StewardStatusBar({ refreshToken }: Props) {
         </div>
       </div>
 
-      <button
-        className="steward-button steward-status-check"
-        disabled={checking}
-        onClick={() => void refresh(true)}
-        type="button"
-      >
-        {checking ? '检查中…' : '全面检查'}
-      </button>
+      <div className="steward-status-actions">
+        <button className="steward-button steward-button-secondary steward-status-check" onClick={() => setToolsOpen(true)} type="button">工具库</button>
+        <button className="steward-button steward-status-check" disabled={checking} onClick={() => void refresh(true)} type="button">{checking ? '检查中…' : '全面检查'}</button>
+      </div>
 
       {error ? <div className="steward-status-error" role="alert">{error}</div> : null}
+      <ToolLibraryDialog onClose={() => setToolsOpen(false)} open={toolsOpen} />
     </section>
   )
 }

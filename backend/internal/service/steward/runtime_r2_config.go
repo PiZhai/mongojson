@@ -197,6 +197,9 @@ func (s *Service) registerRuntimeR2Tools() {
 	s.runtimeTools.registerIfAbsent(newRuntimeWebFetchTool(s))
 	s.runtimeTools.registerIfAbsent(newRuntimeCreateTaskTool(s))
 	s.runtimeTools.registerIfAbsent(newRuntimeSaveMemoryTool(s))
+	for _, action := range []string{"tool.search", "tool.describe", "tool.create", "tool.update", "tool.test", "tool.enable", "tool.disable", "tool.rollback", "tool.delete"} {
+		s.runtimeTools.registerIfAbsent(newRuntimeToolsmithTool(s, action))
+	}
 	if s.runtimeBrowserOpen {
 		s.runtimeTools.registerIfAbsent(newRuntimeBrowserOpenTool(s))
 	}

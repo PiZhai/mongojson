@@ -39,6 +39,14 @@ type agentLoopLimits struct {
 	MaxRounds, MaxToolCalls, MaxDurationSeconds, NoProgressLimit int
 }
 
+func encodeAgentJSON(value any, fallback string) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fallback
+	}
+	return string(raw)
+}
+
 func normalizeAgentLoopLimits(values modelSettingsValues) agentLoopLimits {
 	limits := agentLoopLimits{values.agentMaxRounds, values.agentMaxToolCalls, values.agentMaxDurationSeconds, values.agentNoProgressLimit}
 	if limits.NoProgressLimit <= 0 {
@@ -75,6 +83,7 @@ func (s *Service) startAgentEpisode(ctx context.Context, conversation domain.Ste
 		Status: agentEpisodeThinking, CurrentRound: 1, ToolCallCount: countExternalAgentCalls(decision.ToolCalls),
 		MaxRounds: limits.MaxRounds, MaxToolCalls: limits.MaxToolCalls, MaxDurationSeconds: limits.MaxDurationSeconds,
 		NoProgressLimit: limits.NoProgressLimit, CreatedAt: now, UpdatedAt: now,
+		HydratedToolNames: []string{}, CurrentToolVersions: map[string]string{}, CatalogGeneration: s.runtimeTools.generationValue(),
 	}
 	if limits.MaxToolCalls > 0 && episode.ToolCallCount > limits.MaxToolCalls {
 		return domain.StewardConversationMessage{}, episode, fmt.Errorf("model requested %d tools, exceeding the configured limit %d", episode.ToolCallCount, limits.MaxToolCalls)
@@ -123,12 +132,12 @@ func (s *Service) insertAgentEpisode(ctx context.Context, item domain.StewardAge
 		insert into steward_agent_episodes (
 			id,conversation_id,trigger_message_id,trigger_kind,goal,data_level,status,current_round,tool_call_count,
 			max_rounds,max_tool_calls,max_duration_seconds,no_progress_limit,no_progress_count,target_device_id,
-			control_generation,created_at,updated_at,deadline_at
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			control_generation,created_at,updated_at,deadline_at,hydrated_tool_names,catalog_generation,current_tool_versions
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22::jsonb)
 	`, item.ID, item.ConversationID, item.TriggerMessageID, item.TriggerKind, item.Goal, item.DataLevel, item.Status,
 		item.CurrentRound, item.ToolCallCount, item.MaxRounds, item.MaxToolCalls, item.MaxDurationSeconds,
 		item.NoProgressLimit, item.NoProgressCount, item.TargetDeviceID, item.ControlGeneration,
-		item.CreatedAt, item.UpdatedAt, item.DeadlineAt)
+		item.CreatedAt, item.UpdatedAt, item.DeadlineAt, encodeAgentJSON(item.HydratedToolNames, "[]"), item.CatalogGeneration, encodeAgentJSON(item.CurrentToolVersions, "{}"))
 	return err
 }
 
@@ -158,18 +167,21 @@ func (s *Service) GetAgentEpisode(ctx context.Context, id string) (domain.Stewar
 		       coalesce(final_message_id::text,''),trigger_kind,goal,data_level,status,current_round,tool_call_count,
 		       max_rounds,max_tool_calls,max_duration_seconds,no_progress_limit,no_progress_count,model_failure_count,target_device_id,
 		       coalesce(active_execution_id::text,''),control_generation,failure_summary,last_result_summary,
-		       created_at,updated_at,deadline_at,completed_at
+		       hydrated_tool_names,catalog_generation,current_tool_versions,created_at,updated_at,deadline_at,completed_at
 		from steward_agent_episodes where id=$1
 	`, id)
 	var item domain.StewardAgentEpisode
+	var hydrated, versions []byte
 	if err := row.Scan(&item.ID, &item.ConversationID, &item.TriggerMessageID, &item.ProgressMessageID,
 		&item.FinalMessageID, &item.TriggerKind, &item.Goal, &item.DataLevel, &item.Status, &item.CurrentRound,
 		&item.ToolCallCount, &item.MaxRounds, &item.MaxToolCalls, &item.MaxDurationSeconds, &item.NoProgressLimit,
 		&item.NoProgressCount, &item.ModelFailureCount, &item.TargetDeviceID, &item.ActiveExecutionID, &item.ControlGeneration,
-		&item.FailureSummary, &item.LastResultSummary, &item.CreatedAt, &item.UpdatedAt, &item.DeadlineAt,
+		&item.FailureSummary, &item.LastResultSummary, &hydrated, &item.CatalogGeneration, &versions, &item.CreatedAt, &item.UpdatedAt, &item.DeadlineAt,
 		&item.CompletedAt); err != nil {
 		return item, err
 	}
+	_ = json.Unmarshal(hydrated, &item.HydratedToolNames)
+	_ = json.Unmarshal(versions, &item.CurrentToolVersions)
 	turns, err := s.listAgentTurns(ctx, item.ID)
 	if err != nil {
 		return item, err
@@ -541,9 +553,13 @@ func (s *Service) advanceAgentEpisode(ctx context.Context, id string) error {
 	if episode.NoProgressCount >= episode.NoProgressLimit {
 		notice = "最近多轮调用产生了相同结果。请反思目标，改用其他工具或给出最终结论，不要重复相同调用。"
 	}
+	modelTools, toolCatalog, catalogErr := s.agentToolContext(ctx, &episode)
+	if catalogErr != nil {
+		return catalogErr
+	}
 	decision, err := nextValidAgentTurn(ctx, advisor, AgentTurnInput{
 		Message: episode.Goal, DataLevel: episode.DataLevel, TriggerKind: episode.TriggerKind,
-		History: history, Transcript: transcript, Context: localContext, Tools: s.runtimeTools.specs(),
+		History: history, Transcript: transcript, Context: localContext, Tools: modelTools, ToolCatalog: toolCatalog,
 		Devices: s.conversationAdvisorDevices(ctx), KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(),
 		Round: episode.CurrentRound + 1, ToolCallCount: episode.ToolCallCount, Deadline: episode.DeadlineAt, NoProgressNotice: notice,
 	})

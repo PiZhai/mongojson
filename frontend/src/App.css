@@ -3958,3 +3958,29 @@
     transition: none;
   }
 }
+
+.steward-status-actions { display: flex; gap: 8px; }
+.steward-tool-dialog { width: min(1120px, 100%); max-height: calc(100dvh - 40px); overflow: hidden; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; box-shadow: 0 24px 70px rgba(15,23,42,.28); }
+.steward-tool-search { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; }
+.steward-tool-search input { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; }
+.steward-tool-hosts { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 8px 16px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; color: #475569; font-size: 12px; }
+.steward-tool-hosts span { display: inline-flex; align-items: center; gap: 6px; }
+.steward-tool-hosts i { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
+.steward-tool-hosts .is-online i { background: #10b981; }
+.steward-tool-layout { display: grid; grid-template-columns: minmax(280px, 36%) minmax(0, 1fr); height: min(650px, calc(100dvh - 170px)); }
+.steward-tool-list,.steward-tool-detail { min-height: 0; overflow: auto; padding: 12px; }
+.steward-tool-list { border-right: 1px solid #e2e8f0; }
+.steward-tool-list button { display: grid; width: 100%; gap: 4px; padding: 10px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
+.steward-tool-list button:hover,.steward-tool-list button.is-active { background: #eff6ff; }
+.steward-tool-list span,.steward-tool-list small,.steward-tool-detail p { color: #64748b; }
+.steward-tool-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steward-tool-detail h3 { margin: 0; }
+.steward-tool-detail dl { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 8px 12px; }
+.steward-tool-detail dt { color: #64748b; }
+.steward-tool-detail dd { margin: 0; overflow-wrap: anywhere; }
+.steward-tool-detail .is-code,.steward-tool-detail pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.steward-tool-detail pre { padding: 10px; overflow: auto; border-radius: 8px; background: #0f172a; color: #e2e8f0; font-size: 11px; }
+.steward-tool-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.steward-tool-actions button { min-height: 38px; padding: 0 12px; border: 1px solid #cbd5e1; border-radius: 7px; background: #f8fafc; cursor: pointer; }
+.steward-tool-error { padding: 8px 16px; color: #be123c; background: #fff1f2; }
+@media (max-width: 760px) { .steward-tool-layout { grid-template-columns: 1fr; } .steward-tool-list { max-height: 240px; border-right: 0; border-bottom: 1px solid #e2e8f0; } }

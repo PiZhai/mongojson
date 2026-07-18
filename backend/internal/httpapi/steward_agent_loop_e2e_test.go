@@ -3,6 +3,8 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,129 @@ import (
 	"mongojson/backend/internal/platform/database"
 	"mongojson/backend/internal/service/steward"
 )
+
+func TestStewardR50WindowsCatalogPersistsAndIsQueryable(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed R5.0 catalog test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r50_catalog"), "r50-catalog", steward.WithRuntimeR2Enabled(true))
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, node.apiBase+"/steward/tools", nil)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("tool catalog endpoint returned %s", response.Status)
+	}
+	var payload struct {
+		Tools []domain.StewardTool `json:"tools"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Tools) < 100 {
+		t.Fatalf("expected at least 100 active and retained tools, got %d", len(payload.Tools))
+	}
+	foundSession, foundToolsmith := false, false
+	for _, tool := range payload.Tools {
+		if tool.Name == "screen.capture" && tool.ExecutionTarget == "session" && tool.ActiveVersion == "1.0.0" {
+			foundSession = true
+		}
+		if tool.Name == "tool.create" && tool.Enabled {
+			foundToolsmith = true
+		}
+	}
+	if !foundSession || !foundToolsmith {
+		t.Fatalf("catalog missing session or Toolsmith capability: session=%v toolsmith=%v", foundSession, foundToolsmith)
+	}
+}
+
+type r50ToolsmithAdvisor struct{}
+
+func (r50ToolsmithAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r50-test", Model: "toolsmith-test"}
+}
+func (r50ToolsmithAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
+	return steward.AutonomyAdvisorSuggestion{}, nil
+}
+func (r50ToolsmithAdvisor) NextTurn(_ context.Context, input steward.AgentTurnInput) (steward.AgentTurnDecision, error) {
+	if len(input.Transcript) == 0 {
+		manifest := map[string]any{
+			"name": "custom.echo_once", "version": "1.0.0", "title": "Echo once", "description": "Versioned composite echo used by R5 acceptance.",
+			"runtime": "composite", "execution_target": "auto", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}, "required": []string{"value"}},
+			"output_schema": map[string]any{"type": "object"}, "dependency_strategy": map[string]any{"requested": "auto", "selected": "none", "selection_reason": "existing runtime.echo is sufficient"},
+			"supports_cancel": true, "side_effect": "none", "idempotency_mode": "inherent",
+			"tests":           []map[string]any{{"name": "smoke", "input": map[string]any{"value": "test"}}},
+			"composite_steps": []map[string]any{{"key": "echo", "tool_name": "runtime.echo", "arguments": map[string]any{"value": "${input.value}"}}},
+		}
+		return steward.AgentTurnDecision{Content: "创建缺失的组合能力。", ToolCalls: []domain.StewardAgentToolCall{{ID: "create_tool", ToolName: "tool.create", Arguments: map[string]any{"manifest": manifest}}}}, nil
+	}
+	if len(input.Transcript) == 1 {
+		found := false
+		for _, spec := range input.Tools {
+			if spec.Name == "custom.echo_once" {
+				found = true
+			}
+		}
+		if !found {
+			return steward.AgentTurnDecision{Content: "新工具未在下一轮热加载。"}, nil
+		}
+		return steward.AgentTurnDecision{Content: "立即调用新工具。", ToolCalls: []domain.StewardAgentToolCall{{ID: "invoke_new", ToolName: "custom.echo_once", Arguments: map[string]any{"value": "ready"}}}}, nil
+	}
+	return steward.AgentTurnDecision{Content: "新工具已经在同一 Episode 创建、测试、热加载并成功调用。"}, nil
+}
+
+func TestStewardR50ToolsmithCreatesAndInvokesToolInSameEpisode(t *testing.T) {
+	t.Setenv("STEWARD_OWNER_MODE", "true")
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the R5.0 Toolsmith test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r50_toolsmith"), "r50-toolsmith",
+		steward.WithAutonomyAdvisor(r50ToolsmithAdvisor{}), steward.WithRuntimeR2Enabled(true))
+	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R5 Toolsmith"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "创建并使用一个 echo 组合工具"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Message.Episodes) != 1 {
+		t.Fatalf("expected one episode: %+v", created.Message)
+	}
+	episodeID := created.Message.Episodes[0].ID
+	for index := 0; index < 30; index++ {
+		_, _ = node.service.RunAgentRuntimeCycle(ctx, 10)
+		_, _ = node.service.RunConversationExecutionRefreshCycle(ctx, 10)
+		_, _ = node.service.RunAgentEpisodeCycle(ctx, 10)
+		episode, getErr := node.service.GetAgentEpisode(ctx, episodeID)
+		if getErr == nil && episode.Status == "completed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	episode, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.Status != "completed" || len(episode.Turns) != 3 {
+		t.Fatalf("Toolsmith episode did not complete: %+v", episode)
+	}
+	tool, err := node.service.GetTool(ctx, "custom.echo_once")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tool.Enabled || tool.ActiveVersion != "1.0.0" || len(tool.RecentTests) == 0 || tool.RecentTests[0].Status != "passed" {
+		t.Fatalf("generated tool was not validated and enabled: %+v", tool)
+	}
+}
 
 type r49ParallelAdvisor struct{}
 

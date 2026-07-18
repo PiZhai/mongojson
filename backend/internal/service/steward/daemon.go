@@ -12,29 +12,31 @@ import (
 )
 
 const (
-	DefaultHeartbeatInterval       = time.Minute
-	DefaultCollectionInterval      = 5 * time.Minute
-	DefaultActivitySampleInterval  = 15 * time.Second
-	DefaultProactiveInterval       = 5 * time.Minute
-	DefaultModelDispatchInterval   = time.Minute
-	DefaultRuntimeInterval         = time.Second
-	DefaultRuntimeWatchdogInterval = 2 * time.Second
+	DefaultHeartbeatInterval          = time.Minute
+	DefaultCollectionInterval         = 5 * time.Minute
+	DefaultActivitySampleInterval     = 15 * time.Second
+	DefaultProactiveInterval          = 5 * time.Minute
+	DefaultProactiveToolsmithInterval = 30 * time.Minute
+	DefaultModelDispatchInterval      = time.Minute
+	DefaultRuntimeInterval            = time.Second
+	DefaultRuntimeWatchdogInterval    = 2 * time.Second
 )
 
 type DaemonOptions struct {
-	HeartbeatInterval       time.Duration
-	CollectionInterval      time.Duration
-	ActivitySampleInterval  time.Duration
-	ProactiveInterval       time.Duration
-	SyncInterval            time.Duration
-	AutonomyInterval        time.Duration
-	AutonomyLimit           int
-	ModelDispatchInterval   time.Duration
-	ModelDispatchLimit      int
-	RuntimeInterval         time.Duration
-	RuntimeLimit            int
-	RuntimeWatchdogInterval time.Duration
-	RuntimeWatchdogLimit    int
+	HeartbeatInterval          time.Duration
+	CollectionInterval         time.Duration
+	ActivitySampleInterval     time.Duration
+	ProactiveInterval          time.Duration
+	ProactiveToolsmithInterval time.Duration
+	SyncInterval               time.Duration
+	AutonomyInterval           time.Duration
+	AutonomyLimit              int
+	ModelDispatchInterval      time.Duration
+	ModelDispatchLimit         int
+	RuntimeInterval            time.Duration
+	RuntimeLimit               int
+	RuntimeWatchdogInterval    time.Duration
+	RuntimeWatchdogLimit       int
 }
 
 type Daemon struct {
@@ -56,19 +58,20 @@ func NewDaemon(service *Service, options DaemonOptions) *Daemon {
 
 func DaemonOptionsFromEnv() DaemonOptions {
 	return normalizeDaemonOptions(DaemonOptions{
-		HeartbeatInterval:       durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
-		CollectionInterval:      durationEnv("STEWARD_COLLECTION_INTERVAL", DefaultCollectionInterval),
-		ActivitySampleInterval:  durationEnv("STEWARD_ACTIVITY_SAMPLE_INTERVAL", DefaultActivitySampleInterval),
-		ProactiveInterval:       durationEnv("STEWARD_PROACTIVE_INTERVAL", DefaultProactiveInterval),
-		SyncInterval:            durationEnv("STEWARD_SYNC_INTERVAL", 0),
-		AutonomyInterval:        durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
-		AutonomyLimit:           intEnv("STEWARD_AUTONOMY_LIMIT", 12),
-		ModelDispatchInterval:   durationEnv("STEWARD_MODEL_DISPATCH_INTERVAL", DefaultModelDispatchInterval),
-		ModelDispatchLimit:      intEnv("STEWARD_MODEL_DISPATCH_LIMIT", 20),
-		RuntimeInterval:         durationEnv("STEWARD_RUNTIME_INTERVAL", DefaultRuntimeInterval),
-		RuntimeLimit:            intEnv("STEWARD_RUNTIME_LIMIT", 10),
-		RuntimeWatchdogInterval: durationEnv("STEWARD_RUNTIME_WATCHDOG_INTERVAL", DefaultRuntimeWatchdogInterval),
-		RuntimeWatchdogLimit:    intEnv("STEWARD_RUNTIME_WATCHDOG_LIMIT", 20),
+		HeartbeatInterval:          durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
+		CollectionInterval:         durationEnv("STEWARD_COLLECTION_INTERVAL", DefaultCollectionInterval),
+		ActivitySampleInterval:     durationEnv("STEWARD_ACTIVITY_SAMPLE_INTERVAL", DefaultActivitySampleInterval),
+		ProactiveInterval:          durationEnv("STEWARD_PROACTIVE_INTERVAL", DefaultProactiveInterval),
+		ProactiveToolsmithInterval: durationEnv("STEWARD_PROACTIVE_TOOLSMITH_INTERVAL", DefaultProactiveToolsmithInterval),
+		SyncInterval:               durationEnv("STEWARD_SYNC_INTERVAL", 0),
+		AutonomyInterval:           durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
+		AutonomyLimit:              intEnv("STEWARD_AUTONOMY_LIMIT", 12),
+		ModelDispatchInterval:      durationEnv("STEWARD_MODEL_DISPATCH_INTERVAL", DefaultModelDispatchInterval),
+		ModelDispatchLimit:         intEnv("STEWARD_MODEL_DISPATCH_LIMIT", 20),
+		RuntimeInterval:            durationEnv("STEWARD_RUNTIME_INTERVAL", DefaultRuntimeInterval),
+		RuntimeLimit:               intEnv("STEWARD_RUNTIME_LIMIT", 10),
+		RuntimeWatchdogInterval:    durationEnv("STEWARD_RUNTIME_WATCHDOG_INTERVAL", DefaultRuntimeWatchdogInterval),
+		RuntimeWatchdogLimit:       intEnv("STEWARD_RUNTIME_WATCHDOG_LIMIT", 20),
 	})
 }
 
@@ -99,6 +102,7 @@ func (d *Daemon) Start(parent context.Context) {
 		{name: "collection", interval: d.options.CollectionInterval},
 		{name: "activity-sample", interval: d.options.ActivitySampleInterval},
 		{name: "proactive", interval: d.options.ProactiveInterval},
+		{name: "proactive-toolsmith", interval: d.options.ProactiveToolsmithInterval},
 		{name: "sync", interval: d.options.SyncInterval},
 		{name: "autonomy", interval: d.options.AutonomyInterval},
 		{name: "model-dispatch", interval: d.options.ModelDispatchInterval},
@@ -140,6 +144,13 @@ func (d *Daemon) Start(parent context.Context) {
 		}
 		_, err = d.service.RunProactiveCycle(ctx, RunProactiveInput{})
 		return err
+	}) || started
+	started = d.startLoop(ctx, "proactive-toolsmith", d.options.ProactiveToolsmithInterval, func(ctx context.Context) error {
+		enabled, err := d.service.BackgroundWorkEnabled(ctx)
+		if err != nil || !enabled {
+			return err
+		}
+		return d.service.RunProactiveToolsmithCycle(ctx)
 	}) || started
 	started = d.startLoop(ctx, "sync", d.options.SyncInterval, func(ctx context.Context) error {
 		enabled, err := d.service.BackgroundWorkEnabled(ctx)
@@ -330,6 +341,12 @@ func normalizeDaemonOptions(input DaemonOptions) DaemonOptions {
 	}
 	if out.ProactiveInterval == 0 {
 		out.ProactiveInterval = DefaultProactiveInterval
+	}
+	if out.ProactiveToolsmithInterval < 0 {
+		out.ProactiveToolsmithInterval = 0
+	}
+	if out.ProactiveToolsmithInterval == 0 {
+		out.ProactiveToolsmithInterval = DefaultProactiveToolsmithInterval
 	}
 	if out.CollectionInterval == 0 {
 		out.CollectionInterval = DefaultCollectionInterval

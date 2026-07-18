@@ -203,7 +203,7 @@ value =
 
 ## 10. Companion 运行
 
-发布目录已包含 `steward-companion`。它只能监听回环地址，默认端口 `18182`，并把数据提交到 `http://127.0.0.1:18080/api`。
+发布目录已包含 `steward-companion`。Windows 默认通过认证 Named Pipe `\\.\pipe\MongojsonStewardCompanion` 接收 Session 工具调用，并把采集数据提交到 `http://127.0.0.1:18080/api`。只有显式传入 `-listen 127.0.0.1:18182` 时才额外开放诊断用回环 HTTP；该监听不绑定外部网卡。
 
 ```powershell
 # 生成一次 32 字节本地密钥，并同时配置给主服务和 companion
@@ -213,11 +213,10 @@ $env:STEWARD_LOCAL_ENCRYPTION_KEY = [Convert]::ToBase64String($bytes)
 $env:STEWARD_COMPANION_COLLECT_DATA_LEVELS = 'D0,D1,D2,D3,D4,D6'
 
 .\steward-companion.exe `
-  -listen 127.0.0.1:18182 `
   -api http://127.0.0.1:18080/api
 ```
 
-状态检查：
+需要兼容旧采集器或通过 HTTP 检查状态时显式增加 `-listen 127.0.0.1:18182`，然后执行：
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:18182/status

@@ -22,6 +22,8 @@ import type {
   StewardProactiveRun,
   StewardModelSettings,
   StewardToolDefinition,
+  StewardCatalogTool,
+  StewardToolHostStatus,
   StewardConversation,
   StewardConversationExecution,
   StewardConversationMessage,
@@ -335,6 +337,25 @@ export async function getStewardConversations(limit = 30, archived = false) {
   return request<{ conversations: StewardConversation[] }>(
     `${API_BASE}/steward/conversations?limit=${limit}&archived=${archived}`,
   )
+}
+
+export async function getStewardTools(query = '') {
+  const params = new URLSearchParams()
+  if (query.trim()) params.set('query', query.trim())
+  const suffix = params.size ? `?${params.toString()}` : ''
+  return request<{ tools: StewardCatalogTool[]; hosts: StewardToolHostStatus[] }>(`${API_BASE}/steward/tools${suffix}`)
+}
+
+export async function getStewardTool(name: string) {
+  return request<{ tool: StewardCatalogTool }>(`${API_BASE}/steward/tools/${encodeURIComponent(name)}`)
+}
+
+export async function decideStewardTool(name: string, decision: 'enable' | 'disable' | 'test' | 'rollback' | 'delete', version?: string) {
+  return request<{ tool: StewardCatalogTool }>(`${API_BASE}/steward/tools/${encodeURIComponent(name)}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision, version }),
+  })
 }
 
 export async function createStewardConversation(payload: { title?: string; data_level?: string }) {

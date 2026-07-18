@@ -735,6 +735,66 @@ export type StewardConversationMessage = {
   created_at: string;
 };
 
+export type StewardToolVersion = {
+  tool_name: string;
+  version: string;
+  runtime: 'builtin' | 'powershell' | 'python' | 'node' | 'composite' | string;
+  status: string;
+  manifest: Record<string, unknown>;
+  package_path?: string;
+  content_sha256: string;
+  sbom: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+  validation_summary?: string;
+  created_at: string;
+  validated_at?: string;
+};
+
+export type StewardToolTestRun = {
+  id: string;
+  tool_name: string;
+  tool_version: string;
+  test_name: string;
+  status: string;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  error_summary?: string;
+  evidence: Record<string, unknown>[];
+  started_at: string;
+  completed_at?: string;
+};
+
+export type StewardCatalogTool = {
+  name: string;
+  title: string;
+  description: string;
+  origin: string;
+  enabled: boolean;
+  active_version: string;
+  execution_target: 'system' | 'session' | 'auto' | string;
+  health_status: string;
+  health_summary?: string;
+  catalog_generation: number;
+  invocation_count: number;
+  created_by_episode_id?: string;
+  created_by_model?: string;
+  active?: StewardToolVersion;
+  versions?: StewardToolVersion[];
+  recent_tests?: StewardToolTestRun[];
+  dependency_changes?: Array<Record<string, unknown>>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardToolHostStatus = {
+  name: string;
+  target: string;
+  transport: string;
+  online: boolean;
+  summary?: string;
+  checked_at: string;
+};
+
 export type StewardAgentToolCall = {
   id: string;
   tool_name: string;

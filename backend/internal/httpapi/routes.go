@@ -191,6 +191,12 @@ type StewardAutomationPolicyStore interface {
 }
 
 type StewardRuntimeStore interface {
+	ListTools(context.Context, string, string, string) ([]domain.StewardTool, error)
+	GetToolHostStatuses(context.Context) []domain.StewardToolHostStatus
+	GetTool(context.Context, string) (domain.StewardTool, error)
+	ListToolVersions(context.Context, string) ([]domain.StewardToolVersion, error)
+	ListToolTestRuns(context.Context, string, int) ([]domain.StewardToolTestRun, error)
+	DecideTool(context.Context, string, steward.ToolCatalogDecisionInput) (domain.StewardTool, error)
 	ListRuntimeToolSpecs(context.Context) ([]domain.StewardToolSpec, error)
 	GetRuntimePlannerStatus() domain.StewardRuntimePlannerStatus
 	ListAgentRuns(context.Context, string, int) ([]domain.StewardAgentRunSummary, error)
@@ -300,6 +306,12 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/steward/automation/tools", handler.listStewardToolDefinitions)
 		r.Put("/steward/automation/tools", handler.upsertStewardToolDefinition)
 		r.Get("/steward/runtime/tools", handler.listStewardRuntimeTools)
+		r.Get("/steward/tools", handler.listStewardTools)
+		r.Get("/steward/tools/{name}", handler.getStewardTool)
+		r.Get("/steward/tools/{name}/versions", handler.listStewardToolVersions)
+		r.Get("/steward/tools/{name}/versions/{version}", handler.getStewardToolVersion)
+		r.Get("/steward/tools/{name}/test-runs", handler.listStewardToolTestRuns)
+		r.Post("/steward/tools/{name}/decision", handler.decideStewardTool)
 		r.Get("/steward/runtime/planner", handler.getStewardRuntimePlanner)
 		r.Get("/steward/runtime/control", handler.getStewardRuntimeControl)
 		r.Post("/steward/runtime/control/pause", handler.pauseStewardRuntime)

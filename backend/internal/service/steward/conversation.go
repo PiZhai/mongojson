@@ -244,11 +244,15 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 		modelContent := conversationModelText(content, level, dataPolicy.ModelContentMode)
 		modelHistory := conversationModelHistory(history, dataPolicy.ModelContentMode)
 		devices := s.conversationAdvisorDevices(ctx)
+		modelTools, toolCatalog, catalogErr := s.agentToolContext(ctx, nil)
+		if catalogErr != nil {
+			return SendConversationMessageResult{}, catalogErr
+		}
 		var advisorErr error
 		if advisor, ok := s.autonomyAdvisor().(AgentTurnAdvisor); ok {
 			decision, turnErr := nextValidAgentTurn(ctx, advisor, AgentTurnInput{
 				Message: modelContent, DataLevel: level, TriggerKind: "conversation", History: modelHistory, Context: localContext,
-				Tools: s.runtimeTools.specs(), Devices: devices, KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(), Round: 1,
+				Tools: modelTools, ToolCatalog: toolCatalog, Devices: devices, KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(), Round: 1,
 			})
 			advisorErr = turnErr
 			if turnErr == nil {
@@ -269,7 +273,7 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 		} else if advisor, ok := s.autonomyAdvisor().(ConversationAdvisor); ok {
 			response, advisorErr = advisor.Converse(ctx, ConversationAdvisorInput{
 				Message: modelContent, DataLevel: level, History: modelHistory, Context: localContext,
-				Tools: s.runtimeTools.specs(), Devices: devices, KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(),
+				Tools: modelTools, Devices: devices, KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(),
 			})
 		} else {
 			advisorErr = fmt.Errorf("configured model does not support conversation")

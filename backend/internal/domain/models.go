@@ -175,33 +175,36 @@ type StewardAgentTurn struct {
 }
 
 type StewardAgentEpisode struct {
-	ID                 string             `json:"id"`
-	ConversationID     string             `json:"conversation_id"`
-	TriggerMessageID   string             `json:"trigger_message_id"`
-	ProgressMessageID  string             `json:"progress_message_id,omitempty"`
-	FinalMessageID     string             `json:"final_message_id,omitempty"`
-	TriggerKind        string             `json:"trigger_kind"`
-	Goal               string             `json:"goal"`
-	DataLevel          string             `json:"data_level"`
-	Status             string             `json:"status"`
-	CurrentRound       int                `json:"current_round"`
-	ToolCallCount      int                `json:"tool_call_count"`
-	MaxRounds          int                `json:"max_rounds"`
-	MaxToolCalls       int                `json:"max_tool_calls"`
-	MaxDurationSeconds int                `json:"max_duration_seconds"`
-	NoProgressLimit    int                `json:"no_progress_limit"`
-	NoProgressCount    int                `json:"no_progress_count"`
-	ModelFailureCount  int                `json:"model_failure_count"`
-	TargetDeviceID     string             `json:"target_device_id,omitempty"`
-	ActiveExecutionID  string             `json:"active_execution_id,omitempty"`
-	ControlGeneration  int64              `json:"control_generation,omitempty"`
-	FailureSummary     string             `json:"failure_summary,omitempty"`
-	LastResultSummary  string             `json:"last_result_summary,omitempty"`
-	Turns              []StewardAgentTurn `json:"turns,omitempty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	DeadlineAt         *time.Time         `json:"deadline_at,omitempty"`
-	CompletedAt        *time.Time         `json:"completed_at,omitempty"`
+	ID                  string             `json:"id"`
+	ConversationID      string             `json:"conversation_id"`
+	TriggerMessageID    string             `json:"trigger_message_id"`
+	ProgressMessageID   string             `json:"progress_message_id,omitempty"`
+	FinalMessageID      string             `json:"final_message_id,omitempty"`
+	TriggerKind         string             `json:"trigger_kind"`
+	Goal                string             `json:"goal"`
+	DataLevel           string             `json:"data_level"`
+	Status              string             `json:"status"`
+	CurrentRound        int                `json:"current_round"`
+	ToolCallCount       int                `json:"tool_call_count"`
+	MaxRounds           int                `json:"max_rounds"`
+	MaxToolCalls        int                `json:"max_tool_calls"`
+	MaxDurationSeconds  int                `json:"max_duration_seconds"`
+	NoProgressLimit     int                `json:"no_progress_limit"`
+	NoProgressCount     int                `json:"no_progress_count"`
+	ModelFailureCount   int                `json:"model_failure_count"`
+	TargetDeviceID      string             `json:"target_device_id,omitempty"`
+	ActiveExecutionID   string             `json:"active_execution_id,omitempty"`
+	ControlGeneration   int64              `json:"control_generation,omitempty"`
+	FailureSummary      string             `json:"failure_summary,omitempty"`
+	LastResultSummary   string             `json:"last_result_summary,omitempty"`
+	HydratedToolNames   []string           `json:"hydrated_tool_names,omitempty"`
+	CatalogGeneration   int64              `json:"catalog_generation,omitempty"`
+	CurrentToolVersions map[string]string  `json:"current_tool_versions,omitempty"`
+	Turns               []StewardAgentTurn `json:"turns,omitempty"`
+	CreatedAt           time.Time          `json:"created_at"`
+	UpdatedAt           time.Time          `json:"updated_at"`
+	DeadlineAt          *time.Time         `json:"deadline_at,omitempty"`
+	CompletedAt         *time.Time         `json:"completed_at,omitempty"`
 }
 
 // StewardConversationExecution is the durable R4.5 bridge between one

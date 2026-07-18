@@ -170,8 +170,12 @@ func (s *Service) processProactiveRun(ctx context.Context, run domain.StewardPro
 		return s.finishProactiveRun(ctx, run, "failed", analysis.Summary, analysisMap, fmt.Errorf("configured model does not support proactive tool decisions"))
 	}
 	prompt := proactiveDecisionPrompt(run, analysis)
+	modelTools, toolCatalog, catalogErr := s.agentToolContext(ctx, nil)
+	if catalogErr != nil {
+		return s.finishProactiveRun(ctx, run, "failed", analysis.Summary, analysisMap, catalogErr)
+	}
 	decision, err := nextValidAgentTurn(ctx, turnAdvisor, AgentTurnInput{
-		Message: prompt, DataLevel: DataD2, TriggerKind: "proactive_" + run.Cadence, Tools: s.runtimeTools.specs(),
+		Message: prompt, DataLevel: DataD2, TriggerKind: "proactive_" + run.Cadence, Tools: modelTools, ToolCatalog: toolCatalog,
 		Devices: s.conversationAdvisorDevices(ctx), KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(), Round: 1,
 	})
 	if err != nil {

@@ -107,6 +107,7 @@ type Service struct {
 	remoteBrokerCancels        map[string]context.CancelFunc
 	conversationMemoryMu       sync.Mutex
 	modelSettingsMu            sync.RWMutex
+	toolCatalogMu              sync.Mutex
 
 	advisorAuditMu           sync.Mutex
 	lastAdvisorFallbackAudit time.Time
@@ -606,6 +607,12 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureAutomationPolicyDefaults(ctx, now); err != nil {
+		return err
+	}
+	if err := s.ensureWindowsFoundationTools(ctx, now); err != nil {
+		return err
+	}
+	if err := s.ensureToolCatalog(ctx, now); err != nil {
 		return err
 	}
 	if err := s.ensureRuntimeToolSpecs(ctx, now); err != nil {

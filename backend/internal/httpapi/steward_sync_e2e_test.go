@@ -2596,6 +2596,7 @@ func newStewardHTTPNode(t *testing.T, ctx context.Context, dbConfig *pgxpool.Con
 
 	serviceOptions := []steward.ServiceOption{
 		steward.WithAgentID(agentID),
+		steward.WithStorageDir(t.TempDir()),
 		steward.WithAutonomyAdvisor(steward.DisabledAutonomyAdvisor("test")),
 	}
 	serviceOptions = append(serviceOptions, options...)

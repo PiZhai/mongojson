@@ -1,18 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,13 +33,19 @@ func main() {
 		log.Fatal(err)
 	}
 	fs := flag.NewFlagSet("steward-companion", flag.ExitOnError)
-	listen := fs.String("listen", envOrDefault("STEWARD_COMPANION_ADDR", "127.0.0.1:18182"), "local companion HTTP address")
+	listen := fs.String("listen", envOrDefault("STEWARD_COMPANION_ADDR", ""), "optional loopback companion HTTP address")
+	pipe := fs.String("pipe", envOrDefault("STEWARD_COMPANION_PIPE", `\\.\pipe\MongojsonStewardCompanion`), "authenticated companion named pipe")
 	apiBase := fs.String("api", envOrDefault("STEWARD_API_BASE", "http://127.0.0.1:18080/api"), "local steward API base")
 	dbPath := fs.String("db", filepath.Join(dataDir, "MongojsonSteward", "companion.db"), "encrypted row buffer SQLite path")
 	flushInterval := fs.Duration("flush-interval", 10*time.Second, "buffer flush interval")
 	_ = fs.Parse(os.Args[1:])
-	if err := validateLoopbackListen(*listen); err != nil {
-		log.Fatal(err)
+	if *listen != "" {
+		if err := validateLoopbackListen(*listen); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if strings.TrimSpace(*pipe) == "" {
+		log.Fatal("companion named pipe is required")
 	}
 	key, err := companionKey()
 	if err != nil {
@@ -84,15 +96,69 @@ func main() {
 		}
 		writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "status": "buffered"})
 	})
+	mux.HandleFunc("POST /tools/execute", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
+		payload, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "invalid tool request", http.StatusBadRequest)
+			return
+		}
+		timestamp := strings.TrimSpace(r.Header.Get("X-Steward-Tool-Timestamp"))
+		unix, parseErr := strconv.ParseInt(timestamp, 10, 64)
+		if parseErr != nil || time.Since(time.Unix(unix, 0)).Abs() > 60*time.Second {
+			http.Error(w, "stale tool request", http.StatusUnauthorized)
+			return
+		}
+		expected := companionPayloadSignature(key, timestamp, payload)
+		provided, decodeErr := hex.DecodeString(strings.TrimSpace(r.Header.Get("X-Steward-Tool-Signature")))
+		expectedBytes, _ := hex.DecodeString(expected)
+		if decodeErr != nil || !hmac.Equal(provided, expectedBytes) {
+			http.Error(w, "invalid tool request signature", http.StatusUnauthorized)
+			return
+		}
+		var input struct {
+			Manifest   steward.ToolPackageManifest `json:"manifest"`
+			PackageDir string                      `json:"package_dir"`
+			Input      map[string]any              `json:"input"`
+		}
+		if err := json.NewDecoder(bytes.NewReader(payload)).Decode(&input); err != nil {
+			http.Error(w, "invalid tool JSON", http.StatusBadRequest)
+			return
+		}
+		result, err := steward.ExecuteCompanionToolPackage(r.Context(), input.Manifest, input.PackageDir, input.Input)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "output": map[string]any{}, "evidence": []any{}})
+			return
+		}
+		evidence := make([]map[string]any, 0, len(result.Evidence))
+		for _, item := range result.Evidence {
+			evidence = append(evidence, map[string]any{"kind": item.Kind, "summary": item.Summary, "payload": item.Payload})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": result.Output, "evidence": evidence})
+	})
 
-	server := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	listener, err := companionPipeListener(*pipe)
+	if err != nil {
+		log.Fatal(err)
+	}
 	go func() {
-		log.Printf("steward companion listening on %s", *listen)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("companion HTTP server failed: %v", err)
+		log.Printf("steward companion listening on named pipe %s", *pipe)
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("companion named pipe server failed: %v", err)
 			cancel()
 		}
 	}()
+	var loopbackServer *http.Server
+	if *listen != "" {
+		loopbackServer = &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			log.Printf("steward companion optional loopback listener on %s", *listen)
+			if err := loopbackServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("companion loopback server failed: %v", err)
+			}
+		}()
+	}
 	go func() {
 		ticker := time.NewTicker(*flushInterval)
 		defer ticker.Stop()
@@ -114,6 +180,9 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
+	if loopbackServer != nil {
+		_ = loopbackServer.Shutdown(shutdownCtx)
+	}
 }
 
 func companionKey() ([]byte, error) {
@@ -126,6 +195,14 @@ func companionKey() ([]byte, error) {
 		return nil, fmt.Errorf("STEWARD_LOCAL_ENCRYPTION_KEY must be base64-encoded 32 bytes")
 	}
 	return key, nil
+}
+
+func companionPayloadSignature(key []byte, timestamp string, payload []byte) string {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func validateLoopbackListen(value string) error {
