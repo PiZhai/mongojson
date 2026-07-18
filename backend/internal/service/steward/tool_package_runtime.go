@@ -31,6 +31,69 @@ func newPackageRuntimeTool(service *Service, manifest ToolPackageManifest) Runti
 
 func (t *packageRuntimeTool) Spec() domain.StewardToolSpec { return t.manifest.runtimeSpec() }
 
+func (t *packageRuntimeTool) ChangeTransactionEnabled() bool {
+	return t.manifest.Transaction.Mode == "automatic"
+}
+
+func (t *packageRuntimeTool) SnapshotChange(ctx context.Context, input map[string]any) (RuntimeChangeSnapshot, error) {
+	if !t.ChangeTransactionEnabled() {
+		return RuntimeChangeSnapshot{}, nil
+	}
+	result, err := t.executeTransactionPhase(ctx, t.manifest.Transaction.SnapshotEntrypoint, map[string]any{"arguments": input})
+	if err != nil {
+		return RuntimeChangeSnapshot{}, err
+	}
+	return RuntimeChangeSnapshot{Summary: "tool package captured its mutation pre-state", State: result.Output}, nil
+}
+
+func (t *packageRuntimeTool) VerifyChange(ctx context.Context, input map[string]any, snapshot RuntimeChangeSnapshot, result RuntimeToolResult) error {
+	if !t.ChangeTransactionEnabled() {
+		return nil
+	}
+	verification, err := t.executeTransactionPhase(ctx, t.manifest.Transaction.VerificationEntrypoint, map[string]any{
+		"arguments": input, "snapshot": snapshot.State, "result": result.Output,
+	})
+	if err != nil {
+		return err
+	}
+	verified, _ := verification.Output["verified"].(bool)
+	if !verified {
+		return fmt.Errorf("transaction verifier did not return verified=true")
+	}
+	return nil
+}
+
+func (t *packageRuntimeTool) RollbackChange(ctx context.Context, input map[string]any, snapshot RuntimeChangeSnapshot, result RuntimeToolResult, cause error) (RuntimeToolResult, error) {
+	if !t.ChangeTransactionEnabled() {
+		return RuntimeToolResult{}, nil
+	}
+	rollback, err := t.executeTransactionPhase(ctx, t.manifest.Transaction.RollbackEntrypoint, map[string]any{
+		"arguments": input, "snapshot": snapshot.State, "result": result.Output,
+		"failure": map[string]any{"summary": sanitizeRuntimeError(cause), "diagnosis": diagnoseRuntimeFailure(cause)},
+	})
+	if err != nil {
+		return rollback, err
+	}
+	rolledBack, _ := rollback.Output["rolled_back"].(bool)
+	if !rolledBack {
+		return rollback, fmt.Errorf("transaction rollback did not return rolled_back=true")
+	}
+	return rollback, nil
+}
+
+func (t *packageRuntimeTool) executeTransactionPhase(ctx context.Context, entrypoint string, input map[string]any) (RuntimeToolResult, error) {
+	phase := t.manifest
+	phase.Entrypoint = entrypoint
+	phase.InputSchema = map[string]any{"type": "object"}
+	phase.OutputSchema = map[string]any{"type": "object"}
+	phase.Transaction = ToolTransactionContract{}
+	if phase.ExecutionTarget == toolTargetSession && runtime.GOOS == "windows" {
+		return t.service.executeSessionTool(ctx, phase, input)
+	}
+	packageDir := t.service.toolPackageDir(t.manifest.Name, t.manifest.Version)
+	return executeToolPackageProcess(ctx, phase, packageDir, input, t.service.agentIDValue())
+}
+
 func (t *packageRuntimeTool) Validate(input map[string]any) error {
 	return validateToolInputSchema(t.manifest.InputSchema, input)
 }
@@ -411,7 +474,10 @@ func toolPackageDigest(manifest ToolPackageManifest) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func runtimeInvocationIDFromContext(context.Context) string {
+func runtimeInvocationIDFromContext(ctx context.Context) string {
+	if id, _ := ctx.Value(runtimeInvocationContextKey{}).(string); strings.TrimSpace(id) != "" {
+		return id
+	}
 	return fmt.Sprintf("tool-%d", time.Now().UnixNano())
 }
 

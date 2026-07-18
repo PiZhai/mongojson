@@ -190,6 +190,35 @@ type StewardToolInvocation struct {
 	LeaseExpiresAt    *time.Time     `json:"lease_expires_at,omitempty"`
 }
 
+// StewardSystemChangeTransaction is the durable journal for one operating
+// system mutation. A transaction is prepared before the tool is invoked and is
+// committed only after the tool's postcondition has been independently
+// verified. Failed and interrupted mutations retain enough state for a
+// compensating rollback after process restart.
+type StewardSystemChangeTransaction struct {
+	ID                    string         `json:"id"`
+	InvocationID          string         `json:"invocation_id"`
+	RunID                 string         `json:"run_id"`
+	StepID                string         `json:"step_id"`
+	ToolName              string         `json:"tool_name"`
+	ToolVersion           string         `json:"tool_version"`
+	Status                string         `json:"status"`
+	Arguments             map[string]any `json:"arguments"`
+	Snapshot              map[string]any `json:"snapshot"`
+	Result                map[string]any `json:"result"`
+	FailureCode           string         `json:"failure_code,omitempty"`
+	FailureCategory       string         `json:"failure_category,omitempty"`
+	FailureSummary        string         `json:"failure_summary,omitempty"`
+	RollbackResult        map[string]any `json:"rollback_result,omitempty"`
+	RollbackError         string         `json:"rollback_error,omitempty"`
+	RollbackAttempts      int            `json:"rollback_attempts"`
+	NextRollbackAttemptAt *time.Time     `json:"next_rollback_attempt_at,omitempty"`
+	PreparedAt            time.Time      `json:"prepared_at"`
+	CommittedAt           *time.Time     `json:"committed_at,omitempty"`
+	RolledBackAt          *time.Time     `json:"rolled_back_at,omitempty"`
+	UpdatedAt             time.Time      `json:"updated_at"`
+}
+
 type StewardApprovalGrant struct {
 	ID                     string     `json:"id"`
 	RunID                  string     `json:"run_id"`

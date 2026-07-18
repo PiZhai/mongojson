@@ -985,6 +985,19 @@ func (h *Handler) listStewardRuntimeTools(w http.ResponseWriter, r *http.Request
 	respondJSON(w, http.StatusOK, map[string][]domain.StewardToolSpec{"tools": items})
 }
 
+func (h *Handler) listStewardSystemChangeTransactions(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardRuntimeService(w)
+	if !ok {
+		return
+	}
+	items, err := service.ListSystemChangeTransactions(r.Context(), queryLimit(r, 100))
+	if err != nil {
+		respondStewardRuntimeError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string][]domain.StewardSystemChangeTransaction{"transactions": items})
+}
+
 func (h *Handler) listStewardTools(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.requireStewardRuntimeService(w)
 	if !ok {

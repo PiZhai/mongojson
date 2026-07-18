@@ -29,6 +29,9 @@ func (s *Service) CreateToolPackage(ctx context.Context, input CreateToolPackage
 	if manifest.Runtime == toolRuntimeBuiltin {
 		return domain.StewardTool{}, fmt.Errorf("dynamic packages cannot use builtin runtime")
 	}
+	if manifest.Runtime != toolRuntimeComposite && manifest.SideEffect != RuntimeSideEffectNone && manifest.Transaction.Mode != "automatic" {
+		return domain.StewardTool{}, fmt.Errorf("generated mutating script tools require transaction.mode=automatic with snapshot, verification, and rollback entrypoints")
+	}
 	if len(manifest.Tests) == 0 {
 		return domain.StewardTool{}, fmt.Errorf("generated tools require at least one executable test")
 	}

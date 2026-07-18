@@ -98,6 +98,60 @@ func TestStewardRuntimeV2HTTPExecutesDurablePlanWithRetryEvidenceAndSSE(t *testi
 	}
 }
 
+func TestStewardRuntimeV51RollsBackFailedMutationAndPersistsDiagnosis(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed R5.1 remediation integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	probe := &runtimeV51TransactionalProbe{value: "before"}
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r51_remediation"), "runtime-r51-node",
+		steward.WithRuntimeV2Enabled(true), steward.WithRuntimeTool(probe))
+
+	created := postRuntimeV2Run(t, ctx, node, map[string]any{
+		"goal": "prove failed mutations are compensated", "idempotency_key": "runtime-r51-remediation", "auto_start": true,
+		"steps": []map[string]any{{"key": "mutate", "tool_name": "runtime.test.transactional_failure", "arguments": map[string]any{"value": "after"}}},
+	}, http.StatusCreated)
+	if _, err := node.service.RunAgentRuntimeCycle(ctx, 10); err != nil {
+		t.Fatalf("run R5.1 cycle: %v", err)
+	}
+	if probe.value != "before" || probe.rollbackCalls != 1 {
+		t.Fatalf("failed mutation was not compensated: value=%q rollbacks=%d", probe.value, probe.rollbackCalls)
+	}
+	completed := getRuntimeV2Run(t, ctx, node, created.ID)
+	if completed.Status != steward.RuntimeRunFailed || len(completed.Steps) != 1 || len(completed.Steps[0].Invocations) != 1 {
+		t.Fatalf("unexpected failed run state: %+v", completed)
+	}
+	remediation, ok := completed.Steps[0].Invocations[0].Output["_remediation"].(map[string]any)
+	if !ok || remediation["rollback_status"] != "rolled_back" {
+		t.Fatalf("model-visible remediation result missing: %+v", completed.Steps[0].Invocations[0].Output)
+	}
+	var status, failureCode string
+	if err := node.pool.QueryRow(ctx, `select status,failure_code from steward_system_change_transactions where run_id=$1`, created.ID).Scan(&status, &failureCode); err != nil {
+		t.Fatalf("read mutation journal: %v", err)
+	}
+	if status != "rolled_back" || failureCode != "access_denied" {
+		t.Fatalf("unexpected mutation journal: status=%s failure=%s", status, failureCode)
+	}
+
+	// Simulate a backend crash after the OS mutation but before the journal was
+	// committed. The daemon recovery path must finish the same compensation
+	// without requiring the original request goroutine.
+	probe.value = "after-crash"
+	if _, err := node.pool.Exec(ctx, `update steward_system_change_transactions set status='prepared',failure_summary='backend interrupted after mutation',
+		rolled_back_at=null,rollback_error='',lease_owner='',lease_expires_at=now()-interval '1 second',next_rollback_attempt_at=null where run_id=$1`, created.ID); err != nil {
+		t.Fatalf("prepare simulated interrupted transaction: %v", err)
+	}
+	recovered, err := node.service.RecoverSystemChangeTransactions(ctx, 10)
+	if err != nil || recovered != 1 {
+		t.Fatalf("recover interrupted mutation: recovered=%d err=%v", recovered, err)
+	}
+	if probe.value != "before" || probe.rollbackCalls != 2 {
+		t.Fatalf("crash recovery did not compensate mutation: value=%q rollbacks=%d", probe.value, probe.rollbackCalls)
+	}
+}
+
 func TestStewardRuntimeV2ApprovalCancellationAndResume(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {
@@ -744,6 +798,46 @@ func TestStewardRuntimeV2DaemonExecutesQueuedRun(t *testing.T) {
 type runtimeV2FlakyTool struct {
 	mu    sync.Mutex
 	calls int
+}
+
+type runtimeV51TransactionalProbe struct {
+	value         string
+	rollbackCalls int
+}
+
+func (t *runtimeV51TransactionalProbe) Spec() domain.StewardToolSpec {
+	return domain.StewardToolSpec{
+		Name: "runtime.test.transactional_failure", Version: "1.0.0", Description: "R5.1 transaction test probe",
+		InputSchema:  map[string]any{"type": "object", "required": []string{"value"}, "properties": map[string]any{"value": map[string]any{"type": "string"}}},
+		OutputSchema: map[string]any{"type": "object"}, PermissionLevel: steward.PermissionA0, RiskLevel: "low",
+		SideEffect: steward.RuntimeSideEffectNone, ApprovalMode: steward.RuntimeApprovalNever,
+		IdempotencyMode: steward.RuntimeIdempotencyKeyed, DefaultTimeoutSec: 10,
+	}
+}
+
+func (t *runtimeV51TransactionalProbe) Execute(_ context.Context, input map[string]any) (steward.RuntimeToolResult, error) {
+	t.value, _ = input["value"].(string)
+	return steward.RuntimeToolResult{Output: map[string]any{"observed": t.value}}, fmt.Errorf("simulated access denied after a partial mutation")
+}
+
+func (t *runtimeV51TransactionalProbe) Verify(context.Context, map[string]any, map[string]any, map[string]any) error {
+	return nil
+}
+
+func (t *runtimeV51TransactionalProbe) ChangeTransactionEnabled() bool { return true }
+
+func (t *runtimeV51TransactionalProbe) SnapshotChange(context.Context, map[string]any) (steward.RuntimeChangeSnapshot, error) {
+	return steward.RuntimeChangeSnapshot{Summary: "probe pre-state", State: map[string]any{"value": t.value}}, nil
+}
+
+func (t *runtimeV51TransactionalProbe) VerifyChange(context.Context, map[string]any, steward.RuntimeChangeSnapshot, steward.RuntimeToolResult) error {
+	return nil
+}
+
+func (t *runtimeV51TransactionalProbe) RollbackChange(_ context.Context, _ map[string]any, snapshot steward.RuntimeChangeSnapshot, _ steward.RuntimeToolResult, _ error) (steward.RuntimeToolResult, error) {
+	t.value, _ = snapshot.State["value"].(string)
+	t.rollbackCalls++
+	return steward.RuntimeToolResult{Output: map[string]any{"rolled_back": true, "value": t.value}}, nil
 }
 
 type runtimeV2WaitTool struct {

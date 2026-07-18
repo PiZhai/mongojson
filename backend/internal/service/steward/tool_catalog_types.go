@@ -60,6 +60,16 @@ type ToolPackageTest struct {
 	Expected map[string]any `json:"expected,omitempty"`
 }
 
+// ToolTransactionContract makes generated mutating tools participate in the
+// same durable prepare/verify/rollback protocol as built-in Windows tools.
+// Each entrypoint uses steward-tool/1 and returns its state in output.
+type ToolTransactionContract struct {
+	Mode                   string `json:"mode,omitempty"`
+	SnapshotEntrypoint     string `json:"snapshot_entrypoint,omitempty"`
+	VerificationEntrypoint string `json:"verification_entrypoint,omitempty"`
+	RollbackEntrypoint     string `json:"rollback_entrypoint,omitempty"`
+}
+
 type ToolCompositeStep struct {
 	Key       string         `json:"key"`
 	ToolName  string         `json:"tool_name"`
@@ -68,27 +78,28 @@ type ToolCompositeStep struct {
 }
 
 type ToolPackageManifest struct {
-	Name               string                 `json:"name"`
-	Version            string                 `json:"version"`
-	Title              string                 `json:"title"`
-	Description        string                 `json:"description"`
-	Tags               []string               `json:"tags,omitempty"`
-	Origin             string                 `json:"origin,omitempty"`
-	Runtime            string                 `json:"runtime"`
-	ExecutionTarget    string                 `json:"execution_target"`
-	Entrypoint         string                 `json:"entrypoint,omitempty"`
-	InputSchema        map[string]any         `json:"input_schema"`
-	OutputSchema       map[string]any         `json:"output_schema"`
-	Files              []ToolPackageFile      `json:"files,omitempty"`
-	Dependencies       []ToolDependency       `json:"dependencies,omitempty"`
-	DependencyStrategy ToolDependencyStrategy `json:"dependency_strategy"`
-	Tests              []ToolPackageTest      `json:"tests,omitempty"`
-	CompositeSteps     []ToolCompositeStep    `json:"composite_steps,omitempty"`
-	DefaultTimeoutSec  int                    `json:"default_timeout_seconds,omitempty"`
-	OutputLimitBytes   int                    `json:"output_limit_bytes,omitempty"`
-	SupportsCancel     bool                   `json:"supports_cancel"`
-	IdempotencyMode    string                 `json:"idempotency_mode,omitempty"`
-	SideEffect         string                 `json:"side_effect,omitempty"`
+	Name               string                  `json:"name"`
+	Version            string                  `json:"version"`
+	Title              string                  `json:"title"`
+	Description        string                  `json:"description"`
+	Tags               []string                `json:"tags,omitempty"`
+	Origin             string                  `json:"origin,omitempty"`
+	Runtime            string                  `json:"runtime"`
+	ExecutionTarget    string                  `json:"execution_target"`
+	Entrypoint         string                  `json:"entrypoint,omitempty"`
+	InputSchema        map[string]any          `json:"input_schema"`
+	OutputSchema       map[string]any          `json:"output_schema"`
+	Files              []ToolPackageFile       `json:"files,omitempty"`
+	Dependencies       []ToolDependency        `json:"dependencies,omitempty"`
+	DependencyStrategy ToolDependencyStrategy  `json:"dependency_strategy"`
+	Tests              []ToolPackageTest       `json:"tests,omitempty"`
+	CompositeSteps     []ToolCompositeStep     `json:"composite_steps,omitempty"`
+	DefaultTimeoutSec  int                     `json:"default_timeout_seconds,omitempty"`
+	OutputLimitBytes   int                     `json:"output_limit_bytes,omitempty"`
+	SupportsCancel     bool                    `json:"supports_cancel"`
+	IdempotencyMode    string                  `json:"idempotency_mode,omitempty"`
+	SideEffect         string                  `json:"side_effect,omitempty"`
+	Transaction        ToolTransactionContract `json:"transaction,omitempty"`
 }
 
 type CreateToolPackageInput struct {
@@ -115,6 +126,10 @@ func normalizeToolPackageManifest(manifest ToolPackageManifest) (ToolPackageMani
 	manifest.Origin = defaultString(strings.ToLower(strings.TrimSpace(manifest.Origin)), "model")
 	manifest.IdempotencyMode = defaultString(strings.ToLower(strings.TrimSpace(manifest.IdempotencyMode)), RuntimeIdempotencyNonIdempotent)
 	manifest.SideEffect = defaultString(strings.ToLower(strings.TrimSpace(manifest.SideEffect)), RuntimeSideEffectProcess)
+	manifest.Transaction.Mode = defaultString(strings.ToLower(strings.TrimSpace(manifest.Transaction.Mode)), "none")
+	manifest.Transaction.SnapshotEntrypoint = filepath.ToSlash(strings.TrimSpace(manifest.Transaction.SnapshotEntrypoint))
+	manifest.Transaction.VerificationEntrypoint = filepath.ToSlash(strings.TrimSpace(manifest.Transaction.VerificationEntrypoint))
+	manifest.Transaction.RollbackEntrypoint = filepath.ToSlash(strings.TrimSpace(manifest.Transaction.RollbackEntrypoint))
 	if manifest.DefaultTimeoutSec <= 0 {
 		manifest.DefaultTimeoutSec = 60
 	}
@@ -182,6 +197,27 @@ func normalizeToolPackageManifest(manifest ToolPackageManifest) (ToolPackageMani
 	}
 	if manifest.Runtime == toolRuntimeComposite && len(manifest.CompositeSteps) == 0 {
 		return manifest, fmt.Errorf("composite tools require composite_steps")
+	}
+	switch manifest.Transaction.Mode {
+	case "none":
+	case "automatic":
+		if manifest.Runtime == toolRuntimeBuiltin || manifest.Runtime == toolRuntimeComposite {
+			return manifest, fmt.Errorf("automatic transaction entrypoints require a script runtime")
+		}
+		for label, entrypoint := range map[string]string{
+			"snapshot_entrypoint":     manifest.Transaction.SnapshotEntrypoint,
+			"verification_entrypoint": manifest.Transaction.VerificationEntrypoint,
+			"rollback_entrypoint":     manifest.Transaction.RollbackEntrypoint,
+		} {
+			if entrypoint == "" || !fileNames[strings.ToLower(entrypoint)] {
+				return manifest, fmt.Errorf("transaction.%s must reference one package file", label)
+			}
+		}
+		if manifest.SideEffect == RuntimeSideEffectNone {
+			return manifest, fmt.Errorf("automatic transactions require a mutating side_effect")
+		}
+	default:
+		return manifest, fmt.Errorf("unsupported transaction mode %q", manifest.Transaction.Mode)
 	}
 	for index := range manifest.Dependencies {
 		dependency := &manifest.Dependencies[index]

@@ -31,7 +31,7 @@ func (t *runtimeToolsmithTool) Spec() domain.StewardToolSpec {
 		"tool.delete":   "Retire a generated tool while retaining its catalog and execution evidence.",
 	}[t.action]
 	if t.action == "tool.create" || t.action == "tool.update" {
-		description += " Follow Steward Tool Authoring Standard 1.0: search and compose first; prefer native APIs, standard libraries, then package-local locked dependencies; global installation is allowed only when it is the best governed choice and rejected isolated alternatives are recorded. Python isolated packages require a hash-locked requirements.lock; Node isolated packages require package-lock.json and npm ci."
+		description += " Follow Steward Tool Authoring Standard 1.1: search and compose first; prefer native APIs, standard libraries, then package-local locked dependencies; global installation is allowed only when it is the best governed choice and rejected isolated alternatives are recorded. Python isolated packages require a hash-locked requirements.lock; Node isolated packages require package-lock.json and npm ci. Mutating script tools should declare transaction.mode=automatic with package-local snapshot, verification, and rollback entrypoints; verification must reread real system state and rollback must preserve unrelated concurrent changes."
 	}
 	properties := map[string]any{}
 	required := []string{}
@@ -43,7 +43,7 @@ func (t *runtimeToolsmithTool) Spec() domain.StewardToolSpec {
 		required = []string{"name"}
 	case "tool.create", "tool.update":
 		properties = map[string]any{
-			"manifest":    map[string]any{"type": "object", "description": "ToolPackageManifest including source files, exact dependencies, dependency strategy, schemas, and executable tests."},
+			"manifest":    map[string]any{"type": "object", "description": "ToolPackageManifest including source files, exact dependencies, dependency strategy, schemas, executable tests, and for mutating scripts an automatic transaction contract with snapshot/verification/rollback entrypoints."},
 			"auto_enable": map[string]any{"type": "boolean"},
 		}
 		required = []string{"manifest"}

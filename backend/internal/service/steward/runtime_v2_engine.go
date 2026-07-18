@@ -202,6 +202,14 @@ func (s *Service) executeAgentRun(ctx context.Context, runID string) error {
 			ApprovalProof: approvalProof,
 			RequestedBy:   run.RequestedBy, DataLevel: run.DataLevel, ControlGeneration: invocation.ControlGeneration,
 		})
+		toolCtx = withRuntimeInvocationID(toolCtx, invocation.ID)
+		transactionID, changeSnapshot, transactionErr := s.beginRuntimeChangeTransaction(toolCtx, *ready, invocation, tool)
+		if transactionErr != nil {
+			cancel()
+			diagnosis := diagnoseRuntimeFailure(transactionErr)
+			result := attachRuntimeFailureDiagnostics(RuntimeToolResult{}, diagnosis, transactionID, "not_started")
+			return s.failAgentRunStepWithResult(ctx, *ready, invocation, result, transactionErr)
+		}
 		result, executeErr := executeRuntimeTool(toolCtx, tool, ready.Arguments)
 		if executeErr == nil && toolCtx.Err() != nil {
 			executeErr = toolCtx.Err()
@@ -220,7 +228,12 @@ func (s *Service) executeAgentRun(ctx context.Context, runID string) error {
 				return cancelErr
 			}
 			if cancelRequested {
+				result, _, _ = s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, executeErr)
 				return s.cancelAgentRunStep(ctx, *ready, invocation, "tool invocation cancelled by user request")
+			}
+			result, rollbackStatus, rollbackErr := s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, executeErr)
+			if rollbackErr != nil {
+				executeErr = errors.Join(executeErr, fmt.Errorf("automatic rollback %s: %w", rollbackStatus, rollbackErr))
 			}
 			return s.failAgentRunStepWithResult(ctx, *ready, invocation, result, executeErr)
 		}
@@ -229,6 +242,7 @@ func (s *Service) executeAgentRun(ctx context.Context, runID string) error {
 			return err
 		}
 		if cancelRequested {
+			result, _, _ = s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, errors.New("cancelled before verification"))
 			return s.cancelAgentRunStep(ctx, *ready, invocation, "tool invocation cancelled before verification")
 		}
 		if err := s.markAgentRunStepVerifying(ctx, *ready); err != nil {
@@ -236,6 +250,11 @@ func (s *Service) executeAgentRun(ctx context.Context, runID string) error {
 		}
 		verifyCtx, verifyCancel := s.runtimeToolContext(ctx, ready.RunID, invocation.ID, invocation.ControlGeneration, time.Duration(ready.TimeoutSeconds)*time.Second)
 		verifyErr := verifyRuntimeTool(verifyCtx, tool, ready.Arguments, result.Output, ready.ExpectedOutput)
+		if verifyErr == nil && transactionID != "" {
+			if transactional, ok := tool.(RuntimeTransactionalTool); ok && transactional.ChangeTransactionEnabled() {
+				verifyErr = transactional.VerifyChange(verifyCtx, ready.Arguments, changeSnapshot, result)
+			}
+		}
 		if verifyErr == nil && verifyCtx.Err() != nil {
 			verifyErr = verifyCtx.Err()
 		}
@@ -246,11 +265,21 @@ func (s *Service) executeAgentRun(ctx context.Context, runID string) error {
 		}
 		if paused {
 			if verifyErr != nil {
+				result, _, _ = s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, verifyErr)
 				return s.pauseAgentRunStepForGlobalControl(ctx, *ready, invocation, true)
 			}
 			// The postcondition is already proven, so persist the successful
 			// step before honoring the pause. This avoids replaying completed
 			// non-idempotent work after execution resumes.
+			result = attachRuntimeCommitMetadata(result, transactionID)
+			if err := s.commitRuntimeChangeTransaction(ctx, transactionID, result); err != nil {
+				var uncertain runtimeChangeCommitUncertainError
+				if errors.As(err, &uncertain) {
+					return err
+				}
+				result, _, _ = s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, err)
+				return s.failAgentRunStepWithResult(ctx, *ready, invocation, result, err)
+			}
 			if err := s.finishAgentRunStepSucceeded(ctx, *ready, invocation, result); err != nil {
 				return err
 			}
@@ -262,16 +291,32 @@ func (s *Service) executeAgentRun(ctx context.Context, runID string) error {
 				return cancelErr
 			}
 			if cancelRequested {
+				result, _, _ = s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, verifyErr)
 				return s.cancelAgentRunStep(ctx, *ready, invocation, "verification cancelled by user request")
 			}
-			return s.failAgentRunStepWithResult(ctx, *ready, invocation, result, fmt.Errorf("postcondition failed: %w", verifyErr))
+			postconditionErr := fmt.Errorf("postcondition failed: %w", verifyErr)
+			result, rollbackStatus, rollbackErr := s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, postconditionErr)
+			if rollbackErr != nil {
+				postconditionErr = errors.Join(postconditionErr, fmt.Errorf("automatic rollback %s: %w", rollbackStatus, rollbackErr))
+			}
+			return s.failAgentRunStepWithResult(ctx, *ready, invocation, result, postconditionErr)
 		}
 		cancelRequested, err = s.agentRunCancellationRequested(ctx, ready.RunID)
 		if err != nil {
 			return err
 		}
 		if cancelRequested {
+			result, _, _ = s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, errors.New("cancelled before commit"))
 			return s.cancelAgentRunStep(ctx, *ready, invocation, "tool invocation cancelled before commit")
+		}
+		result = attachRuntimeCommitMetadata(result, transactionID)
+		if err := s.commitRuntimeChangeTransaction(ctx, transactionID, result); err != nil {
+			var uncertain runtimeChangeCommitUncertainError
+			if errors.As(err, &uncertain) {
+				return err
+			}
+			result, _, _ = s.rollbackRuntimeChangeTransaction(ctx, transactionID, tool, ready.Arguments, changeSnapshot, result, err)
+			return s.failAgentRunStepWithResult(ctx, *ready, invocation, result, err)
 		}
 		if err := s.finishAgentRunStepSucceeded(ctx, *ready, invocation, result); err != nil {
 			return err
@@ -326,6 +371,13 @@ func (s *Service) runtimeToolContext(parent context.Context, runID, invocationID
 						where id = $1 and status = 'running' and lease_owner = $3
 					`, invocationID, expiresAt, s.runtimeWorkerID)
 					if heartbeatErr != nil || commandTag.RowsAffected() == 0 {
+						guardCancel()
+						return
+					}
+					if _, transactionHeartbeatErr := s.db.Pool.Exec(ctx, `
+						update steward_system_change_transactions set lease_expires_at=$2,updated_at=now()
+						where invocation_id=$1 and status='prepared' and lease_owner=$3
+					`, invocationID, expiresAt, s.runtimeWorkerID); transactionHeartbeatErr != nil {
 						guardCancel()
 						return
 					}
