@@ -2,6 +2,7 @@ package steward
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,31 @@ func TestWindowsFoundationPowerShellParses(t *testing.T) {
 		"$errors=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('"+escapePowerShellTestPath(path)+"',[ref]$null,[ref]$errors); if($errors.Count){$errors|ForEach-Object{$_.ToString()}; exit 1}")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("PowerShell adapter does not parse: %v\n%s", err, output)
+	}
+}
+
+func TestWindowsFoundationRunsOnWindowsPowerShell51(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PowerShell adapter is Windows-specific")
+	}
+	path := filepath.Join(t.TempDir(), "tool.ps1")
+	if err := os.WriteFile(path, []byte(windowsFoundationPowerShell), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "probe.txt")
+	if err := os.WriteFile(target, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	command := exec.Command(powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+	command.Env = append(os.Environ(), "STEWARD_TOOL_NAME=fs.exists")
+	command.Stdin = strings.NewReader(`{"protocol":"steward-tool/1","invocation_id":"test","arguments":{"path":` + fmt.Sprintf("%q", target) + `},"context":{}}` + "\n")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Windows PowerShell 5.1 execution failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), `"exists":true`) {
+		t.Fatalf("unexpected Windows PowerShell 5.1 output: %s", output)
 	}
 }
 
