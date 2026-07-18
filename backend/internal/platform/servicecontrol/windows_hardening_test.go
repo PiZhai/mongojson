@@ -2,7 +2,11 @@
 
 package servicecontrol
 
-import "testing"
+import (
+	"testing"
+
+	"golang.org/x/sys/windows"
+)
 
 func TestSplitPrivateEnvironmentKeepsBrokerKeysOutOfRegistry(t *testing.T) {
 	public, private := splitPrivateEnvironment(map[string]string{
@@ -21,6 +25,19 @@ func TestSplitPrivateEnvironmentKeepsBrokerKeysOutOfRegistry(t *testing.T) {
 		if private[key] == "" {
 			t.Fatalf("%s missing from private service environment", key)
 		}
+	}
+}
+
+func TestWindowsServiceConfigSupportsRestrictedLocalService(t *testing.T) {
+	config := windowsServiceConfig(InstallOptions{
+		DisplayName: "Steward", Description: "test",
+		WindowsServiceAccount: "localservice", WindowsServiceSIDType: "restricted",
+	})
+	if config.ServiceStartName != `NT AUTHORITY\LocalService` {
+		t.Fatalf("service account = %q", config.ServiceStartName)
+	}
+	if config.SidType != windows.SERVICE_SID_TYPE_RESTRICTED {
+		t.Fatalf("SID type = %d, want restricted", config.SidType)
 	}
 }
 

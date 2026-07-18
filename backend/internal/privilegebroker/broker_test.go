@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +33,14 @@ func TestPrivilegeBrokerSlowHelper(t *testing.T) {
 	time.Sleep(30 * time.Second)
 }
 
+func TestPrivilegeBrokerToolHelper(t *testing.T) {
+	if !argumentPresent("broker-tool") {
+		return
+	}
+	payload, _ := io.ReadAll(os.Stdin)
+	fmt.Printf("tool-input:%s", strings.TrimSpace(string(payload)))
+}
+
 func TestBrokerIssuesSingleUseBoundGrantAndSignedReceipt(t *testing.T) {
 	fixture := newBrokerFixture(t)
 	server := httptest.NewServer(fixture.server)
@@ -47,7 +56,7 @@ func TestBrokerIssuesSingleUseBoundGrantAndSignedReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read signed broker status: %v", err)
 	}
-	if status.Stopped || status.Generation != 0 || len(status.Capabilities) != 2 {
+	if status.Stopped || status.Generation != 0 || len(status.Capabilities) != 3 {
 		t.Fatalf("unexpected initial broker status: %+v", status)
 	}
 	authorization := fixture.authorization(t, "tool:test", "runtime:run-1", strings.Repeat("a", 64), 0)
@@ -76,6 +85,32 @@ func TestBrokerIssuesSingleUseBoundGrantAndSignedReceipt(t *testing.T) {
 	}
 	if records := readAuditRecords(t, fixture.auditPath); len(records) < 4 || records[len(records)-1].PreviousHash == "" {
 		t.Fatalf("signed audit chain is incomplete: %+v", records)
+	}
+}
+
+func TestBrokerExecutesSchemaBoundToolInputAndRejectsReplay(t *testing.T) {
+	fixture := newBrokerFixture(t)
+	server := httptest.NewServer(fixture.server)
+	defer server.Close()
+	client, err := NewClient(server.URL, fixture.clientKey, fixture.publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization := ToolAuthorization{Capability: "tool:dynamic", Subject: "system-tool:test", InvocationID: "invocation-1", Arguments: map[string]any{"name": "Spooler", "force": true}, ControlGeneration: 0}
+	result, err := client.ExecuteTool(context.Background(), authorization)
+	if err != nil {
+		t.Fatalf("execute parameterized tool: %v", err)
+	}
+	if !strings.Contains(result.Stdout, "Spooler") || result.Receipt.Payload.InputSHA256 == "" {
+		t.Fatalf("input was not bound into receipt: %+v", result)
+	}
+	if _, err := client.ExecuteTool(context.Background(), authorization); err == nil {
+		t.Fatal("replayed tool invocation was accepted")
+	}
+	authorization.InvocationID = "invocation-2"
+	authorization.Arguments["unexpected"] = "blocked"
+	if _, err := client.ExecuteTool(context.Background(), authorization); err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("unexpected field was not rejected: %v", err)
 	}
 }
 
@@ -422,7 +457,7 @@ func TestPolicyRejectsCredentialAuthorityAndBrokerEnvironmentSecrets(t *testing.
 		Name: "tool:credential", PermissionLevel: "A8", RiskLevel: "critical",
 		Executable: executable, ExecutableSHA256: digest, Enabled: true,
 	}}})
-	if err == nil || !strings.Contains(err.Error(), "A8-A9") {
+	if err == nil || !strings.Contains(err.Error(), "legacy permission_level") {
 		t.Fatalf("A8 capability was accepted: %v", err)
 	}
 	t.Setenv("STEWARD_BROKER_SIGNING_PRIVATE_KEY", "must-not-leak")
@@ -453,6 +488,7 @@ func newBrokerFixture(t *testing.T) brokerFixture {
 	policy := Policy{Version: 2, ApprovalAuthorities: []ApprovalAuthority{{Name: "test-authority", PublicKey: authority.PublicKey, Enabled: true}}, Capabilities: []Capability{
 		{Name: "tool:test", Description: "test helper", PermissionLevel: "A4", RiskLevel: "high", Executable: executable, ExecutableSHA256: digest, Arguments: []string{"-test.run=TestPrivilegeBrokerHelper", "--", "broker-child"}, WorkingDirectory: filepath.Dir(executable), TimeoutSeconds: 10, MaxOutputBytes: 4096, Enabled: true},
 		{Name: "tool:slow", Description: "slow helper", PermissionLevel: "A5", RiskLevel: "critical", Executable: executable, ExecutableSHA256: digest, Arguments: []string{"-test.run=TestPrivilegeBrokerSlowHelper", "--", "broker-slow"}, WorkingDirectory: filepath.Dir(executable), TimeoutSeconds: 30, MaxOutputBytes: 4096, Enabled: true},
+		{Name: "tool:dynamic", Description: "dynamic helper", PermissionLevel: "A7", RiskLevel: "critical", Executable: executable, ExecutableSHA256: digest, Arguments: []string{"-test.run=TestPrivilegeBrokerToolHelper", "--", "broker-tool"}, WorkingDirectory: filepath.Dir(executable), TimeoutSeconds: 10, MaxOutputBytes: 8192, Enabled: true, InputSchema: map[string]any{"type": "object", "required": []string{"name"}, "additionalProperties": false, "properties": map[string]any{"name": map[string]any{"type": "string"}, "force": map[string]any{"type": "boolean"}}}},
 	}}
 	policyPath := filepath.Join(dir, "policy.json")
 	payload, _ := json.Marshal(policy)

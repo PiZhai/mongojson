@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -268,6 +269,48 @@ func TestServiceInstallR3ValidatesAndRedactsBrokerConfiguration(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "loopback") {
 		t.Fatalf("non-loopback R3 broker was accepted: %v", err)
+	}
+}
+
+func TestServiceInstallWindowsProductionIsolationPlan(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows production service")
+	}
+	root := t.TempDir()
+	output, err := captureStdoutText(t, func() error {
+		return serviceInstall([]string{
+			"--dry-run", "--name", "MongojsonStewardR51Test", "--workdir", root,
+			"--storage-dir", filepath.Join(root, "data"), "--log-dir", filepath.Join(root, "logs"),
+			"--database-url", "postgres://private@127.0.0.1:5432/private",
+			"--windows-hardened", "--windows-install-dir", filepath.Join(root, "install"),
+			"--windows-private-environment-file", filepath.Join(root, "config", "service-secrets.json"),
+			"--windows-service-account", "localservice", "--windows-service-sid-type", "restricted",
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output, "postgres://private") {
+		t.Fatalf("private database URL leaked from production install plan: %s", output)
+	}
+	var payload struct {
+		Service struct {
+			Commands    []string          `json:"commands"`
+			Environment map[string]string `json:"environment"`
+		} `json:"service"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatal(err)
+	}
+	commands := strings.Join(payload.Service.Commands, "\n")
+	if !strings.Contains(commands, "service account localservice") || !strings.Contains(commands, "restricted per-service SID") {
+		t.Fatalf("production identity plan is incomplete: %s", commands)
+	}
+	if _, leaked := payload.Service.Environment["DATABASE_URL"]; leaked {
+		t.Fatalf("DATABASE_URL must be stored only in the private environment file: %#v", payload.Service.Environment)
+	}
+	if payload.Service.Environment["STEWARD_RESTRICTED_SERVICE"] != "true" {
+		t.Fatalf("restricted runtime marker is missing: %#v", payload.Service.Environment)
 	}
 }
 

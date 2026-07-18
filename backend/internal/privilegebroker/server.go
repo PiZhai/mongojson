@@ -194,6 +194,10 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		s.handleAuthenticated(response, request, s.handleExecute)
 		return
 	}
+	if request.Method == http.MethodPost && request.URL.Path == "/v1/tool-execute" {
+		s.handleAuthenticated(response, request, s.handleToolExecute)
+		return
+	}
 	if request.Method == http.MethodPost && request.URL.Path == "/v1/delegations" {
 		s.handleAuthenticated(response, request, s.handleDelegation)
 		return
@@ -418,6 +422,64 @@ func (s *Server) handleExecute(response http.ResponseWriter, request *http.Reque
 	writeBrokerJSON(response, http.StatusOK, result)
 }
 
+func (s *Server) handleToolExecute(response http.ResponseWriter, request *http.Request, body []byte) {
+	var input ToolExecuteRequest
+	if err := decodeStrictJSON(body, &input); err != nil {
+		writeBrokerError(response, http.StatusBadRequest, "invalid_tool_execute", err.Error())
+		return
+	}
+	if err := normalizeToolExecuteRequest(&input); err != nil {
+		writeBrokerError(response, http.StatusBadRequest, "invalid_tool_execute", err.Error())
+		return
+	}
+	capability, found := s.policy.Capability(input.Capability)
+	if !found {
+		s.auditDenied("tool.execute.denied", input.Subject, input.Capability, input.ControlGeneration, "capability_not_found")
+		writeBrokerError(response, http.StatusForbidden, "capability_denied", "broker capability is missing or disabled")
+		return
+	}
+	if capability.InputSchema == nil {
+		writeBrokerError(response, http.StatusForbidden, "fixed_capability", "capability does not accept tool input")
+		return
+	}
+	if err := validateBrokerInput(capability.InputSchema, input.Arguments); err != nil {
+		s.auditDenied("tool.execute.denied", input.Subject, input.Capability, input.ControlGeneration, "invalid_tool_input")
+		writeBrokerError(response, http.StatusBadRequest, "invalid_tool_input", err.Error())
+		return
+	}
+	state := s.currentState()
+	if state.Stopped {
+		writeBrokerError(response, http.StatusLocked, "emergency_stopped", "privilege broker emergency stop is active")
+		return
+	}
+	if state.Generation != input.ControlGeneration {
+		writeBrokerError(response, http.StatusConflict, "generation_mismatch", "control generation does not match privilege broker state")
+		return
+	}
+	now := s.now()
+	claims := CapabilityTokenClaims{
+		TokenID: input.InvocationID, BrokerInstanceID: s.instanceID,
+		Capability: capability.Name, CapabilityDigest: capability.digest,
+		Subject: input.Subject, ControlGeneration: input.ControlGeneration,
+		IssuedAt: now, ExpiresAt: now.Add(time.Duration(capability.TimeoutSeconds+30) * time.Second),
+		InputSHA256: input.InputSHA256,
+	}
+	result, executeErr := s.executeCapabilityWithInput(request.Context(), capability, claims, nil, input.Arguments)
+	if executeErr != nil && result.Receipt.Payload.ExecutionID == "" {
+		code := brokerErrorCode(executeErr)
+		status := http.StatusInternalServerError
+		if errors.Is(executeErr, errTokenReplay) || errors.Is(executeErr, errGenerationMismatch) || errors.Is(executeErr, errExecutableChanged) {
+			status = http.StatusConflict
+		} else if errors.Is(executeErr, errEmergencyStopped) {
+			status = http.StatusLocked
+		}
+		s.auditDenied("tool.execute.denied", claims.Subject, claims.Capability, claims.ControlGeneration, code)
+		writeBrokerError(response, status, code, executeErr.Error())
+		return
+	}
+	writeBrokerJSON(response, http.StatusOK, result)
+}
+
 var (
 	errTokenReplay        = errors.New("capability token replayed")
 	errGenerationMismatch = errors.New("broker control generation mismatch")
@@ -470,10 +532,14 @@ func (s *Server) consumeCapabilityToken(tokenID string, expiresAt time.Time) boo
 }
 
 func (s *Server) executeCapability(parent context.Context, capability Capability, claims CapabilityTokenClaims) (ExecuteResponse, error) {
-	return s.executeCapabilityWithCredentialRefs(parent, capability, claims, nil)
+	return s.executeCapabilityWithInput(parent, capability, claims, nil, nil)
 }
 
 func (s *Server) executeCapabilityWithCredentialRefs(parent context.Context, capability Capability, claims CapabilityTokenClaims, credentialRefs []string) (ExecuteResponse, error) {
+	return s.executeCapabilityWithInput(parent, capability, claims, credentialRefs, nil)
+}
+
+func (s *Server) executeCapabilityWithInput(parent context.Context, capability Capability, claims CapabilityTokenClaims, credentialRefs []string, arguments map[string]any) (ExecuteResponse, error) {
 	actualDigest, err := hashFile(capability.Executable)
 	if err != nil || actualDigest != capability.ExecutableSHA256 {
 		return ExecuteResponse{}, errExecutableChanged
@@ -497,14 +563,20 @@ func (s *Server) executeCapabilityWithCredentialRefs(parent context.Context, cap
 	command.Env = brokerEnvironment()
 	command.Stdout = stdout
 	command.Stderr = stderr
-	if len(credentialRefs) > 0 {
+	if len(credentialRefs) > 0 || arguments != nil {
 		credentials, err := s.readCredentials(credentialRefs)
 		if err != nil {
 			return ExecuteResponse{}, err
 		}
 		credentialPayload, err := json.Marshal(struct {
-			Credentials map[string]string `json:"credentials"`
-		}{Credentials: credentials})
+			Protocol     string            `json:"protocol"`
+			InvocationID string            `json:"invocation_id"`
+			Capability   string            `json:"capability"`
+			Arguments    map[string]any    `json:"arguments"`
+			InputSHA256  string            `json:"input_sha256"`
+			Credentials  map[string]string `json:"credentials,omitempty"`
+		}{Protocol: "steward-system-tool/1", InvocationID: claims.TokenID, Capability: capability.Name,
+			Arguments: arguments, InputSHA256: claims.InputSHA256, Credentials: credentials})
 		if err != nil {
 			return ExecuteResponse{}, err
 		}
@@ -515,16 +587,13 @@ func (s *Server) executeCapabilityWithCredentialRefs(parent context.Context, cap
 		Type: "execute.started", Subject: claims.Subject, Capability: capability.Name,
 		Generation: claims.ControlGeneration, Outcome: "started",
 		Details: map[string]any{"token_id": claims.TokenID, "plan_hash": claims.PlanHash, "approval_ref": claims.ApprovalRef,
-			"approval_proof_id": claims.ApprovalProofID, "approval_key_id": claims.ApprovalKeyID},
+			"approval_proof_id": claims.ApprovalProofID, "approval_key_id": claims.ApprovalKeyID, "input_sha256": claims.InputSHA256},
 	}); err != nil {
 		return ExecuteResponse{}, fmt.Errorf("persist execute.started audit before spawn: %w", err)
 	}
-	runErr := runBrokerCommand(ctx, command)
+	runResult, runErr := runBrokerCommand(ctx, command)
 	finishedAt := s.now()
-	exitCode := -1
-	if command.ProcessState != nil {
-		exitCode = command.ProcessState.ExitCode()
-	}
+	exitCode := runResult.exitCode
 	errorCode := ""
 	if runErr != nil {
 		switch {
@@ -549,6 +618,7 @@ func (s *Server) executeCapabilityWithCredentialRefs(parent context.Context, cap
 		StartedAt: startedAt, FinishedAt: finishedAt, ErrorCode: errorCode,
 		DelegationID: claims.DelegationID, OriginBrokerKeyID: claims.OriginBrokerKeyID,
 		CredentialRefs: append([]string(nil), claims.CredentialRefs...),
+		InputSHA256:    claims.InputSHA256,
 	}
 	outcome := "succeeded"
 	if runErr != nil {
@@ -562,6 +632,7 @@ func (s *Server) executeCapabilityWithCredentialRefs(parent context.Context, cap
 			"approval_proof_id": claims.ApprovalProofID, "approval_key_id": claims.ApprovalKeyID,
 			"stdout_sha256": receiptPayload.StdoutSHA256, "stderr_sha256": receiptPayload.StderrSHA256,
 			"stdout_bytes": stdout.total, "stderr_bytes": stderr.total,
+			"input_sha256": claims.InputSHA256,
 		},
 	})
 	receiptPayload.AuditPersisted = auditErr == nil
@@ -788,6 +859,39 @@ func validateExecuteRequest(input ExecuteRequest) error {
 	}
 	if !hexDigestPattern.MatchString(input.ApprovalRef) {
 		return fmt.Errorf("approval_ref is invalid")
+	}
+	if input.ControlGeneration < 0 {
+		return fmt.Errorf("control_generation must not be negative")
+	}
+	return nil
+}
+
+func normalizeToolExecuteRequest(input *ToolExecuteRequest) error {
+	if input == nil {
+		return fmt.Errorf("tool execution request is required")
+	}
+	input.Capability = strings.ToLower(strings.TrimSpace(input.Capability))
+	input.Subject = strings.TrimSpace(input.Subject)
+	input.InvocationID = strings.TrimSpace(input.InvocationID)
+	input.InputSHA256 = strings.ToLower(strings.TrimSpace(input.InputSHA256))
+	if !capabilityNamePattern.MatchString(input.Capability) {
+		return fmt.Errorf("capability is invalid")
+	}
+	if input.Subject == "" || len([]rune(input.Subject)) > 200 {
+		return fmt.Errorf("subject is required and must not exceed 200 characters")
+	}
+	if input.InvocationID == "" || len(input.InvocationID) > 200 {
+		return fmt.Errorf("invocation_id is required and must not exceed 200 characters")
+	}
+	if input.Arguments == nil {
+		input.Arguments = map[string]any{}
+	}
+	digest, err := brokerInputDigest(input.Arguments)
+	if err != nil {
+		return fmt.Errorf("hash tool input: %w", err)
+	}
+	if !hexDigestPattern.MatchString(input.InputSHA256) || input.InputSHA256 != digest {
+		return fmt.Errorf("input_sha256 does not match canonical arguments")
 	}
 	if input.ControlGeneration < 0 {
 		return fmt.Errorf("control_generation must not be negative")

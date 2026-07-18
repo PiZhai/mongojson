@@ -108,7 +108,10 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 	}
 	if options.WindowsHardened {
 		result.Files = append(result.Files, options.BinaryPath, options.PrivateEnvironmentFile)
-		result.Commands = append(result.Commands, "configure restricted DACL/owner on broker install and data paths", "configure unrestricted per-service SID")
+		result.Commands = append(result.Commands,
+			"configure protected DACL/owner on service install and data paths",
+			"configure service account "+options.WindowsServiceAccount,
+			"configure "+options.WindowsServiceSIDType+" per-service SID")
 	}
 	if options.DryRun {
 		result.Message = "dry run: Windows service would be created"
@@ -124,12 +127,8 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 		return Result{}, fmt.Errorf("connect service manager: %w", err)
 	}
 	defer manager.Disconnect()
-	service, err := manager.CreateService(options.Name, options.BinaryPath, mgr.Config{
-		DisplayName: options.DisplayName,
-		Description: options.Description,
-		StartType:   mgr.StartAutomatic,
-		SidType:     windows.SERVICE_SID_TYPE_UNRESTRICTED,
-	}, args...)
+	config := windowsServiceConfig(options)
+	service, err := manager.CreateService(options.Name, options.BinaryPath, config, args...)
 	if err != nil {
 		return Result{}, fmt.Errorf("create Windows service: %w", err)
 	}
@@ -149,6 +148,21 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 	}
 	result.Message = "Windows service installed"
 	return result, nil
+}
+
+func windowsServiceConfig(options InstallOptions) mgr.Config {
+	serviceStartName := "LocalSystem"
+	if options.WindowsServiceAccount == "localservice" {
+		serviceStartName = `NT AUTHORITY\LocalService`
+	}
+	sidType := uint32(windows.SERVICE_SID_TYPE_UNRESTRICTED)
+	if options.WindowsServiceSIDType == "restricted" {
+		sidType = windows.SERVICE_SID_TYPE_RESTRICTED
+	}
+	return mgr.Config{
+		DisplayName: options.DisplayName, Description: options.Description,
+		StartType: mgr.StartAutomatic, ServiceStartName: serviceStartName, SidType: sidType,
+	}
 }
 
 // stageHardenedWindowsService places the executable and secrets outside
@@ -180,6 +194,17 @@ func stageHardenedWindowsService(options InstallOptions, source string, env map[
 	}
 	if err := os.MkdirAll(filepath.Dir(options.PrivateEnvironmentFile), 0o700); err != nil {
 		return options, nil, fmt.Errorf("create protected data dir: %w", err)
+	}
+	for path := range options.WindowsPathAccess {
+		if strings.EqualFold(path, options.PrivateEnvironmentFile) || strings.EqualFold(path, options.BinaryPath) {
+			continue
+		}
+		if err := requirePathWithinEither(path, programFiles, programData, "protected service path"); err != nil {
+			return options, nil, err
+		}
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return options, nil, fmt.Errorf("create protected service path %s: %w", path, err)
+		}
 	}
 	if err := rejectWindowsReparsePath(options.InstallDir, programFiles); err != nil {
 		return options, nil, err
@@ -271,16 +296,35 @@ func splitPrivateEnvironment(env map[string]string) (map[string]string, map[stri
 }
 
 func writePrivateFileAtomic(path string, content []byte) error {
-	temp := path + ".new"
-	if err := os.WriteFile(temp, content, 0o600); err != nil {
+	tempFile, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	temp := tempFile.Name()
+	defer os.Remove(temp)
+	if _, err := tempFile.Write(content); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Sync(); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
 		return err
 	}
 	if err := setProtectedWindowsACL(temp, ""); err != nil {
-		_ = os.Remove(temp)
 		return err
 	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
+	from, err := windows.UTF16PtrFromString(temp)
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
 		return err
 	}
 	return setProtectedWindowsACL(path, "")
@@ -292,11 +336,14 @@ func protectWindowsServicePaths(options InstallOptions) error {
 		paths = append(paths, filepath.Dir(options.PrivateEnvironmentFile), options.PrivateEnvironmentFile)
 	}
 	paths = append(paths, options.ProtectedPaths...)
-	return protectNamedWindowsServicePaths(options.Name, paths)
-}
-
-func protectNamedWindowsServicePaths(name string, paths []string) error {
-	_ = name // Service SID exists for SCM isolation but is not granted trust-file access.
+	serviceSID := ""
+	if options.WindowsServiceAccount != "localsystem" || len(options.WindowsPathAccess) > 0 {
+		var err error
+		serviceSID, err = lookupWindowsServiceSID(options.Name)
+		if err != nil {
+			return err
+		}
+	}
 	for _, path := range paths {
 		if strings.TrimSpace(path) == "" {
 			continue
@@ -304,15 +351,61 @@ func protectNamedWindowsServicePaths(name string, paths []string) error {
 		if _, err := os.Stat(path); err != nil {
 			return fmt.Errorf("stat protected path %s: %w", path, err)
 		}
-		// The Broker service runs as LocalSystem and therefore needs no explicit
-		// service-SID ACE on trust-domain files. Omitting that ACE is deliberate:
-		// capability children have LocalSystem marked deny-only and must not gain
-		// key/policy/audit access through the unrestricted service SID.
-		if err := setProtectedWindowsACL(path, ""); err != nil {
+		access := options.WindowsPathAccess[filepath.Clean(path)]
+		if access == "" && serviceSID != "" {
+			access = "read"
+		}
+		if err := setProtectedWindowsACLWithAccess(path, serviceSID, access); err != nil {
 			return fmt.Errorf("protect %s: %w", path, err)
 		}
 	}
 	return nil
+}
+
+func protectNamedWindowsServicePaths(name string, paths []string) error {
+	serviceSID, err := lookupWindowsServiceSID(name)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("stat protected path %s: %w", path, err)
+		}
+		// Broker trust-domain files deliberately omit a LocalSystem ACE. The
+		// Broker service accesses them through its per-service SID; restricted
+		// capability children keep LocalSystem only for OS initialization and have
+		// the Broker service SID disabled.
+		if err := setExclusiveServiceWindowsACL(path, serviceSID); err != nil {
+			return fmt.Errorf("protect %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func setExclusiveServiceWindowsACL(path string, serviceSID string) error {
+	flags := ""
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		flags = "OICI"
+	}
+	sddl := "O:BAG:SYD:P(A;" + flags + ";FA;;;BA)(A;" + flags + ";FA;;;" + serviceSID + ")"
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return err
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		owner, nil, dacl, nil)
 }
 
 func protectServicePathsPlatform(name string, paths []string) error {
@@ -320,9 +413,21 @@ func protectServicePathsPlatform(name string, paths []string) error {
 }
 
 func setProtectedWindowsACL(path string, serviceSID string) error {
-	sddl := "O:BAG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	return setProtectedWindowsACLWithAccess(path, serviceSID, "full")
+}
+
+func setProtectedWindowsACLWithAccess(path string, serviceSID string, access string) error {
+	flags := ""
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		flags = "OICI"
+	}
+	sddl := "O:BAG:SYD:P(A;" + flags + ";FA;;;SY)(A;" + flags + ";FA;;;BA)"
 	if serviceSID != "" {
-		sddl += "(A;OICI;FA;;;" + serviceSID + ")"
+		rights := "FA"
+		if access == "read" {
+			rights = "GRGX"
+		}
+		sddl += "(A;" + flags + ";" + rights + ";;;" + serviceSID + ")"
 	}
 	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
@@ -341,6 +446,14 @@ func setProtectedWindowsACL(path string, serviceSID string) error {
 		owner, nil, dacl, nil)
 }
 
+func lookupWindowsServiceSID(name string) (string, error) {
+	sid, _, _, err := windows.LookupSID("", `NT SERVICE\`+strings.TrimSpace(name))
+	if err != nil {
+		return "", fmt.Errorf("resolve Windows service SID for %s: %w", name, err)
+	}
+	return sid.String(), nil
+}
+
 func requirePathWithin(path, root, label string) error {
 	if strings.TrimSpace(root) == "" {
 		return fmt.Errorf("cannot resolve Windows root for %s", label)
@@ -354,6 +467,16 @@ func requirePathWithin(path, root, label string) error {
 	return nil
 }
 
+func requirePathWithinEither(path, firstRoot, secondRoot, label string) error {
+	if err := requirePathWithin(path, firstRoot, label); err == nil {
+		return nil
+	}
+	if err := requirePathWithin(path, secondRoot, label); err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s must be under %s or %s", label, firstRoot, secondRoot)
+}
+
 func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error) {
 	options, err := NormalizeEnvPatchOptions(input)
 	if err != nil {
@@ -363,9 +486,27 @@ func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
+	privatePath, err := getWindowsServicePrivateEnvironmentFile(options.Name)
+	if err != nil {
+		return Result{}, err
+	}
+	privateCurrent := map[string]string{}
+	if privatePath != "" {
+		privateCurrent, err = ReadPrivateEnvironmentFile(privatePath)
+		if err != nil {
+			return Result{}, err
+		}
+		for key, value := range privateCurrent {
+			current[key] = value
+		}
+	}
 	next, err := buildEnvPatchTarget(current, options)
 	if err != nil {
 		return Result{}, err
+	}
+	publicNext, privateNext := splitPrivateEnvironment(next)
+	if privatePath == "" && len(privateNext) > 0 {
+		return Result{}, fmt.Errorf("service is not configured with --private-environment-file; refusing to store sensitive values in SCM registry")
 	}
 	result := Result{
 		Platform:    runtime.GOOS,
@@ -373,7 +514,7 @@ func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error
 		Scope:       options.Scope,
 		Environment: redactedEnvironment(next),
 		Commands: []string{
-			"registry Environment=" + fmt.Sprintf("%q", redactedEnvList(next)),
+			"registry Environment=" + fmt.Sprintf("%q", redactedEnvList(publicNext)),
 			commandString("sc.exe", "stop", options.Name),
 			commandString("sc.exe", "start", options.Name),
 		},
@@ -387,11 +528,62 @@ func envPatchPlatform(ctx context.Context, input EnvPatchOptions) (Result, error
 		return Result{}, ctx.Err()
 	default:
 	}
-	if err := setWindowsServiceEnv(options.Name, next); err != nil {
+	if privatePath != "" {
+		serviceSID, sidErr := lookupWindowsServiceSID(options.Name)
+		if sidErr != nil {
+			return Result{}, sidErr
+		}
+		encoded, encodeErr := json.Marshal(privateNext)
+		if encodeErr != nil {
+			return Result{}, encodeErr
+		}
+		if err := writePrivateFileAtomic(privatePath, encoded); err != nil {
+			return Result{}, fmt.Errorf("update private service environment: %w", err)
+		}
+		if err := setProtectedWindowsACLWithAccess(privatePath, serviceSID, "read"); err != nil {
+			if previous, rollbackEncodeErr := json.Marshal(privateCurrent); rollbackEncodeErr == nil {
+				_ = writePrivateFileAtomic(privatePath, previous)
+				_ = setProtectedWindowsACLWithAccess(privatePath, serviceSID, "read")
+			}
+			return Result{}, fmt.Errorf("restore private environment ACL; previous private environment was restored: %w", err)
+		}
+	}
+	if err := setWindowsServiceEnv(options.Name, publicNext); err != nil {
+		if privatePath != "" {
+			if encoded, rollbackEncodeErr := json.Marshal(privateCurrent); rollbackEncodeErr == nil {
+				_ = writePrivateFileAtomic(privatePath, encoded)
+				if serviceSID, sidErr := lookupWindowsServiceSID(options.Name); sidErr == nil {
+					_ = setProtectedWindowsACLWithAccess(privatePath, serviceSID, "read")
+				}
+			}
+		}
 		return Result{}, err
 	}
 	result.Message = "Windows service environment updated; restart the service for changes to take effect"
 	return result, nil
+}
+
+func getWindowsServicePrivateEnvironmentFile(name string) (string, error) {
+	service, manager, err := openWindowsService(name)
+	if err != nil {
+		return "", err
+	}
+	defer manager.Disconnect()
+	defer service.Close()
+	config, err := service.Config()
+	if err != nil {
+		return "", fmt.Errorf("read Windows service configuration: %w", err)
+	}
+	args, err := windows.DecomposeCommandLine(config.BinaryPathName)
+	if err != nil {
+		return "", fmt.Errorf("parse Windows service command line: %w", err)
+	}
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == "--private-environment-file" {
+			return filepath.Clean(args[index+1]), nil
+		}
+	}
+	return "", nil
 }
 
 func uninstallPlatform(ctx context.Context, name string, scope string, dryRun bool) (Result, error) {

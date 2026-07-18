@@ -63,6 +63,12 @@ $install = Join-Path $resolvedParent (Split-Path -Leaf $InstallDir)
 if (-not (Test-Path -LiteralPath (Join-Path $source "steward.exe") -PathType Leaf)) {
   throw "source release does not contain steward.exe: $source"
 }
+if (-not (Test-Path -LiteralPath (Join-Path $source "steward-broker.exe") -PathType Leaf)) {
+  throw "source release does not contain steward-broker.exe: $source"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $source "steward-approval.exe") -PathType Leaf)) {
+  throw "source release does not contain steward-approval.exe: $source"
+}
 if (-not (Test-Path -LiteralPath (Join-Path $source "ui\index.html") -PathType Leaf)) {
   throw "source release does not contain ui/index.html: $source"
 }
@@ -110,6 +116,7 @@ try {
     start_mode = $current.StartMode
     account = $current.StartName
     install_dir = $install
+    broker_binary = Join-Path $install "steward-broker.exe"
     backup_dir = $backup
     health_url = $HealthURL
     version = $versionOutput.Trim()

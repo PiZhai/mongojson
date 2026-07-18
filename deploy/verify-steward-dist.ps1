@@ -146,9 +146,13 @@ foreach ($artifact in $manifest.artifacts) {
   $target = [string]$artifact.target
   $relativePath = Normalize-ArtifactPath ([string]$artifact.path)
   $companionRelativePath = Normalize-ArtifactPath ([string]$artifact.companion_path)
+  $brokerRelativePath = Normalize-ArtifactPath ([string]$artifact.broker_path)
+	$approvalRelativePath = Normalize-ArtifactPath ([string]$artifact.approval_path)
+	$systemToolHostRelativePath = Normalize-ArtifactPath ([string]$artifact.system_tool_host_path)
+	$productionInstallerRelativePath = Normalize-ArtifactPath ([string]$artifact.production_installer)
   $expectedHash = ([string]$artifact.sha256).ToLowerInvariant()
-  if ([string]::IsNullOrWhiteSpace($target) -or [string]::IsNullOrWhiteSpace($relativePath) -or [string]::IsNullOrWhiteSpace($companionRelativePath) -or [string]::IsNullOrWhiteSpace($expectedHash)) {
-    throw "Manifest artifact is missing target, path, companion_path, or sha256"
+  if ([string]::IsNullOrWhiteSpace($target) -or [string]::IsNullOrWhiteSpace($relativePath) -or [string]::IsNullOrWhiteSpace($companionRelativePath) -or [string]::IsNullOrWhiteSpace($brokerRelativePath) -or [string]::IsNullOrWhiteSpace($approvalRelativePath) -or [string]::IsNullOrWhiteSpace($systemToolHostRelativePath) -or [string]::IsNullOrWhiteSpace($expectedHash)) {
+	throw "Manifest artifact is missing target, path, companion_path, broker_path, approval_path, system_tool_host_path, or sha256"
   }
   if ($artifactTargets.ContainsKey($target)) {
     throw "Duplicate artifact target in manifest: $target"
@@ -201,6 +205,20 @@ foreach ($artifact in $manifest.artifacts) {
   if (-not $artifactPaths.ContainsKey($companionRelativePath)) {
     throw "Companion binary $companionRelativePath is missing from target file records"
   }
+  if (-not $artifactPaths.ContainsKey($brokerRelativePath)) {
+    throw "Privilege Broker binary $brokerRelativePath is missing from target file records"
+  }
+	if (-not $artifactPaths.ContainsKey($approvalRelativePath)) { throw "Approval helper $approvalRelativePath is missing from target file records" }
+	if (-not $artifactPaths.ContainsKey($systemToolHostRelativePath)) { throw "System Tool Host $systemToolHostRelativePath is missing from target file records" }
+	if ($target -eq "windows/amd64") {
+	  if ([string]::IsNullOrWhiteSpace($productionInstallerRelativePath) -or -not $artifactPaths.ContainsKey($productionInstallerRelativePath)) {
+	    throw "Windows production installer is missing from target file records"
+	  }
+	  foreach ($requiredScript in @('install-steward-production.ps1','update-steward-production.ps1','uninstall-steward-production.ps1','test-steward-production.ps1','install-steward-companion.ps1','uninstall-steward-companion.ps1','migrate-steward-production.ps1','rotate-steward-broker-keys.ps1')) {
+	    $candidate = ($relativePath.Substring(0, $relativePath.LastIndexOf('/') + 1) + $requiredScript)
+	    if (-not $artifactPaths.ContainsKey($candidate)) { throw "Windows deployment script is missing: $requiredScript" }
+	  }
+	}
 
   $artifactPath = Join-Path $distRoot $relativePath
   $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath).Hash.ToLowerInvariant()
@@ -223,6 +241,10 @@ foreach ($artifact in $manifest.artifacts) {
     target = $target
     path = $relativePath
     companion_path = $companionRelativePath
+    broker_path = $brokerRelativePath
+	approval_path = $approvalRelativePath
+	system_tool_host_path = $systemToolHostRelativePath
+	production_installer = $productionInstallerRelativePath
     sha256 = $actualHash
     ui_dir = $uiRelativePath
     file_count = $fileRecords.Count

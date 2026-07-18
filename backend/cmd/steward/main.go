@@ -94,6 +94,7 @@ func runServer(args []string) error {
 	serviceName := fs.String("service-name", servicecontrol.DefaultName(), "System service name when running under a service manager")
 	logDir := fs.String("log-dir", envOrDefault("STEWARD_LOG_DIR", ""), "Append process logs to this directory")
 	uiDir := fs.String("ui-dir", envOrDefault("STEWARD_UI_DIR", ""), "Serve the built steward workspace from this directory")
+	privateEnvironmentFile := fs.String("private-environment-file", "", "Protected JSON file containing sensitive service environment values")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -102,18 +103,31 @@ func runServer(args []string) error {
 			return fmt.Errorf("change workdir: %w", err)
 		}
 	}
-	resolvedUIDir := currentBinaryUIDir(*uiDir)
-	if resolvedUIDir != "" {
-		if err := os.Setenv("STEWARD_UI_DIR", resolvedUIDir); err != nil {
-			return fmt.Errorf("set STEWARD_UI_DIR: %w", err)
-		}
-	}
 	cleanupLogs, err := configureServiceLogging(*logDir, *serviceName)
 	if err != nil {
 		return err
 	}
 	defer cleanupLogs()
-	return servicecontrol.Run(*serviceName, app.Run)
+	if strings.TrimSpace(*privateEnvironmentFile) != "" {
+		if err := servicecontrol.LoadPrivateEnvironmentFile(*privateEnvironmentFile); err != nil {
+			log.Printf("steward service bootstrap failed: %v", err)
+			return err
+		}
+	}
+	resolvedUIDir := currentBinaryUIDir(*uiDir)
+	if resolvedUIDir != "" {
+		if err := os.Setenv("STEWARD_UI_DIR", resolvedUIDir); err != nil {
+			log.Printf("steward service bootstrap failed: set STEWARD_UI_DIR: %v", err)
+			return fmt.Errorf("set STEWARD_UI_DIR: %w", err)
+		}
+	}
+	runErr := servicecontrol.Run(*serviceName, app.Run)
+	if runErr != nil {
+		// Log before cleanup restores the original process logger. Windows
+		// services otherwise lose the only actionable bootstrap/runtime error.
+		log.Printf("steward service stopped: %v", runErr)
+	}
+	return runErr
 }
 
 func configureServiceLogging(logDir string, serviceName string) (func(), error) {

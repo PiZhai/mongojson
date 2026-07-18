@@ -937,6 +937,10 @@ func (b *runtimeR3TestBroker) ExecuteCapability(_ context.Context, authorization
 	return response, nil
 }
 
+func (b *runtimeR3TestBroker) ExecuteTool(context.Context, privilegebroker.ToolAuthorization) (privilegebroker.ExecuteResponse, error) {
+	return privilegebroker.ExecuteResponse{}, fmt.Errorf("parameterized system tools are not used by this runtime fixture")
+}
+
 func (b *runtimeR3TestBroker) SetControl(_ context.Context, stopped bool, input privilegebroker.ControlRequest) (privilegebroker.Status, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

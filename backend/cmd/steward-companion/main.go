@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"mongojson/backend/internal/platform/servicecontrol"
 	"mongojson/backend/internal/service/steward"
 	"mongojson/backend/internal/service/stewardcompanion"
 )
@@ -39,10 +40,17 @@ func main() {
 	fs := flag.NewFlagSet("steward-companion", flag.ExitOnError)
 	listen := fs.String("listen", envOrDefault("STEWARD_COMPANION_ADDR", ""), "optional loopback companion HTTP address")
 	pipe := fs.String("pipe", envOrDefault("STEWARD_COMPANION_PIPE", `\\.\pipe\MongojsonStewardCompanion`), "authenticated companion named pipe")
+	serviceName := fs.String("service-name", "MongojsonSteward", "Windows service name allowed to connect to the companion pipe")
+	privateEnvironmentFile := fs.String("private-environment-file", "", "Protected JSON file containing the local encryption key")
 	apiBase := fs.String("api", envOrDefault("STEWARD_API_BASE", "http://127.0.0.1:18080/api"), "local steward API base")
 	dbPath := fs.String("db", filepath.Join(dataDir, "MongojsonSteward", "companion.db"), "encrypted row buffer SQLite path")
 	flushInterval := fs.Duration("flush-interval", 10*time.Second, "buffer flush interval")
 	_ = fs.Parse(os.Args[1:])
+	if strings.TrimSpace(*privateEnvironmentFile) != "" {
+		if err := servicecontrol.LoadPrivateEnvironmentFile(*privateEnvironmentFile); err != nil {
+			log.Fatal(err)
+		}
+	}
 	if *listen != "" {
 		if err := validateLoopbackListen(*listen); err != nil {
 			log.Fatal(err)
@@ -129,7 +137,17 @@ func main() {
 			http.Error(w, "invalid tool JSON", http.StatusBadRequest)
 			return
 		}
-		result, err := steward.ExecuteCompanionToolPackage(r.Context(), input.Manifest, input.PackageDir, input.Input)
+		cacheRoot, cacheErr := os.UserCacheDir()
+		if cacheErr != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": cacheErr.Error(), "output": map[string]any{}, "evidence": []any{}})
+			return
+		}
+		packageDir, cacheErr := steward.PrepareCompanionToolPackage(input.Manifest, filepath.Join(cacheRoot, "MongojsonSteward", "session-tools"))
+		if cacheErr != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": cacheErr.Error(), "output": map[string]any{}, "evidence": []any{}})
+			return
+		}
+		result, err := steward.ExecuteCompanionToolPackage(r.Context(), input.Manifest, packageDir, input.Input)
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "output": map[string]any{}, "evidence": []any{}})
 			return
@@ -169,7 +187,7 @@ func main() {
 	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	listener, err := companionPipeListener(*pipe)
+	listener, err := companionPipeListener(*pipe, *serviceName)
 	if err != nil {
 		log.Fatal(err)
 	}

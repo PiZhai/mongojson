@@ -62,6 +62,18 @@ type InstallOptions struct {
 	PrivateEnvironmentFile string            `json:"private_environment_file,omitempty"`
 	ProtectedPaths         []string          `json:"protected_paths,omitempty"`
 	ProtectedFileCopies    map[string]string `json:"-"` // destination -> trusted source
+	// WindowsServiceAccount selects the SCM identity. Supported values are
+	// "localsystem" and "localservice". An empty value preserves the legacy
+	// LocalSystem default.
+	WindowsServiceAccount string `json:"windows_service_account,omitempty"`
+	// WindowsServiceSIDType selects "unrestricted" or "restricted". The main
+	// Steward production service uses restricted; the isolated Broker retains
+	// unrestricted and grants trust-domain paths only to its per-service SID.
+	// Capability children explicitly disable that SID in their derived token.
+	WindowsServiceSIDType string `json:"windows_service_sid_type,omitempty"`
+	// WindowsPathAccess maps protected paths to read, modify, or full access for
+	// the per-service SID.
+	WindowsPathAccess map[string]string `json:"-"`
 }
 
 type EnvPatchOptions struct {
@@ -319,6 +331,33 @@ func NormalizeInstallOptionsForPlatform(platform string, input InstallOptions) (
 		protectedCopies[absDestination] = absSource
 	}
 	out.ProtectedFileCopies = protectedCopies
+	out.WindowsServiceAccount = strings.ToLower(strings.TrimSpace(out.WindowsServiceAccount))
+	if out.WindowsServiceAccount == "" {
+		out.WindowsServiceAccount = "localsystem"
+	}
+	if out.WindowsServiceAccount != "localsystem" && out.WindowsServiceAccount != "localservice" {
+		return InstallOptions{}, fmt.Errorf("windows service account must be localsystem or localservice")
+	}
+	out.WindowsServiceSIDType = strings.ToLower(strings.TrimSpace(out.WindowsServiceSIDType))
+	if out.WindowsServiceSIDType == "" {
+		out.WindowsServiceSIDType = "unrestricted"
+	}
+	if out.WindowsServiceSIDType != "unrestricted" && out.WindowsServiceSIDType != "restricted" {
+		return InstallOptions{}, fmt.Errorf("windows service SID type must be unrestricted or restricted")
+	}
+	normalizedPathAccess := make(map[string]string, len(out.WindowsPathAccess))
+	for path, access := range out.WindowsPathAccess {
+		path, err = filepath.Abs(path)
+		if err != nil {
+			return InstallOptions{}, fmt.Errorf("resolve Windows protected path: %w", err)
+		}
+		access = strings.ToLower(strings.TrimSpace(access))
+		if access != "read" && access != "modify" && access != "full" {
+			return InstallOptions{}, fmt.Errorf("Windows protected path access must be read, modify, or full")
+		}
+		normalizedPathAccess[path] = access
+	}
+	out.WindowsPathAccess = normalizedPathAccess
 	if len(out.ServiceArgs) > 32 {
 		return InstallOptions{}, fmt.Errorf("service args must not exceed 32 entries")
 	}

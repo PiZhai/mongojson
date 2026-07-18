@@ -92,23 +92,28 @@ pwsh ./deploy/build-steward.ps1 -Version $version -Clean
 backend/dist/steward/
   steward-0.1.0-s3s4-windows-amd64/
     steward.exe
+    steward-broker.exe
     steward-companion.exe
     ui/index.html
     ui/assets/...
   steward-0.1.0-s3s4-darwin-amd64/
     steward
+    steward-broker
     steward-companion
     ui/...
   steward-0.1.0-s3s4-darwin-arm64/
     steward
+    steward-broker
     steward-companion
     ui/...
   steward-0.1.0-s3s4-linux-amd64/
     steward
+    steward-broker
     steward-companion
     ui/...
   steward-0.1.0-s3s4-linux-arm64/
     steward
+    steward-broker
     steward-companion
     ui/...
   manifest.json
@@ -125,7 +130,7 @@ pwsh ./deploy/verify-steward-dist.ps1 `
   -RunCurrentBinary
 ```
 
-该命令会核对五个 target、主二进制、companion、工作台、manifest、所有文件的 SHA-256 及当前平台主二进制版本。`-RunCurrentBinary` 只会运行当前构建机平台的 `steward version`，其他平台需在对应目标机再次执行。
+该命令会核对五个 target、主二进制、Privilege Broker、Companion、工作台、manifest、所有文件的 SHA-256 及当前平台主二进制版本。`-RunCurrentBinary` 只会运行当前构建机平台的 `steward version`，其他平台需在对应目标机再次执行。
 
 ### 3.3 生成可传输安装包
 
@@ -360,7 +365,7 @@ pwsh ./deploy/update-steward-windows-service.ps1 `
   -ServiceName MongojsonSteward
 ```
 
-脚本会停止现有服务，将整个程序目录改名为带时间戳的备份，复制新版本，重新启动并检查 `/healthz`。更新不会修改 `C:\ProgramData\MongojsonSteward`；新版本启动或健康检查失败时会自动恢复旧程序目录。
+脚本会先拒绝缺少 `steward-broker.exe` 的不完整 Windows 发布目录，再停止现有服务，将整个程序目录改名为带时间戳的备份，复制新版本，重新启动并检查 `/healthz`。更新会把 Broker 二进制部署到程序目录，但不会擅自生成 policy/密钥或安装 Broker 服务；独立 Broker 的首次安装仍按 R3.3 流程显式完成。更新不会修改 `C:\ProgramData\MongojsonSteward`；新版本启动或健康检查失败时会自动恢复旧程序目录。
 
 ## 8. macOS 安装
 

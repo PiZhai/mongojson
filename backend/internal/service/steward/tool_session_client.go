@@ -94,9 +94,17 @@ func signSessionToolPayload(key []byte, timestamp string, payload []byte) string
 
 func (s *Service) GetToolHostStatuses(ctx context.Context) []domain.StewardToolHostStatus {
 	now := time.Now().UTC()
+	systemOnline := s != nil && s.runtimeTools != nil
+	systemSummary := "local tool runtime"
+	systemTransport := "in-process + Job Object"
+	if restrictedWindowsMainService() {
+		systemOnline = s != nil && s.runtimeR3 && s.privilegeBroker != nil && s.privilegeBrokerError == nil
+		systemSummary = "restricted main service; privileged system mutations require a fixed Broker capability"
+		systemTransport = "Privilege Broker only"
+	}
 	hosts := []domain.StewardToolHostStatus{{
-		Name: "System Host", Target: "system", Transport: "in-process + Job Object",
-		Online: s != nil && s.runtimeTools != nil, Summary: "LocalSystem tool runtime", CheckedAt: now,
+		Name: "System Host", Target: "system", Transport: systemTransport,
+		Online: systemOnline, Summary: systemSummary, CheckedAt: now,
 	}}
 	status := domain.StewardToolHostStatus{
 		Name: "Session Companion", Target: "session", Transport: "authenticated named pipe",

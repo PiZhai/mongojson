@@ -124,6 +124,54 @@ function Invoke-CompanionGoBuild {
   }
 }
 
+function Invoke-BrokerGoBuild {
+  param(
+    [string]$GOOSValue,
+    [string]$GOARCHValue,
+    [string]$OutputPath,
+    [string]$BuildVersion,
+    [string]$BuildCommit,
+    [string]$BuildDate
+  )
+  $oldCGO = $env:CGO_ENABLED
+  $oldGOOS = $env:GOOS
+  $oldGOARCH = $env:GOARCH
+  try {
+    $env:CGO_ENABLED = "0"
+    $env:GOOS = $GOOSValue
+    $env:GOARCH = $GOARCHValue
+    $ldflags = "-s -w -X mongojson/backend/internal/buildinfo.Version=$BuildVersion -X mongojson/backend/internal/buildinfo.Commit=$BuildCommit -X mongojson/backend/internal/buildinfo.BuildDate=$BuildDate"
+    go build -buildvcs=false -trimpath -ldflags $ldflags -o $OutputPath ./cmd/steward-broker
+    if ($LASTEXITCODE -ne 0) {
+      throw "go build steward-broker failed for $GOOSValue/$GOARCHValue with exit code $LASTEXITCODE"
+    }
+  } finally {
+    $env:CGO_ENABLED = $oldCGO
+    $env:GOOS = $oldGOOS
+    $env:GOARCH = $oldGOARCH
+  }
+}
+
+function Invoke-ApprovalGoBuild {
+  param([string]$GOOSValue,[string]$GOARCHValue,[string]$OutputPath)
+  $oldCGO=$env:CGO_ENABLED; $oldGOOS=$env:GOOS; $oldGOARCH=$env:GOARCH
+  try {
+    $env:CGO_ENABLED='0'; $env:GOOS=$GOOSValue; $env:GOARCH=$GOARCHValue
+    go build -buildvcs=false -trimpath -ldflags '-s -w' -o $OutputPath ./cmd/steward-approval
+    if($LASTEXITCODE -ne 0){throw "go build steward-approval failed for $GOOSValue/$GOARCHValue"}
+  } finally { $env:CGO_ENABLED=$oldCGO; $env:GOOS=$oldGOOS; $env:GOARCH=$oldGOARCH }
+}
+
+function Invoke-SystemToolHostGoBuild {
+  param([string]$GOOSValue,[string]$GOARCHValue,[string]$OutputPath)
+  $oldCGO=$env:CGO_ENABLED; $oldGOOS=$env:GOOS; $oldGOARCH=$env:GOARCH
+  try {
+    $env:CGO_ENABLED='0'; $env:GOOS=$GOOSValue; $env:GOARCH=$GOARCHValue
+    go build -buildvcs=false -trimpath -ldflags '-s -w' -o $OutputPath ./cmd/steward-system-tool-host
+    if($LASTEXITCODE -ne 0){throw "go build steward-system-tool-host failed for $GOOSValue/$GOARCHValue"}
+  } finally { $env:CGO_ENABLED=$oldCGO; $env:GOOS=$oldGOOS; $env:GOARCH=$oldGOARCH }
+}
+
 function Invoke-WindowsNotifierBuild {
   param([string]$OutputDirectory)
   Require-Command "dotnet"
@@ -204,8 +252,8 @@ try {
     throw "go env GOVERSION failed"
   }
   if (-not $SkipTests) {
-    Write-Host "[steward] Running CLI and companion tests"
-    go test ./cmd/steward ./cmd/steward-companion ./internal/service/stewardcompanion
+    Write-Host "[steward] Running CLI, Broker, and companion tests"
+    go test ./cmd/steward ./cmd/steward-broker ./cmd/steward-companion ./cmd/steward-system-tool-host ./internal/privilegebroker ./internal/service/stewardcompanion
     if ($LASTEXITCODE -ne 0) {
       throw "steward packaging tests failed with exit code $LASTEXITCODE"
     }
@@ -232,11 +280,20 @@ try {
     New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
     $binaryPath = Join-Path $artifactDir ("steward" + $extension)
     $companionPath = Join-Path $artifactDir ("steward-companion" + $extension)
+    $brokerPath = Join-Path $artifactDir ("steward-broker" + $extension)
+	$approvalPath = Join-Path $artifactDir ("steward-approval" + $extension)
+	$systemToolHostPath = Join-Path $artifactDir ("steward-system-tool-host" + $extension)
 
     Write-Host "[steward] Building $target -> $binaryPath"
     Invoke-GoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $binaryPath -BuildVersion $safeVersion -BuildCommit $buildCommit -BuildDate $buildDate
     Write-Host "[steward] Building companion $target -> $companionPath"
     Invoke-CompanionGoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $companionPath
+	Write-Host "[steward] Building Privilege Broker $target -> $brokerPath"
+	Invoke-BrokerGoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $brokerPath -BuildVersion $safeVersion -BuildCommit $buildCommit -BuildDate $buildDate
+	Write-Host "[steward] Building approval authority $target -> $approvalPath"
+	Invoke-ApprovalGoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $approvalPath
+	Write-Host "[steward] Building System Tool Host $target -> $systemToolHostPath"
+	Invoke-SystemToolHostGoBuild -GOOSValue $goos -GOARCHValue $goarch -OutputPath $systemToolHostPath
 	$notifierDirectory = $null
 	if ($goos -eq "windows" -and $goarch -eq "amd64") {
 	  Write-Host "[steward] Building Windows App SDK notification helper"
@@ -250,9 +307,22 @@ try {
       Copy-Item -Path (Join-Path $frontendDist "*") -Destination $uiDir -Recurse -Force
       $uiRelativePath = $uiDir.Substring($outputRoot.Length).TrimStart($PathSeparators) -replace "\\", "/"
     }
+	$deploymentScriptPaths = @()
+	if ($goos -eq "windows") {
+	  foreach ($scriptName in @(
+	    "install-steward-production.ps1", "update-steward-production.ps1", "uninstall-steward-production.ps1",
+	    "test-steward-production.ps1", "install-steward-companion.ps1", "uninstall-steward-companion.ps1",
+	    "migrate-steward-production.ps1", "rotate-steward-broker-keys.ps1", "test-steward-broker-session0.ps1"
+	  )) {
+	    $scriptSource = Join-Path $repoRoot ("deploy\" + $scriptName)
+	    $scriptTarget = Join-Path $artifactDir $scriptName
+	    Copy-Item -LiteralPath $scriptSource -Destination $scriptTarget -Force
+	    $deploymentScriptPaths += $scriptTarget
+	  }
+	}
 
     $artifactFiles = @()
-    $paths = @($binaryPath, $companionPath)
+    $paths = @($binaryPath, $companionPath, $brokerPath, $approvalPath, $systemToolHostPath) + $deploymentScriptPaths
     if ($null -ne $notifierDirectory) {
 	  $paths += @(Get-ChildItem -LiteralPath $notifierDirectory -Recurse -File | Select-Object -ExpandProperty FullName)
 	}
@@ -269,11 +339,18 @@ try {
     }
     $binaryRecord = $artifactFiles[0]
     $companionRecord = $artifactFiles[1]
+    $brokerRecord = $artifactFiles[2]
+	$approvalRecord = $artifactFiles[3]
+	$systemToolHostRecord = $artifactFiles[4]
     $artifacts += [pscustomobject]@{
       target = $target
       path = $binaryRecord.path
       sha256 = $binaryRecord.sha256
       companion_path = $companionRecord.path
+      broker_path = $brokerRecord.path
+	  approval_path = $approvalRecord.path
+	  system_tool_host_path = $systemToolHostRecord.path
+	  production_installer = if ($goos -eq "windows") { ($deploymentScriptPaths[0].Substring($outputRoot.Length).TrimStart($PathSeparators) -replace "\\", "/") } else { $null }
       ui_dir = $uiRelativePath
       files = @($artifactFiles)
     }

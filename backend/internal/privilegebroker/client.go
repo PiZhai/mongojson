@@ -52,7 +52,21 @@ func (e *ExecutionError) Error() string {
 	if !receipt.AuditPersisted {
 		return fmt.Sprintf("privilege broker execution audit was not persisted (execution_id=%s succeeded=%t)", receipt.ExecutionID, receipt.Succeeded)
 	}
-	return fmt.Sprintf("privilege broker execution failed: %s (exit_code=%d)", receipt.ErrorCode, receipt.ExitCode)
+	message := fmt.Sprintf("privilege broker execution failed: %s (exit_code=%d)", receipt.ErrorCode, receipt.ExitCode)
+	var toolHost struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(e.Response.Stdout), &toolHost); err == nil && !toolHost.OK {
+		detail := []rune(strings.TrimSpace(toolHost.Error))
+		if len(detail) > 500 {
+			detail = append(detail[:500], []rune("...")...)
+		}
+		if len(detail) > 0 {
+			message += ": " + string(detail)
+		}
+	}
+	return message
 }
 
 func NewClient(baseURL string, sharedKey []byte, pinnedPublicKey ed25519.PublicKey) (*Client, error) {
@@ -202,6 +216,45 @@ func (c *Client) ExecuteCapability(ctx context.Context, authorization Authorizat
 		return ExecuteResponse{}, err
 	}
 	return c.Execute(ctx, grant)
+}
+
+// ExecuteTool invokes one parameterized, policy-schema-bound system tool. The
+// main service authenticates this request with its client key; the independent
+// control key is deliberately not available here, so the main service can stop
+// the Broker but cannot resume it.
+func (c *Client) ExecuteTool(ctx context.Context, authorization ToolAuthorization) (ExecuteResponse, error) {
+	digest, err := brokerInputDigest(authorization.Arguments)
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
+	request := ToolExecuteRequest{
+		Capability: strings.ToLower(strings.TrimSpace(authorization.Capability)),
+		Subject:    strings.TrimSpace(authorization.Subject), InvocationID: strings.TrimSpace(authorization.InvocationID),
+		Arguments: authorization.Arguments, InputSHA256: digest, ControlGeneration: authorization.ControlGeneration,
+	}
+	if err := normalizeToolExecuteRequest(&request); err != nil {
+		return ExecuteResponse{}, err
+	}
+	var response ExecuteResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/tool-execute", request, &response); err != nil {
+		return response, err
+	}
+	receipt := response.Receipt.Payload
+	if response.Receipt.KeyID != c.keyID {
+		return response, fmt.Errorf("broker receipt key id does not match pinned key")
+	}
+	if err := verifyValue(c.publicKey, receipt, response.Receipt.Signature); err != nil {
+		return response, err
+	}
+	if receipt.ExecutionID != request.InvocationID || receipt.Capability != request.Capability ||
+		receipt.Subject != request.Subject || receipt.InputSHA256 != request.InputSHA256 ||
+		receipt.ControlGeneration != request.ControlGeneration || !receipt.AuditPersisted {
+		return response, fmt.Errorf("broker tool receipt does not match request bindings")
+	}
+	if !receipt.Succeeded {
+		return response, &ExecutionError{Response: response}
+	}
+	return response, nil
 }
 
 func (c *Client) IssueDelegation(ctx context.Context, request BrokerDelegationRequest) (SignedBrokerDelegation, error) {
@@ -402,7 +455,7 @@ func (c *Client) doWithKey(ctx context.Context, method, path string, input any, 
 		return fmt.Errorf("call privilege broker: %w", err)
 	}
 	defer response.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 20<<20))
 	if err != nil {
 		return err
 	}

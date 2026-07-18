@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -288,6 +289,11 @@ func serviceInstall(args []string) error {
 	fs.DurationVar(&opts.SyncInterval, "sync-interval", opts.SyncInterval, "STEWARD_SYNC_INTERVAL for background trusted-peer sync; 0 disables it")
 	fs.DurationVar(&opts.AutonomyInterval, "autonomy-interval", opts.AutonomyInterval, "STEWARD_AUTONOMY_INTERVAL for background autonomy scans; 0 disables it")
 	fs.StringVar(&opts.LogDir, "log-dir", opts.LogDir, "STEWARD_LOG_DIR for append-only service process logs")
+	windowsHardened := fs.Bool("windows-hardened", false, "Install a hardened Windows service with a protected private environment file")
+	windowsInstallDir := fs.String("windows-install-dir", "", "Protected Windows installation directory under Program Files")
+	windowsPrivateEnvironmentFile := fs.String("windows-private-environment-file", "", "Protected JSON secret file under ProgramData")
+	windowsServiceAccount := fs.String("windows-service-account", "localsystem", "Windows service identity: localsystem or localservice")
+	windowsServiceSIDType := fs.String("windows-service-sid-type", "unrestricted", "Windows service SID type: unrestricted or restricted")
 	llmProvider := fs.String("llm-provider", envOrDefault("STEWARD_LLM_PROVIDER", ""), "STEWARD_LLM_PROVIDER for the S4 autonomy advisor; empty keeps it disabled")
 	llmBaseURL := fs.String("llm-base-url", envOrDefault("STEWARD_LLM_BASE_URL", ""), "STEWARD_LLM_BASE_URL for an OpenAI-compatible advisor endpoint")
 	llmModel := fs.String("llm-model", envOrDefault("STEWARD_LLM_MODEL", ""), "STEWARD_LLM_MODEL for the S4 autonomy advisor")
@@ -297,6 +303,7 @@ func serviceInstall(args []string) error {
 	llmMaxDataLevel := fs.String("llm-max-data-level", envOrDefault("STEWARD_LLM_MAX_DATA_LEVEL", ""), "STEWARD_LLM_MAX_DATA_LEVEL sent to the configured model, D0-D6; per-level database policy remains authoritative")
 	llmFailureThreshold := fs.Int("llm-failure-threshold", envIntOrDefault("STEWARD_LLM_FAILURE_THRESHOLD", 0), "STEWARD_LLM_FAILURE_THRESHOLD for advisor circuit breaking; 0 omits the value")
 	llmFailureCooldown := fs.Duration("llm-failure-cooldown", envDurationOrDefault("STEWARD_LLM_FAILURE_COOLDOWN", 0), "STEWARD_LLM_FAILURE_COOLDOWN for advisor circuit breaking; 0 omits the value")
+	recoverModelSettingsFromEnv := fs.Bool("recover-model-settings-from-env", envBoolOrDefault("STEWARD_MODEL_SETTINGS_KEY_RECOVERY", false), "Explicitly repair an undecryptable persisted model API key from STEWARD_LLM_API_KEY")
 	autonomyRetryMaxAttempts := fs.Int("autonomy-retry-max-attempts", envIntOrDefault("STEWARD_AUTONOMY_RETRY_MAX_ATTEMPTS", 0), "Maximum automatic execution attempts before manual recovery is required; 0 omits the value")
 	autonomyRetryBackoff := fs.Duration("autonomy-retry-backoff", envDurationOrDefault("STEWARD_AUTONOMY_RETRY_BACKOFF", 0), "Initial backoff between automatic execution retries; 0 omits the value")
 	autonomyRetryMaxBackoff := fs.Duration("autonomy-retry-max-backoff", envDurationOrDefault("STEWARD_AUTONOMY_RETRY_MAX_BACKOFF", 0), "Maximum exponential backoff between automatic execution retries; 0 omits the value")
@@ -384,6 +391,7 @@ func serviceInstall(args []string) error {
 		retryEnv["STEWARD_AUTONOMY_RETRY_MAX_BACKOFF"] = autonomyRetryMaxBackoff.String()
 	}
 	runtimeEnv := map[string]string{
+		"STEWARD_MODEL_SETTINGS_KEY_RECOVERY":      strconv.FormatBool(*recoverModelSettingsFromEnv),
 		"STEWARD_RUNTIME_V2":                       strconv.FormatBool(*runtimeV2),
 		"STEWARD_RUNTIME_R2":                       strconv.FormatBool(*runtimeR2),
 		"STEWARD_RUNTIME_R3":                       strconv.FormatBool(*runtimeR3),
@@ -429,6 +437,34 @@ func serviceInstall(args []string) error {
 		if err := validateStrictServiceSecurity(opts); err != nil {
 			return err
 		}
+	}
+	if *windowsHardened {
+		if runtime.GOOS != "windows" {
+			return fmt.Errorf("--windows-hardened is only supported on Windows")
+		}
+		opts.WindowsHardened = true
+		opts.InstallDir = strings.TrimSpace(*windowsInstallDir)
+		opts.PrivateEnvironmentFile = strings.TrimSpace(*windowsPrivateEnvironmentFile)
+		opts.WindowsServiceAccount = strings.TrimSpace(*windowsServiceAccount)
+		opts.WindowsServiceSIDType = strings.TrimSpace(*windowsServiceSIDType)
+		if opts.InstallDir == "" || opts.PrivateEnvironmentFile == "" {
+			return fmt.Errorf("--windows-hardened requires --windows-install-dir and --windows-private-environment-file")
+		}
+		opts.ServiceArgs = []string{"run", "--service-name", opts.Name, "--workdir", opts.WorkDir, "--private-environment-file", opts.PrivateEnvironmentFile}
+		opts.ProtectedPaths = append(opts.ProtectedPaths, opts.WorkDir, opts.StorageDir)
+		if strings.TrimSpace(opts.LogDir) != "" {
+			opts.ProtectedPaths = append(opts.ProtectedPaths, opts.LogDir)
+		}
+		opts.WindowsPathAccess = map[string]string{
+			opts.InstallDir:             "read",
+			opts.PrivateEnvironmentFile: "read",
+			opts.WorkDir:                "read",
+			opts.StorageDir:             "modify",
+		}
+		if strings.TrimSpace(opts.LogDir) != "" {
+			opts.WindowsPathAccess[opts.LogDir] = "modify"
+		}
+		opts.ExtraEnv["STEWARD_RESTRICTED_SERVICE"] = strconv.FormatBool(strings.EqualFold(opts.WindowsServiceAccount, "localservice"))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

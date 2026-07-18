@@ -1,5 +1,7 @@
 # Personal Tooling Platform
 
+Windows 管家生产隔离、LocalService 主服务、独立 LocalSystem Broker 和完整安装生命周期见 [R5.1 Windows 生产部署](docs/steward-r5.1-windows-production-isolation.md)。
+
 一个浏览器访问的个人工具平台，首期聚焦：
 
 - 智能粘贴诊断：识别 JSON、Mongo Shell、curl、日志片段、NDJSON 和转义字符串，并推荐下一步
@@ -60,7 +62,7 @@ go run ./cmd/server
 
 ### Private Steward Software
 
-私人管家可以构建为 Windows、macOS 和 Linux 后台软件目录。每个默认产物同时包含 `steward` CLI/服务二进制、`steward-companion` 用户态加密缓冲进程和 Web 工作台：
+私人管家可以构建为 Windows、macOS 和 Linux 后台软件目录。每个默认产物同时包含 `steward` CLI/服务二进制、独立 `steward-broker` 高权限执行服务、`steward-companion` 用户态加密缓冲进程和 Web 工作台：
 
 ```powershell
 .\deploy\build-steward.ps1 -Version local

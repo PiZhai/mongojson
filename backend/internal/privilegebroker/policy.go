@@ -73,6 +73,9 @@ type Capability struct {
 	MaxOutputBytes   int      `json:"max_output_bytes"`
 	Enabled          bool     `json:"enabled"`
 	CredentialIDs    []string `json:"credential_ids,omitempty"`
+	// InputSchema enables parameterized execution through a hash-pinned tool
+	// host. An omitted schema preserves the legacy fixed-command capability.
+	InputSchema map[string]any `json:"input_schema,omitempty"`
 
 	digest string
 }
@@ -335,11 +338,11 @@ func normalizeCapability(input Capability) (Capability, error) {
 	if len([]rune(out.Description)) > 1000 {
 		return out, fmt.Errorf("description must not exceed 1000 characters")
 	}
-	if out.PermissionLevel != "A4" && out.PermissionLevel != "A5" && out.PermissionLevel != "A6" && out.PermissionLevel != "A7" {
-		return out, fmt.Errorf("R3.0 capability permission must be A4-A7; A8-A9 credential authority remains disabled")
+	if out.PermissionLevel != "" && out.PermissionLevel != "A4" && out.PermissionLevel != "A5" && out.PermissionLevel != "A6" && out.PermissionLevel != "A7" {
+		return out, fmt.Errorf("legacy permission_level, when present, must be A4-A7")
 	}
-	if out.RiskLevel != "high" && out.RiskLevel != "critical" {
-		return out, fmt.Errorf("broker capability risk_level must be high or critical")
+	if out.RiskLevel != "" && out.RiskLevel != "high" && out.RiskLevel != "critical" {
+		return out, fmt.Errorf("legacy risk_level, when present, must be high or critical")
 	}
 	out.Executable = filepath.Clean(strings.TrimSpace(out.Executable))
 	if out.Executable == "." || !filepath.IsAbs(out.Executable) {
@@ -380,6 +383,16 @@ func normalizeCapability(input Capability) (Capability, error) {
 		}
 	}
 	out.Arguments = append([]string(nil), out.Arguments...)
+	if out.InputSchema != nil {
+		if err := validateBrokerInputSchemaDefinition(out.InputSchema); err != nil {
+			return out, fmt.Errorf("input_schema: %w", err)
+		}
+		// Canonicalize through JSON so policy digests and schema validation do
+		// not retain caller-owned mutable maps.
+		raw, _ := json.Marshal(out.InputSchema)
+		out.InputSchema = map[string]any{}
+		_ = json.Unmarshal(raw, &out.InputSchema)
+	}
 	out.WorkingDirectory = filepath.Clean(strings.TrimSpace(out.WorkingDirectory))
 	if out.WorkingDirectory == "." || out.WorkingDirectory == "" {
 		out.WorkingDirectory = filepath.Dir(out.Executable)
@@ -403,8 +416,8 @@ func normalizeCapability(input Capability) (Capability, error) {
 	if out.MaxOutputBytes == 0 {
 		out.MaxOutputBytes = 64 << 10
 	}
-	if out.MaxOutputBytes < 1024 || out.MaxOutputBytes > 1<<20 {
-		return out, fmt.Errorf("max_output_bytes must be between 1024 and 1048576")
+	if out.MaxOutputBytes < 1024 || out.MaxOutputBytes > 8<<20 {
+		return out, fmt.Errorf("max_output_bytes must be between 1024 and 8388608")
 	}
 	canonical := out
 	canonical.digest = ""
@@ -432,12 +445,19 @@ func (p *LoadedPolicy) PublicCapabilities() []PublicCapability {
 }
 
 func (c Capability) Public() PublicCapability {
+	schemaDigest := ""
+	if c.InputSchema != nil {
+		payload, _ := json.Marshal(c.InputSchema)
+		digest := sha256.Sum256(payload)
+		schemaDigest = hex.EncodeToString(digest[:])
+	}
 	return PublicCapability{
 		Name: c.Name, Description: c.Description, PermissionLevel: c.PermissionLevel,
 		RiskLevel: c.RiskLevel, ExecutableName: filepath.Base(c.Executable),
 		ArgumentCount: len(c.Arguments), TimeoutSeconds: c.TimeoutSeconds,
 		MaxOutputBytes: c.MaxOutputBytes, CapabilityDigest: c.digest,
 		CredentialIDs: append([]string(nil), c.CredentialIDs...),
+		AcceptsInput:  c.InputSchema != nil, InputSchemaDigest: schemaDigest,
 	}
 }
 

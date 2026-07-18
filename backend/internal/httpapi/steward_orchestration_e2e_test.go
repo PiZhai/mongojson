@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -62,6 +63,10 @@ func (b *r44BrokerClient) Capability(context.Context, string) (privilegebroker.P
 }
 func (b *r44BrokerClient) ExecuteCapability(context.Context, privilegebroker.Authorization) (privilegebroker.ExecuteResponse, error) {
 	return privilegebroker.ExecuteResponse{}, errors.New("local execution is not used by R4.4 acceptance")
+}
+
+func (b *r44BrokerClient) ExecuteTool(context.Context, privilegebroker.ToolAuthorization) (privilegebroker.ExecuteResponse, error) {
+	return privilegebroker.ExecuteResponse{}, fmt.Errorf("parameterized system tools are not used by this orchestration fixture")
 }
 func (b *r44BrokerClient) SetControl(context.Context, bool, privilegebroker.ControlRequest) (privilegebroker.Status, error) {
 	return b.status, nil

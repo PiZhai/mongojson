@@ -156,6 +156,26 @@ try {
     companion_paths = @($verification.artifacts | ForEach-Object { $_.companion_path })
   }
 
+  $missingBrokers = @($verification.artifacts | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.broker_path) })
+  if ($missingBrokers.Count -ne 0) {
+    throw "one or more steward target directories do not include steward-broker"
+  }
+  Add-Check $checks "dist_preflight.broker" "ok" "every target directory contains a checksum-verified Privilege Broker" @{
+    broker_paths = @($verification.artifacts | ForEach-Object { $_.broker_path })
+  }
+
+  $missingApprovalHelpers = @($verification.artifacts | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.approval_path) })
+  if ($missingApprovalHelpers.Count -ne 0) { throw "one or more steward target directories do not include steward-approval" }
+  Add-Check $checks "dist_preflight.approval" "ok" "every target directory contains the approval authority helper" @{
+    approval_paths = @($verification.artifacts | ForEach-Object { $_.approval_path })
+  }
+
+  $missingSystemToolHosts = @($verification.artifacts | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.system_tool_host_path) })
+  if ($missingSystemToolHosts.Count -ne 0) { throw "one or more steward target directories do not include steward-system-tool-host" }
+  Add-Check $checks "dist_preflight.system_tool_host" "ok" "every target directory contains the schema-bound System Tool Host" @{
+    system_tool_host_paths = @($verification.artifacts | ForEach-Object { $_.system_tool_host_path })
+  }
+
   if ($null -eq $verification.current_binary_smoke -or $verification.current_binary_smoke.name -ne "steward") {
     throw "current platform steward binary smoke result is missing"
   }

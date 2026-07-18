@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"mongojson/backend/internal/domain"
+	"mongojson/backend/internal/privilegebroker"
 )
 
 type packageRuntimeTool struct {
@@ -90,6 +91,9 @@ func (t *packageRuntimeTool) executeTransactionPhase(ctx context.Context, entryp
 	if phase.ExecutionTarget == toolTargetSession && runtime.GOOS == "windows" {
 		return t.service.executeSessionTool(ctx, phase, input)
 	}
+	if restrictedWindowsMainService() && brokerSystemToolRequired(phase) {
+		return t.executeBrokerSystemTool(ctx, phase, input)
+	}
 	packageDir := t.service.toolPackageDir(t.manifest.Name, t.manifest.Version)
 	return executeToolPackageProcess(ctx, phase, packageDir, input, t.service.agentIDValue())
 }
@@ -108,9 +112,66 @@ func (t *packageRuntimeTool) Execute(ctx context.Context, input map[string]any) 
 	if t.manifest.ExecutionTarget == toolTargetSession && runtime.GOOS == "windows" {
 		return t.service.executeSessionTool(ctx, t.manifest, input)
 	}
+	if restrictedWindowsMainService() && brokerSystemToolRequired(t.manifest) {
+		result, err := t.executeBrokerSystemTool(ctx, t.manifest, input)
+		t.recordUsage(ctx, err)
+		return result, err
+	}
 	result, err := t.executeScript(ctx, input)
 	t.recordUsage(ctx, err)
 	return result, err
+}
+
+func restrictedWindowsMainService() bool {
+	return runtime.GOOS == "windows" && strings.EqualFold(strings.TrimSpace(os.Getenv("STEWARD_RESTRICTED_SERVICE")), "true")
+}
+
+func restrictedSystemToolError(name string) error {
+	return fmt.Errorf("system-target tool %s cannot execute inside the restricted main service; provision and invoke the fixed Broker capability tool:%s", name, strings.ToLower(strings.TrimSpace(name)))
+}
+
+func brokerSystemToolRequired(manifest ToolPackageManifest) bool {
+	return manifest.ExecutionTarget == toolTargetSystem || strings.HasPrefix(strings.ToLower(strings.TrimSpace(manifest.Name)), "registry.")
+}
+
+func (t *packageRuntimeTool) executeBrokerSystemTool(ctx context.Context, manifest ToolPackageManifest, input map[string]any) (RuntimeToolResult, error) {
+	if t.service == nil || !t.service.runtimeR3 || t.service.privilegeBroker == nil {
+		return RuntimeToolResult{}, restrictedSystemToolError(manifest.Name)
+	}
+	if t.service.privilegeBrokerError != nil {
+		return RuntimeToolResult{}, t.service.privilegeBrokerError
+	}
+	status, err := t.service.privilegeBroker.Status(ctx)
+	if err != nil {
+		return RuntimeToolResult{}, fmt.Errorf("query Broker before system tool %s: %w", manifest.Name, err)
+	}
+	invocationID := runtimeInvocationIDFromContext(ctx)
+	capability := "tool:" + strings.ToLower(strings.TrimSpace(manifest.Name))
+	response, err := t.service.privilegeBroker.ExecuteTool(ctx, privilegebroker.ToolAuthorization{
+		Capability: capability, Subject: "system-tool:" + t.service.agentIDValue(),
+		InvocationID: invocationID, Arguments: input, ControlGeneration: status.Generation,
+	})
+	if err != nil {
+		return RuntimeToolResult{}, err
+	}
+	hostResponse, err := decodeToolHostResponse([]byte(response.Stdout))
+	if err != nil {
+		return RuntimeToolResult{}, fmt.Errorf("decode Broker system tool %s response: %w", manifest.Name, err)
+	}
+	if !hostResponse.OK {
+		return RuntimeToolResult{}, fmt.Errorf("Broker system tool %s failed: %s", manifest.Name, defaultString(hostResponse.Error, "unknown tool error"))
+	}
+	if err := validateToolOutputSchema(manifest.OutputSchema, hostResponse.Output); err != nil {
+		return RuntimeToolResult{}, fmt.Errorf("Broker system tool %s output contract: %w", manifest.Name, err)
+	}
+	evidence := make([]RuntimeEvidence, 0, len(hostResponse.Evidence)+1)
+	for _, item := range hostResponse.Evidence {
+		evidence = append(evidence, RuntimeEvidence{Kind: defaultString(item.Kind, "system_tool"), Summary: item.Summary, Payload: item.Payload})
+	}
+	evidence = append(evidence, RuntimeEvidence{Kind: "privilege_broker_receipt", Summary: "Broker executed a schema-bound system tool", Payload: map[string]any{
+		"tool": manifest.Name, "capability": capability, "receipt": response.Receipt,
+	}})
+	return RuntimeToolResult{Output: hostResponse.Output, Evidence: evidence}, nil
 }
 
 func (t *packageRuntimeTool) Verify(_ context.Context, _ map[string]any, output map[string]any, expected map[string]any) error {
@@ -147,6 +208,28 @@ func ExecuteCompanionToolPackage(ctx context.Context, manifest ToolPackageManife
 		}
 	}
 	return executeToolPackageProcess(ctx, normalized, filepath.Clean(packageDir), input, "interactive-session")
+}
+
+// PrepareCompanionToolPackage materializes the signed-in user's private copy
+// from the immutable manifest. The Companion must not read the main service's
+// ProgramData tool tree because that would require broad cross-identity ACLs.
+func PrepareCompanionToolPackage(manifest ToolPackageManifest, root string) (string, error) {
+	normalized, err := normalizeToolPackageManifest(manifest)
+	if err != nil {
+		return "", err
+	}
+	if normalized.ExecutionTarget != toolTargetSession && normalized.ExecutionTarget != toolTargetAuto {
+		return "", fmt.Errorf("tool %s is not declared for session execution", normalized.Name)
+	}
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("companion tool root must be absolute")
+	}
+	dir := filepath.Join(root, normalized.Name, normalized.Version, toolPackageDigest(normalized))
+	if err := writeToolPackageFiles(dir, normalized.Files); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 func executeToolPackageProcess(ctx context.Context, manifest ToolPackageManifest, packageDir string, input map[string]any, agentID string) (RuntimeToolResult, error) {
@@ -219,11 +302,7 @@ func executeToolPackageProcess(ctx context.Context, manifest ToolPackageManifest
 func scriptToolCommand(manifest ToolPackageManifest, packageDir, entrypoint string) (string, []string, error) {
 	switch manifest.Runtime {
 	case toolRuntimePowerShell:
-		name := "pwsh"
-		if _, err := exec.LookPath(name); err != nil {
-			name = "powershell"
-		}
-		path, err := exec.LookPath(name)
+		path, err := resolvePowerShellExecutable()
 		arguments := []string{"-NoLogo", "-NoProfile", "-NonInteractive"}
 		if runtime.GOOS == "windows" {
 			arguments = append(arguments, "-STA")
@@ -248,6 +327,26 @@ func scriptToolCommand(manifest ToolPackageManifest, packageDir, entrypoint stri
 	default:
 		return "", nil, fmt.Errorf("runtime %s is not script-backed", manifest.Runtime)
 	}
+}
+
+func resolvePowerShellExecutable() (string, error) {
+	if path, err := exec.LookPath("pwsh"); err == nil {
+		return path, nil
+	}
+	if runtime.GOOS == "windows" {
+		root := strings.TrimSpace(os.Getenv("SYSTEMROOT"))
+		if root == "" {
+			root = strings.TrimSpace(os.Getenv("WINDIR"))
+		}
+		if root == "" {
+			root = `C:\Windows`
+		}
+		path := filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	return exec.LookPath("powershell")
 }
 
 type toolHostEvidence struct {
@@ -482,6 +581,9 @@ func resolveCompositeValue(value any, input, outputs map[string]any) any {
 }
 
 func (t *packageRuntimeTool) recordUsage(ctx context.Context, cause error) {
+	if t == nil || t.service == nil || t.service.db == nil || t.service.db.Pool == nil {
+		return
+	}
 	status, summary := "healthy", "last invocation succeeded"
 	if cause != nil {
 		status, summary = "degraded", truncateAdvisorText(cause.Error(), 500)

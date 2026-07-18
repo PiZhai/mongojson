@@ -19,6 +19,17 @@ func TestValidateModelSettingsRequiresSecretForRemoteEndpoint(t *testing.T) {
 	}
 }
 
+func TestModelSettingsKeyRecoveryRequiresExplicitMarker(t *testing.T) {
+	t.Setenv("STEWARD_MODEL_SETTINGS_KEY_RECOVERY", "")
+	if modelSettingsKeyRecoveryEnabled() {
+		t.Fatal("key recovery unexpectedly enabled by default")
+	}
+	t.Setenv("STEWARD_MODEL_SETTINGS_KEY_RECOVERY", "true")
+	if !modelSettingsKeyRecoveryEnabled() {
+		t.Fatal("explicit key recovery marker was ignored")
+	}
+}
+
 func TestModelSettingsAllowNoKeyOnlyOnLoopback(t *testing.T) {
 	values := modelSettingsValues{
 		provider: "openai-compatible", baseURL: "http://127.0.0.1:11434/v1", model: "local-model",

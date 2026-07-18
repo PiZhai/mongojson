@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,8 @@ const (
 	modelSettingsSourceEnv  = "environment"
 	modelSettingsSourceNone = "default"
 )
+
+var errModelSettingsDecryption = errors.New("model settings secret decryption failed")
 
 type StewardModelSettings struct {
 	Provider                string                              `json:"provider"`
@@ -188,6 +191,13 @@ func (s *Service) reloadPersistedModelSettings(ctx context.Context) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
+	if errors.Is(err, errModelSettingsDecryption) && modelSettingsKeyRecoveryEnabled() {
+		values, err = s.recoverPersistedModelSettingsAPIKey(ctx)
+		if err != nil {
+			return fmt.Errorf("recover persisted model API key from explicit service environment: %w", err)
+		}
+		log.Printf("recovered persisted model API key encryption using the configured local key")
+	}
 	if err != nil {
 		return err
 	}
@@ -228,16 +238,66 @@ func (s *Service) loadPersistedModelSettings(ctx context.Context) (modelSettings
 	if len(encryptedKey) > 0 {
 		keyring, err := localPayloadKeyringFromEnv()
 		if err != nil {
-			return modelSettingsValues{}, fmt.Errorf("decrypt model API key: %w", err)
+			return modelSettingsValues{}, fmt.Errorf("%w: initialize local keyring: %v", errModelSettingsDecryption, err)
 		}
 		payload, err := decryptPayloadEnvelope(keyring, modelSettingsAAD(), encryptedKey, "model API key")
 		if err != nil {
-			return modelSettingsValues{}, err
+			return modelSettingsValues{}, fmt.Errorf("%w: %v", errModelSettingsDecryption, err)
 		}
 		values.apiKey, _ = payload["api_key"].(string)
 	}
 	values.source = modelSettingsSourceDB
 	values.updatedAt = &updatedAt
+	return values, nil
+}
+
+func modelSettingsKeyRecoveryEnabled() bool {
+	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("STEWARD_MODEL_SETTINGS_KEY_RECOVERY")))
+	return enabled
+}
+
+// recoverPersistedModelSettingsAPIKey repairs only the encrypted secret field.
+// It is deliberately gated by an explicit service-install marker and requires
+// the operator-supplied API key to still be present in the protected private
+// environment file. Non-secret database settings remain authoritative.
+func (s *Service) recoverPersistedModelSettingsAPIKey(ctx context.Context) (modelSettingsValues, error) {
+	apiKey := strings.TrimSpace(os.Getenv("STEWARD_LLM_API_KEY"))
+	if apiKey == "" {
+		return modelSettingsValues{}, errors.New("STEWARD_LLM_API_KEY is empty")
+	}
+	var values modelSettingsValues
+	var updatedAt time.Time
+	err := s.db.Pool.QueryRow(ctx, `
+		select provider, base_url, model, allow_no_api_key, max_data_level, timeout_seconds,
+		       agent_max_rounds, agent_max_tool_calls, agent_max_duration_seconds, agent_no_progress_limit, agent_progress_detail, updated_at
+		from steward_model_settings where id=$1
+	`, primaryModelSettingsID).Scan(&values.provider, &values.baseURL, &values.model,
+		&values.allowNoAPIKey, &values.maxDataLevel, &values.timeoutSeconds, &values.agentMaxRounds,
+		&values.agentMaxToolCalls, &values.agentMaxDurationSeconds, &values.agentNoProgressLimit,
+		&values.agentProgressDetail, &updatedAt)
+	if err != nil {
+		return modelSettingsValues{}, fmt.Errorf("load persisted model metadata: %w", err)
+	}
+	values.apiKey = apiKey
+	values.source = modelSettingsSourceDB
+	if err := validateModelSettings(values); err != nil {
+		return modelSettingsValues{}, fmt.Errorf("validate recovered model settings: %w", err)
+	}
+	keyring, err := localPayloadKeyringFromEnv()
+	if err != nil {
+		return modelSettingsValues{}, fmt.Errorf("initialize recovery keyring: %w", err)
+	}
+	encryptedKey, err := encryptPayloadEnvelope(keyring, modelSettingsAAD(), map[string]any{"api_key": apiKey}, SyncEncryptionScopeLocalAtRest)
+	if err != nil {
+		return modelSettingsValues{}, fmt.Errorf("encrypt recovered model API key: %w", err)
+	}
+	now := time.Now().UTC()
+	if _, err := s.db.Pool.Exec(ctx, `
+		update steward_model_settings set api_key_encrypted=$2, updated_at=$3 where id=$1
+	`, primaryModelSettingsID, encryptedKey, now); err != nil {
+		return modelSettingsValues{}, fmt.Errorf("save recovered model API key: %w", err)
+	}
+	values.updatedAt = &now
 	return values, nil
 }
 

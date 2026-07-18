@@ -3,7 +3,7 @@ package privilegebroker
 import "time"
 
 const (
-	APIVersion        = "steward-privilege-broker/v1.3"
+	APIVersion        = "steward-privilege-broker/v1.4"
 	DelegationVersion = "steward-broker-delegation/v1"
 
 	HeaderTimestamp = "X-Steward-Broker-Timestamp"
@@ -12,16 +12,18 @@ const (
 )
 
 type PublicCapability struct {
-	Name             string   `json:"name"`
-	Description      string   `json:"description"`
-	PermissionLevel  string   `json:"permission_level"`
-	RiskLevel        string   `json:"risk_level"`
-	ExecutableName   string   `json:"executable_name"`
-	ArgumentCount    int      `json:"argument_count"`
-	TimeoutSeconds   int      `json:"timeout_seconds"`
-	MaxOutputBytes   int      `json:"max_output_bytes"`
-	CapabilityDigest string   `json:"capability_digest"`
-	CredentialIDs    []string `json:"credential_ids,omitempty"`
+	Name              string   `json:"name"`
+	Description       string   `json:"description"`
+	PermissionLevel   string   `json:"permission_level"`
+	RiskLevel         string   `json:"risk_level"`
+	ExecutableName    string   `json:"executable_name"`
+	ArgumentCount     int      `json:"argument_count"`
+	TimeoutSeconds    int      `json:"timeout_seconds"`
+	MaxOutputBytes    int      `json:"max_output_bytes"`
+	CapabilityDigest  string   `json:"capability_digest"`
+	CredentialIDs     []string `json:"credential_ids,omitempty"`
+	AcceptsInput      bool     `json:"accepts_input,omitempty"`
+	InputSchemaDigest string   `json:"input_schema_digest,omitempty"`
 }
 
 type PublicBrokerPeer struct {
@@ -75,6 +77,7 @@ type CapabilityTokenClaims struct {
 	DelegationID      string    `json:"delegation_id,omitempty"`
 	OriginBrokerKeyID string    `json:"origin_broker_key_id,omitempty"`
 	CredentialRefs    []string  `json:"credential_refs,omitempty"`
+	InputSHA256       string    `json:"input_sha256,omitempty"`
 }
 
 type GrantResponse struct {
@@ -84,12 +87,28 @@ type GrantResponse struct {
 }
 
 type ExecuteRequest struct {
-	Token             string `json:"token"`
-	Capability        string `json:"capability"`
-	Subject           string `json:"subject"`
-	PlanHash          string `json:"plan_hash"`
-	ApprovalRef       string `json:"approval_ref"`
-	ControlGeneration int64  `json:"control_generation"`
+	Token             string         `json:"token"`
+	Capability        string         `json:"capability"`
+	Subject           string         `json:"subject"`
+	PlanHash          string         `json:"plan_hash"`
+	ApprovalRef       string         `json:"approval_ref"`
+	ControlGeneration int64          `json:"control_generation"`
+	Arguments         map[string]any `json:"arguments,omitempty"`
+	InputSHA256       string         `json:"input_sha256,omitempty"`
+}
+
+// ToolExecuteRequest is the owner-mode service-to-Broker protocol used by the
+// restricted main service. It does not carry an approval proof: the caller is
+// authenticated by the main-service-only client key, while the Broker remains
+// authoritative for the executable hash, exact capability, input schema,
+// emergency-stop generation, replay protection, audit and signed receipt.
+type ToolExecuteRequest struct {
+	Capability        string         `json:"capability"`
+	Subject           string         `json:"subject"`
+	InvocationID      string         `json:"invocation_id"`
+	Arguments         map[string]any `json:"arguments"`
+	InputSHA256       string         `json:"input_sha256"`
+	ControlGeneration int64          `json:"control_generation"`
 }
 
 type ExecutionReceipt struct {
@@ -119,6 +138,7 @@ type ExecutionReceipt struct {
 	DelegationID      string    `json:"delegation_id,omitempty"`
 	OriginBrokerKeyID string    `json:"origin_broker_key_id,omitempty"`
 	CredentialRefs    []string  `json:"credential_refs,omitempty"`
+	InputSHA256       string    `json:"input_sha256,omitempty"`
 }
 
 type SignedExecutionReceipt struct {
@@ -150,6 +170,15 @@ type Authorization struct {
 	PlanHash          string
 	ApprovalRef       string
 	ApprovalProof     SignedApprovalProof
+	ControlGeneration int64
+	Arguments         map[string]any
+}
+
+type ToolAuthorization struct {
+	Capability        string
+	Subject           string
+	InvocationID      string
+	Arguments         map[string]any
 	ControlGeneration int64
 }
 

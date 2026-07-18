@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"mongojson/backend/internal/platform/servicecontrol"
 )
 
 func TestLoadPrivateEnvironmentAllowsOnlyBrokerSecrets(t *testing.T) {
@@ -12,7 +14,7 @@ func TestLoadPrivateEnvironmentAllowsOnlyBrokerSecrets(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"STEWARD_BROKER_CLIENT_KEY":"client","STEWARD_BROKER_CONTROL_KEY":"control","STEWARD_BROKER_SIGNING_PRIVATE_KEY":"private"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := loadPrivateEnvironment(path); err != nil {
+	if err := servicecontrol.LoadPrivateEnvironmentFile(path); err != nil {
 		t.Fatal(err)
 	}
 	if got := os.Getenv("STEWARD_BROKER_CLIENT_KEY"); got != "client" {
@@ -25,7 +27,7 @@ func TestLoadPrivateEnvironmentRejectsUnexpectedKey(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"PATH":"malicious"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := loadPrivateEnvironment(path); err == nil {
+	if err := servicecontrol.LoadPrivateEnvironmentFile(path); err == nil {
 		t.Fatal("expected unsupported key to be rejected")
 	}
 }

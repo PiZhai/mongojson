@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -29,16 +33,26 @@ func main() {
 		err = runBroker(os.Args[2:])
 	case "keygen":
 		err = keygen()
+	case "bootstrap":
+		err = bootstrap(argsAfterCommand())
+	case "refresh-system-policy":
+		err = refreshSystemPolicy(argsAfterCommand())
 	case "validate-policy":
 		err = validatePolicy(os.Args[2:])
 	case "initialize-checkpoint":
 		err = initializeCheckpoint(os.Args[2:])
 	case "status":
 		err = brokerStatus()
+	case "tool-execute":
+		err = brokerToolExecute(argsAfterCommand())
 	case "control":
 		err = brokerControl(os.Args[2:])
 	case "service":
 		err = brokerService(os.Args[2:])
+	case "session0-self-test-service":
+		err = session0SelfTestService(os.Args[2:])
+	case "session0-self-test-child":
+		privilegebroker.CapabilityLaunchSelfTestChild(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(2)
@@ -46,6 +60,50 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func session0SelfTestService(args []string) error {
+	fs := flag.NewFlagSet("steward-broker session0-self-test-service", flag.ContinueOnError)
+	serviceName := fs.String("service-name", "MongojsonStewardBrokerSession0Smoke", "temporary Windows service name")
+	resultFile := fs.String("result-file", "", "absolute JSON result path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*resultFile) == "" {
+		return fmt.Errorf("session0 self-test requires --result-file")
+	}
+	path, err := filepath.Abs(*resultFile)
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return servicecontrol.Run(*serviceName, func(ctx context.Context) error {
+		testCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		secretProbe := path + ".broker-secret"
+		if err := os.WriteFile(secretProbe, []byte("must-not-be-readable-by-capability"), 0o600); err != nil {
+			return err
+		}
+		defer os.Remove(secretProbe)
+		if err := servicecontrol.ProtectServicePaths(*serviceName, []string{secretProbe}); err != nil {
+			return fmt.Errorf("protect Session 0 secret probe: %w", err)
+		}
+		if _, err := os.ReadFile(secretProbe); err != nil {
+			return fmt.Errorf("Broker lost access to service-SID secret probe: %w", err)
+		}
+		result := privilegebroker.RunCapabilityLaunchSelfTestSuiteWithDeniedPath(testCtx, executable, secretProbe)
+		payload, marshalErr := json.MarshalIndent(result, "", "  ")
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if err := os.WriteFile(path, payload, 0o600); err != nil {
+			return fmt.Errorf("write Session 0 self-test result: %w", err)
+		}
+		return nil
+	})
 }
 
 func runBroker(args []string) error {
@@ -62,7 +120,7 @@ func runBroker(args []string) error {
 		}
 	}
 	if strings.TrimSpace(*privateEnvironmentFile) != "" {
-		if err := loadPrivateEnvironment(*privateEnvironmentFile); err != nil {
+		if err := servicecontrol.LoadPrivateEnvironmentFile(*privateEnvironmentFile); err != nil {
 			return err
 		}
 	}
@@ -97,6 +155,209 @@ func keygen() error {
 			"STEWARD_BROKER_PUBLIC_KEY": keys.SigningPublicKey,
 		},
 	})
+}
+
+type systemToolCatalog struct {
+	Protocol string `json:"protocol"`
+	Tools    []struct {
+		Name           string         `json:"name"`
+		Description    string         `json:"description"`
+		InputSchema    map[string]any `json:"input_schema"`
+		TimeoutSeconds int            `json:"timeout_seconds"`
+	} `json:"tools"`
+}
+
+func argsAfterCommand() []string { return os.Args[2:] }
+
+func bootstrap(args []string) (returnErr error) {
+	fs := flag.NewFlagSet("steward-broker bootstrap", flag.ContinueOnError)
+	outputDir := fs.String("output-dir", "", "new protected bootstrap directory")
+	systemToolHost := fs.String("system-tool-host", "", "absolute steward-system-tool-host executable")
+	force := fs.Bool("force", false, "replace an existing bootstrap directory while retaining a rollback backup")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*outputDir) == "" || strings.TrimSpace(*systemToolHost) == "" {
+		return fmt.Errorf("bootstrap requires --output-dir and --system-tool-host")
+	}
+	host, err := filepath.Abs(strings.TrimSpace(*systemToolHost))
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(host)
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("system tool host is unavailable: %s", host)
+	}
+	hostDigest, err := hashBootstrapFile(host)
+	if err != nil {
+		return err
+	}
+	catalogPayload, err := exec.Command(host, "catalog").Output()
+	if err != nil {
+		return fmt.Errorf("read system tool catalog: %w", err)
+	}
+	var catalog systemToolCatalog
+	if err := json.Unmarshal(catalogPayload, &catalog); err != nil || catalog.Protocol != "steward-system-tool-catalog/1" || len(catalog.Tools) == 0 {
+		return fmt.Errorf("system tool host returned an invalid catalog")
+	}
+	dir, err := filepath.Abs(strings.TrimSpace(*outputDir))
+	if err != nil {
+		return err
+	}
+	backup := ""
+	if _, err := os.Stat(dir); err == nil {
+		if !*force {
+			return fmt.Errorf("bootstrap directory already exists: %s", dir)
+		}
+		backup = fmt.Sprintf("%s.backup-%s", dir, time.Now().UTC().Format("20060102-150405"))
+		if err := os.Rename(dir, backup); err != nil {
+			return fmt.Errorf("backup existing bootstrap directory: %w", err)
+		}
+	}
+	defer func() {
+		if returnErr != nil && backup != "" {
+			_ = os.RemoveAll(dir)
+			_ = os.Rename(backup, dir)
+		}
+	}()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	brokerKeys, err := privilegebroker.GenerateKeys()
+	if err != nil {
+		return err
+	}
+	approvalKeys, err := privilegebroker.GenerateApprovalAuthorityKeys()
+	if err != nil {
+		return err
+	}
+	capabilities := make([]privilegebroker.Capability, 0, len(catalog.Tools))
+	for _, item := range catalog.Tools {
+		capabilities = append(capabilities, privilegebroker.Capability{
+			Name: "tool:" + strings.ToLower(strings.TrimSpace(item.Name)), Description: item.Description,
+			Executable: host, ExecutableSHA256: hostDigest,
+			Arguments: []string{"run"}, WorkingDirectory: filepath.Dir(host), TimeoutSeconds: item.TimeoutSeconds,
+			MaxOutputBytes: 8 << 20, Enabled: true, InputSchema: item.InputSchema,
+		})
+	}
+	policy := privilegebroker.Policy{Version: 3, ApprovalAuthorities: []privilegebroker.ApprovalAuthority{{
+		Name: "local-operator", Algorithm: privilegebroker.ApprovalEd25519, PublicKey: approvalKeys.PublicKey, Enabled: true,
+	}}, Capabilities: capabilities}
+	policyPath := filepath.Join(dir, "policy.json")
+	if err := writeBootstrapJSON(policyPath, policy); err != nil {
+		return err
+	}
+	brokerSecrets := map[string]string{
+		"STEWARD_BROKER_CLIENT_KEY": brokerKeys.ClientKey, "STEWARD_BROKER_CONTROL_KEY": brokerKeys.ControlKey,
+		"STEWARD_BROKER_SIGNING_PRIVATE_KEY": brokerKeys.SigningPrivateKey,
+	}
+	if err := writeBootstrapJSON(filepath.Join(dir, "broker-secrets.json"), brokerSecrets); err != nil {
+		return err
+	}
+	if err := writeBootstrapJSON(filepath.Join(dir, "steward-broker-client.json"), map[string]string{
+		"STEWARD_BROKER_CLIENT_KEY": brokerKeys.ClientKey, "STEWARD_BROKER_PUBLIC_KEY": brokerKeys.SigningPublicKey,
+	}); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "approval-private-key.txt"), []byte(approvalKeys.PrivateKey+"\n"), 0o600); err != nil {
+		return err
+	}
+	manifest := map[string]any{"version": "steward-broker-bootstrap/1", "created_at": time.Now().UTC(),
+		"system_tool_host": host, "system_tool_host_sha256": hostDigest, "capability_count": len(capabilities),
+		"policy": policyPath, "rollback_backup": backup}
+	if err := writeBootstrapJSON(filepath.Join(dir, "bootstrap-manifest.json"), manifest); err != nil {
+		return err
+	}
+	return printJSON(map[string]any{"ok": true, "output_dir": dir, "policy": policyPath,
+		"broker_secrets": filepath.Join(dir, "broker-secrets.json"), "steward_client": filepath.Join(dir, "steward-broker-client.json"),
+		"approval_private_key": filepath.Join(dir, "approval-private-key.txt"), "capabilities": len(capabilities), "rollback_backup": backup})
+}
+
+func refreshSystemPolicy(args []string) error {
+	fs := flag.NewFlagSet("steward-broker refresh-system-policy", flag.ContinueOnError)
+	policyPath := fs.String("policy", "", "existing protected Broker policy")
+	systemToolHost := fs.String("system-tool-host", "", "new installed System Tool Host")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*policyPath) == "" || strings.TrimSpace(*systemToolHost) == "" {
+		return fmt.Errorf("refresh-system-policy requires --policy and --system-tool-host")
+	}
+	host, err := filepath.Abs(*systemToolHost)
+	if err != nil {
+		return err
+	}
+	digest, err := hashBootstrapFile(host)
+	if err != nil {
+		return err
+	}
+	payload, err := os.ReadFile(*policyPath)
+	if err != nil {
+		return err
+	}
+	var policy privilegebroker.Policy
+	decoder := json.NewDecoder(strings.NewReader(string(payload)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&policy); err != nil {
+		return fmt.Errorf("decode existing policy: %w", err)
+	}
+	catalogPayload, err := exec.Command(host, "catalog").Output()
+	if err != nil {
+		return err
+	}
+	var catalog systemToolCatalog
+	if err := json.Unmarshal(catalogPayload, &catalog); err != nil || catalog.Protocol != "steward-system-tool-catalog/1" {
+		return fmt.Errorf("invalid System Tool Host catalog")
+	}
+	preserved := make([]privilegebroker.Capability, 0, len(policy.Capabilities)+len(catalog.Tools))
+	for _, capability := range policy.Capabilities {
+		if capability.InputSchema == nil || !strings.HasPrefix(strings.ToLower(capability.Name), "tool:") {
+			preserved = append(preserved, capability)
+		}
+	}
+	for _, item := range catalog.Tools {
+		preserved = append(preserved, privilegebroker.Capability{Name: "tool:" + strings.ToLower(item.Name), Description: item.Description, Executable: host, ExecutableSHA256: digest, Arguments: []string{"run"}, WorkingDirectory: filepath.Dir(host), TimeoutSeconds: item.TimeoutSeconds, MaxOutputBytes: 8 << 20, Enabled: true, InputSchema: item.InputSchema})
+	}
+	policy.Capabilities = preserved
+	loaded, err := privilegebroker.ValidatePolicy(policy)
+	if err != nil {
+		return fmt.Errorf("validate refreshed policy: %w", err)
+	}
+	backup := fmt.Sprintf("%s.backup-%s", *policyPath, time.Now().UTC().Format("20060102-150405"))
+	if err := os.WriteFile(backup, payload, 0o600); err != nil {
+		return err
+	}
+	if err := writeBootstrapJSON(*policyPath, loaded.Policy); err != nil {
+		_ = os.Rename(backup, *policyPath)
+		return err
+	}
+	return printJSON(map[string]any{"ok": true, "policy": *policyPath, "backup": backup, "policy_digest": loaded.Digest, "system_capabilities": len(catalog.Tools)})
+}
+
+func hashBootstrapFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.LimitReader(file, 1<<30)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func writeBootstrapJSON(path string, value any) error {
+	payload, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	temp := path + ".tmp"
+	if err := os.WriteFile(temp, payload, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temp, path)
 }
 
 func validatePolicy(args []string) error {
@@ -139,6 +400,38 @@ func brokerStatus() error {
 		return err
 	}
 	return printJSON(status)
+}
+
+func brokerToolExecute(args []string) error {
+	fs := flag.NewFlagSet("steward-broker tool-execute", flag.ContinueOnError)
+	capability := fs.String("capability", "", "parameterized policy capability")
+	argumentsJSON := fs.String("arguments-json", "{}", "one JSON object matching the capability schema")
+	invocationID := fs.String("invocation-id", fmt.Sprintf("acceptance-%d", time.Now().UnixNano()), "unique idempotency and receipt id")
+	subject := fs.String("subject", "local-admin-acceptance", "audited caller identity")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var arguments map[string]any
+	decoder := json.NewDecoder(strings.NewReader(*argumentsJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&arguments); err != nil {
+		return fmt.Errorf("decode arguments-json: %w", err)
+	}
+	client, err := privilegebroker.NewClientFromEnv()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	status, err := client.Status(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := client.ExecuteTool(ctx, privilegebroker.ToolAuthorization{Capability: *capability, Subject: *subject, InvocationID: *invocationID, Arguments: arguments, ControlGeneration: status.Generation})
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
 }
 
 func brokerControl(args []string) error {
@@ -265,7 +558,8 @@ func brokerServiceInstall(args []string) error {
 		StorageDir:  dataDir, DryRun: *dryRun, ServiceArgs: serviceArgs,
 		WindowsHardened: runtime.GOOS == "windows", InstallDir: installDir,
 		PrivateEnvironmentFile: privateEnvironmentFile,
-		ProtectedPaths:         []string{dataDir, servicePolicyPath}, ProtectedFileCopies: protectedCopies,
+		WindowsServiceAccount:  "localsystem", WindowsServiceSIDType: "unrestricted",
+		ProtectedPaths: []string{dataDir, servicePolicyPath}, ProtectedFileCopies: protectedCopies,
 		ExplicitEnvironment: map[string]string{
 			"STEWARD_BROKER_LISTEN": listen, "STEWARD_BROKER_POLICY": servicePolicyPath,
 			"STEWARD_BROKER_STATE": statePath, "STEWARD_BROKER_AUDIT": auditPath,
@@ -311,7 +605,8 @@ func brokerServiceInstall(args []string) error {
 		} else if err != nil {
 			return fmt.Errorf("inspect broker checkpoint: %w", err)
 		}
-		paths := []string{servicePolicyPath, statePath, checkpointPath}
+		installedBroker := filepath.Join(installDir, filepath.Base(binary))
+		paths := []string{installDir, installedBroker, dataDir, privateEnvironmentFile, servicePolicyPath, statePath, checkpointPath}
 		if _, err := os.Stat(auditPath); err == nil {
 			paths = append(paths, auditPath)
 		}
@@ -399,34 +694,6 @@ func envOrDefault(key, fallback string) string {
 	return value
 }
 
-func loadPrivateEnvironment(path string) error {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read private service environment: %w", err)
-	}
-	values := map[string]string{}
-	if err := json.Unmarshal(content, &values); err != nil {
-		return fmt.Errorf("decode private service environment: %w", err)
-	}
-	allowed := map[string]bool{
-		"DATABASE_URL":              true,
-		"STEWARD_BROKER_CLIENT_KEY": true, "STEWARD_BROKER_CONTROL_KEY": true,
-		"STEWARD_BROKER_SIGNING_PRIVATE_KEY": true,
-	}
-	for key, value := range values {
-		if !allowed[key] {
-			return fmt.Errorf("private service environment contains unsupported key %q", key)
-		}
-		if strings.ContainsRune(value, '\x00') {
-			return fmt.Errorf("private service environment %s contains NUL", key)
-		}
-		if err := os.Setenv(key, value); err != nil {
-			return fmt.Errorf("set private service environment %s: %w", key, err)
-		}
-	}
-	return nil
-}
-
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: steward-broker <run|keygen|validate-policy|initialize-checkpoint|status|control|service>")
+	fmt.Fprintln(os.Stderr, "usage: steward-broker <run|keygen|bootstrap|refresh-system-policy|validate-policy|initialize-checkpoint|status|tool-execute|control|service>")
 }

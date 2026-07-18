@@ -18,6 +18,7 @@ type PrivilegeBrokerClient interface {
 	Status(context.Context) (privilegebroker.Status, error)
 	Capability(context.Context, string) (privilegebroker.PublicCapability, error)
 	ExecuteCapability(context.Context, privilegebroker.Authorization) (privilegebroker.ExecuteResponse, error)
+	ExecuteTool(context.Context, privilegebroker.ToolAuthorization) (privilegebroker.ExecuteResponse, error)
 	SetControl(context.Context, bool, privilegebroker.ControlRequest) (privilegebroker.Status, error)
 }
 
@@ -70,7 +71,7 @@ func newRuntimePrivilegeBrokerTool(service *Service) RuntimeTool {
 func (runtimePrivilegeBrokerTool) Spec() domain.StewardToolSpec {
 	return domain.StewardToolSpec{
 		Name: "privilege.execute", Version: "3.1.0",
-		Description: "Execute one fixed A4-A7 capability through the isolated Privilege Broker. The main process never receives an executable path or dynamic arguments.",
+		Description: "Execute one legacy fixed capability through the isolated Privilege Broker. Parameterized system tools use their native schemas and are routed to Broker automatically.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"capability"}, "properties": map[string]any{
 			"capability": map[string]any{"type": "string"},
 		}},
