@@ -28,6 +28,18 @@ type resilientAutonomyAdvisor struct {
 	lastError           string
 }
 
+func supportsNativeAgentTurns(advisor AutonomyAdvisor) bool {
+	for {
+		resilient, ok := advisor.(*resilientAutonomyAdvisor)
+		if !ok || resilient == nil {
+			break
+		}
+		advisor = resilient.base
+	}
+	_, ok := advisor.(AgentTurnAdvisor)
+	return ok
+}
+
 func resilientAutonomyAdvisorFromEnv(base AutonomyAdvisor) AutonomyAdvisor {
 	if base == nil {
 		return DisabledAutonomyAdvisor("disabled")
@@ -110,6 +122,48 @@ func (a *resilientAutonomyAdvisor) Converse(ctx context.Context, input Conversat
 		}
 		a.recordFailure(err)
 		return ConversationAdvisorResponse{}, err
+	}
+	a.recordSuccess()
+	return response, nil
+}
+
+func (a *resilientAutonomyAdvisor) NextTurn(ctx context.Context, input AgentTurnInput) (AgentTurnDecision, error) {
+	if a == nil || a.base == nil {
+		return AgentTurnDecision{}, fmt.Errorf("autonomy advisor disabled: disabled")
+	}
+	advisor, ok := a.base.(AgentTurnAdvisor)
+	if !ok {
+		legacy, legacyOK := a.base.(ConversationAdvisor)
+		if !legacyOK || len(input.Transcript) > 0 {
+			return AgentTurnDecision{}, fmt.Errorf("configured advisor does not support agent turns")
+		}
+		response, err := legacy.Converse(ctx, ConversationAdvisorInput{
+			Message: input.Message, DataLevel: input.DataLevel, History: input.History, Context: input.Context,
+			Tools: input.Tools, Devices: input.Devices, KnownFolders: input.KnownFolders, CurrentTime: input.CurrentTime,
+		})
+		if err != nil {
+			return AgentTurnDecision{}, err
+		}
+		decision := AgentTurnDecision{Content: response.Reply}
+		if response.ExecutionPlan != nil {
+			decision.Content = strings.TrimSpace(strings.Join([]string{response.Reply, response.ExecutionPlan.Summary}, " "))
+			decision.ReasoningContent = response.ExecutionPlan.ReasoningContent
+			for index, step := range response.ExecutionPlan.Steps {
+				decision.ToolCalls = append(decision.ToolCalls, domain.StewardAgentToolCall{ID: fmt.Sprintf("call_%d", index+1), ToolName: step.ToolName, Arguments: step.Arguments, TargetDeviceID: response.TargetDevice})
+			}
+		}
+		return decision, nil
+	}
+	if err := a.checkCircuit(); err != nil {
+		return AgentTurnDecision{}, err
+	}
+	response, err := advisor.NextTurn(ctx, input)
+	if err != nil {
+		if errors.Is(err, ErrAdvisorDataLevelDenied) {
+			return AgentTurnDecision{}, err
+		}
+		a.recordFailure(err)
+		return AgentTurnDecision{}, err
 	}
 	a.recordSuccess()
 	return response, nil

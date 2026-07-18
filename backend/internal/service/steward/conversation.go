@@ -30,6 +30,10 @@ type SendConversationMessageInput struct {
 	ContextLimit int    `json:"context_limit"`
 }
 
+type UpdateConversationInput struct {
+	Archived bool `json:"archived"`
+}
+
 type DecideConversationSuggestionInput struct {
 	Decision string `json:"decision"`
 }
@@ -66,18 +70,27 @@ func (s *Service) CreateConversation(ctx context.Context, input CreateConversati
 }
 
 func (s *Service) ListConversations(ctx context.Context, limit int) ([]domain.StewardConversation, error) {
+	return s.listConversations(ctx, limit, false)
+}
+
+func (s *Service) ListArchivedConversations(ctx context.Context, limit int) ([]domain.StewardConversation, error) {
+	return s.listConversations(ctx, limit, true)
+}
+
+func (s *Service) listConversations(ctx context.Context, limit int, archived bool) ([]domain.StewardConversation, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
 	rows, err := s.db.Pool.Query(ctx, `
-		select c.id, c.title, c.status, c.data_level, count(m.id), max(m.created_at), c.created_at, c.updated_at
+		select c.id, c.title, c.status, c.data_level, count(m.id), max(m.created_at), c.archived_at, c.created_at, c.updated_at
 		from steward_conversations c
 		left join steward_conversation_messages m on m.conversation_id = c.id and m.role <> 'system'
 		where c.status <> 'deleted'
+		  and (($2 and c.archived_at is not null) or (not $2 and c.archived_at is null))
 		group by c.id
-		order by coalesce(max(m.created_at), c.updated_at) desc
+		order by case when $2 then c.archived_at else coalesce(max(m.created_at), c.updated_at) end desc
 		limit $1
-	`, limit)
+	`, limit, archived)
 	if err != nil {
 		return nil, fmt.Errorf("list steward conversations: %w", err)
 	}
@@ -85,12 +98,29 @@ func (s *Service) ListConversations(ctx context.Context, limit int) ([]domain.St
 	items := []domain.StewardConversation{}
 	for rows.Next() {
 		var item domain.StewardConversation
-		if err := rows.Scan(&item.ID, &item.Title, &item.Status, &item.DataLevel, &item.MessageCount, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.Status, &item.DataLevel, &item.MessageCount, &item.LastMessageAt, &item.ArchivedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *Service) UpdateConversation(ctx context.Context, id string, input UpdateConversationInput) (domain.StewardConversation, error) {
+	now := time.Now().UTC()
+	command, err := s.db.Pool.Exec(ctx, `
+		update steward_conversations
+		set archived_at = case when $2 then coalesce(archived_at, $3) else null end,
+		    updated_at = $3
+		where id = $1 and status <> 'deleted'
+	`, id, input.Archived, now)
+	if err != nil {
+		return domain.StewardConversation{}, fmt.Errorf("update steward conversation: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return domain.StewardConversation{}, fmt.Errorf("update steward conversation: %w", pgx.ErrNoRows)
+	}
+	return s.getConversation(ctx, id)
 }
 
 func (s *Service) ListConversationMessages(ctx context.Context, conversationID string, limit int) ([]domain.StewardConversationMessage, error) {
@@ -130,6 +160,10 @@ func (s *Service) ListConversationMessages(ctx context.Context, conversationID s
 		if err != nil {
 			return nil, err
 		}
+		item.Episodes, err = s.listAgentEpisodesForMessage(ctx, item.ID)
+		if err != nil {
+			return nil, err
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -143,6 +177,9 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	conversation, err := s.getConversation(ctx, conversationID)
 	if err != nil {
 		return SendConversationMessageResult{}, err
+	}
+	if conversation.ArchivedAt != nil {
+		return SendConversationMessageResult{}, fmt.Errorf("conversation is archived; restore it before sending messages")
 	}
 	// The conversation level describes data already stored in the thread; it is
 	// not the provenance of a new message typed by the user. Inheriting it here
@@ -177,6 +214,17 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 		}
 		return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
 	}
+	if episode, resumed, resumeErr := s.resumeAwaitingAgentEpisode(ctx, conversationID, content); resumeErr != nil {
+		return SendConversationMessageResult{}, resumeErr
+	} else if resumed {
+		assistant, insertErr := s.insertConversationMessage(ctx, conversationID, conversationRoleAssistant, "收到补充，我会从刚才的位置继续。", level, "agent-loop-r4.9", "agent-resumed:"+episode.ID)
+		if insertErr != nil {
+			return SendConversationMessageResult{}, insertErr
+		}
+		_, _ = s.db.Pool.Exec(ctx, `update steward_agent_episodes set progress_message_id=$2,updated_at=$3 where id=$1`, episode.ID, assistant.ID, time.Now().UTC())
+		conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
+		return SendConversationMessageResult{Conversation: conversation, Message: assistant}, err
+	}
 	contextLimit := input.ContextLimit
 	if contextLimit <= 0 || contextLimit > 20 {
 		contextLimit = 10
@@ -192,16 +240,41 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	// model requests is evaluated separately against the tool's real A-level.
 	permissionPolicy, permissionErr := s.ResolvePermissionPolicy(ctx, PermissionA3, "model:conversation")
 	modelAllowed := policyErr == nil && permissionErr == nil && dataPolicyAllowsManualModel(dataPolicy) && permissionPolicy.ExecutionMode != PolicyModeDeny
-	if advisor, ok := s.autonomyAdvisor().(ConversationAdvisor); ok && s.autonomyAdvisor().Status().Enabled && modelAllowed {
+	if s.autonomyAdvisor().Status().Enabled && modelAllowed {
 		modelContent := conversationModelText(content, level, dataPolicy.ModelContentMode)
 		modelHistory := conversationModelHistory(history, dataPolicy.ModelContentMode)
 		devices := s.conversationAdvisorDevices(ctx)
-		advisorResponse, advisorErr := advisor.Converse(ctx, ConversationAdvisorInput{
-			Message: modelContent, DataLevel: level, History: modelHistory, Context: localContext,
-			Tools: s.runtimeTools.specs(), Devices: devices, KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(),
-		})
+		var advisorErr error
+		if advisor, ok := s.autonomyAdvisor().(AgentTurnAdvisor); ok {
+			decision, turnErr := nextValidAgentTurn(ctx, advisor, AgentTurnInput{
+				Message: modelContent, DataLevel: level, TriggerKind: "conversation", History: modelHistory, Context: localContext,
+				Tools: s.runtimeTools.specs(), Devices: devices, KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(), Round: 1,
+			})
+			advisorErr = turnErr
+			if turnErr == nil {
+				model = defaultString(s.autonomyAdvisor().Status().Model, s.autonomyAdvisor().Status().Provider)
+				if len(decision.ToolCalls) > 0 {
+					executionMessage, _, executionErr := s.startAgentEpisode(ctx, conversation, userMessage, content, level, "conversation", decision)
+					if executionErr != nil {
+						return SendConversationMessageResult{}, executionErr
+					}
+					conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
+					if err != nil {
+						return SendConversationMessageResult{}, err
+					}
+					return SendConversationMessageResult{Conversation: conversation, Message: executionMessage}, nil
+				}
+				response = ConversationAdvisorResponse{Intent: "answer", Reply: decision.Content, Confidence: 1}
+			}
+		} else if advisor, ok := s.autonomyAdvisor().(ConversationAdvisor); ok {
+			response, advisorErr = advisor.Converse(ctx, ConversationAdvisorInput{
+				Message: modelContent, DataLevel: level, History: modelHistory, Context: localContext,
+				Tools: s.runtimeTools.specs(), Devices: devices, KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(),
+			})
+		} else {
+			advisorErr = fmt.Errorf("configured model does not support conversation")
+		}
 		if advisorErr == nil {
-			response = advisorResponse
 			model = defaultString(s.autonomyAdvisor().Status().Model, s.autonomyAdvisor().Status().Provider)
 			s.recordConversationAdvisorDisclosure(ctx, userMessage.ID, level, dataPolicy.ModelContentMode, modelContent, model)
 			if response.Intent == "execution" {
@@ -325,12 +398,12 @@ func (s *Service) DecideConversationSuggestion(ctx context.Context, id string, i
 func (s *Service) getConversation(ctx context.Context, id string) (domain.StewardConversation, error) {
 	var item domain.StewardConversation
 	err := s.db.Pool.QueryRow(ctx, `
-		select c.id, c.title, c.status, c.data_level, count(m.id), max(m.created_at), c.created_at, c.updated_at
+		select c.id, c.title, c.status, c.data_level, count(m.id), max(m.created_at), c.archived_at, c.created_at, c.updated_at
 		from steward_conversations c
 		left join steward_conversation_messages m on m.conversation_id = c.id and m.role <> 'system'
 		where c.id = $1 and c.status <> 'deleted'
 		group by c.id
-	`, id).Scan(&item.ID, &item.Title, &item.Status, &item.DataLevel, &item.MessageCount, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt)
+	`, id).Scan(&item.ID, &item.Title, &item.Status, &item.DataLevel, &item.MessageCount, &item.LastMessageAt, &item.ArchivedAt, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return domain.StewardConversation{}, fmt.Errorf("get steward conversation: %w", err)
 	}

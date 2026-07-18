@@ -152,10 +152,14 @@ type StewardPeerStore interface {
 type StewardConversationStore interface {
 	CreateConversation(context.Context, steward.CreateConversationInput) (domain.StewardConversation, error)
 	ListConversations(context.Context, int) ([]domain.StewardConversation, error)
+	ListArchivedConversations(context.Context, int) ([]domain.StewardConversation, error)
+	UpdateConversation(context.Context, string, steward.UpdateConversationInput) (domain.StewardConversation, error)
 	ListConversationMessages(context.Context, string, int) ([]domain.StewardConversationMessage, error)
 	SendConversationMessage(context.Context, string, steward.SendConversationMessageInput) (steward.SendConversationMessageResult, error)
 	DecideConversationSuggestion(context.Context, string, steward.DecideConversationSuggestionInput) (domain.StewardConversationSuggestion, error)
 	DecideConversationExecution(context.Context, string, steward.DecideConversationExecutionInput) (domain.StewardConversationExecution, error)
+	GetAgentEpisode(context.Context, string) (domain.StewardAgentEpisode, error)
+	DecideAgentEpisode(context.Context, string, steward.DecideAgentEpisodeInput) (domain.StewardAgentEpisode, error)
 }
 
 type StewardActivityStore interface {
@@ -324,10 +328,13 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/steward/orchestrations/{id}/nodes/{nodeID}/remote-privilege/approve", handler.approveStewardRemotePrivilege)
 		r.Get("/steward/conversations", handler.listStewardConversations)
 		r.Post("/steward/conversations", handler.createStewardConversation)
+		r.Patch("/steward/conversations/{id}", handler.updateStewardConversation)
 		r.Get("/steward/conversations/{id}/messages", handler.listStewardConversationMessages)
 		r.Post("/steward/conversations/{id}/messages", handler.sendStewardConversationMessage)
 		r.Post("/steward/conversation-suggestions/{id}/decision", handler.decideStewardConversationSuggestion)
 		r.Post("/steward/conversation-executions/{id}/decision", handler.decideStewardConversationExecution)
+		r.Get("/steward/agent-episodes/{id}", handler.getStewardAgentEpisode)
+		r.Post("/steward/agent-episodes/{id}/decision", handler.decideStewardAgentEpisode)
 		r.Get("/steward/model-settings", handler.getStewardModelSettings)
 		r.Patch("/steward/model-settings", handler.updateStewardModelSettings)
 		r.Get("/steward/activity/observations", handler.listStewardObservations)

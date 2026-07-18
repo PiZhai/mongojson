@@ -52,7 +52,7 @@ func runtimeFilesystemRoots() []string {
 }
 
 func runtimeKnownFolders() map[string]string {
-	home, _ := os.UserHomeDir()
+	home := runtimeUserHome()
 	candidates := map[string][]string{
 		"home":      {home},
 		"desktop":   {filepath.Join(home, "Desktop")},

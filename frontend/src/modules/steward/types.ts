@@ -699,6 +699,7 @@ export type StewardConversation = {
   data_level: string;
   message_count: number;
   last_message_at?: string;
+  archived_at?: string;
   created_at: string;
   updated_at: string;
 };
@@ -730,7 +731,62 @@ export type StewardConversationMessage = {
   context_summary?: string;
   suggestions: StewardConversationSuggestion[];
   executions: StewardConversationExecution[];
+  episodes: StewardAgentEpisode[];
   created_at: string;
+};
+
+export type StewardAgentToolCall = {
+  id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  target_device_id?: string;
+};
+
+export type StewardAgentToolResult = {
+  tool_call_id: string;
+  tool_name: string;
+  output?: Record<string, unknown>;
+  error?: string;
+  evidence?: Record<string, unknown>;
+};
+
+export type StewardAgentTurn = {
+  id: string;
+  episode_id: string;
+  round_index: number;
+  status: string;
+  assistant_content?: string;
+  tool_calls: StewardAgentToolCall[];
+  tool_results: StewardAgentToolResult[];
+  execution_id?: string;
+  failure_summary?: string;
+};
+
+export type StewardAgentEpisode = {
+  id: string;
+  conversation_id: string;
+  trigger_message_id: string;
+  progress_message_id?: string;
+  final_message_id?: string;
+  trigger_kind: string;
+  goal: string;
+  status: 'thinking' | 'executing' | 'awaiting_input' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+  current_round: number;
+  tool_call_count: number;
+  max_rounds: number;
+  max_tool_calls: number;
+  max_duration_seconds: number;
+  no_progress_limit: number;
+  no_progress_count: number;
+  target_device_id?: string;
+  active_execution_id?: string;
+  failure_summary?: string;
+  last_result_summary?: string;
+  turns: StewardAgentTurn[];
+  created_at: string;
+  updated_at: string;
+  deadline_at?: string;
+  completed_at?: string;
 };
 
 export type StewardConversationExecution = {
@@ -1301,6 +1357,11 @@ export type StewardModelSettings = {
   allow_no_api_key: boolean;
   max_data_level: string;
   timeout_seconds: number;
+  agent_max_rounds: number;
+  agent_max_tool_calls: number;
+  agent_max_duration_seconds: number;
+  agent_no_progress_limit: number;
+  agent_progress_detail: 'compact' | 'full' | 'final_only' | string;
   source: 'database' | 'environment' | 'default' | string;
   advisor: StewardAutonomyAdvisorStatus;
   planner: StewardRuntimePlannerStatus;

@@ -284,6 +284,18 @@ func TestExpandRuntimeKnownFolderDesktopAlias(t *testing.T) {
 	}
 }
 
+func TestRuntimeKnownFoldersHonorInteractiveUserHomeOverride(t *testing.T) {
+	home := t.TempDir()
+	desktop := filepath.Join(home, "Desktop")
+	if err := os.MkdirAll(desktop, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STEWARD_RUNTIME_USER_HOME", home)
+	if got := runtimeKnownFolders()["desktop"]; got != desktop {
+		t.Fatalf("desktop alias resolved to %q, want configured interactive desktop %q", got, desktop)
+	}
+}
+
 func TestRuntimeWebFetchBlocksPrivateHostsUnlessExplicitlyAllowed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

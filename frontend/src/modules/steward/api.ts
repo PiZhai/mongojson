@@ -331,8 +331,10 @@ export async function updateStewardRetentionPolicy(id: string, payload: Record<s
   })
 }
 
-export async function getStewardConversations(limit = 30) {
-  return request<{ conversations: StewardConversation[] }>(`${API_BASE}/steward/conversations?limit=${limit}`)
+export async function getStewardConversations(limit = 30, archived = false) {
+  return request<{ conversations: StewardConversation[] }>(
+    `${API_BASE}/steward/conversations?limit=${limit}&archived=${archived}`,
+  )
 }
 
 export async function createStewardConversation(payload: { title?: string; data_level?: string }) {
@@ -386,6 +388,29 @@ export async function decideStewardConversationExecution(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision, reason, approval_proof: approvalProof }),
+    },
+  )
+}
+
+export async function updateStewardConversation(id: string, payload: { archived: boolean }) {
+  return request<{ conversation: StewardConversation }>(`${API_BASE}/steward/conversations/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function decideStewardAgentEpisode(
+  id: string,
+  decision: 'pause' | 'resume' | 'cancel' | 'switch_device',
+  targetDeviceID = '',
+) {
+  return request<{ episode: import('./types').StewardAgentEpisode }>(
+    `${API_BASE}/steward/agent-episodes/${encodeURIComponent(id)}/decision`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, target_device_id: targetDeviceID }),
     },
   )
 }
@@ -973,6 +998,11 @@ export async function updateStewardModelSettings(payload: {
   allow_no_api_key?: boolean
   max_data_level?: string
   timeout_seconds?: number
+  agent_max_rounds?: number
+  agent_max_tool_calls?: number
+  agent_max_duration_seconds?: number
+  agent_no_progress_limit?: number
+  agent_progress_detail?: string
 }) {
   return request<{ settings: StewardModelSettings }>(`${API_BASE}/steward/model-settings`, {
     method: 'PATCH',

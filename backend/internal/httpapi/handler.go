@@ -1455,12 +1455,36 @@ func (h *Handler) listStewardConversations(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	items, err := service.ListConversations(r.Context(), queryLimit(r, 30))
+	var items []domain.StewardConversation
+	var err error
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("archived")), "true") {
+		items, err = service.ListArchivedConversations(r.Context(), queryLimit(r, 30))
+	} else {
+		items, err = service.ListConversations(r.Context(), queryLimit(r, 30))
+	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string][]domain.StewardConversation{"conversations": items})
+}
+
+func (h *Handler) updateStewardConversation(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	var body steward.UpdateConversationInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.UpdateConversation(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardConversation{"conversation": item})
 }
 
 func (h *Handler) createStewardConversation(w http.ResponseWriter, r *http.Request) {
@@ -1546,6 +1570,37 @@ func (h *Handler) decideStewardConversationExecution(w http.ResponseWriter, r *h
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.StewardConversationExecution{"execution": item})
+}
+
+func (h *Handler) getStewardAgentEpisode(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	item, err := service.GetAgentEpisode(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardAgentEpisode{"episode": item})
+}
+
+func (h *Handler) decideStewardAgentEpisode(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	var body steward.DecideAgentEpisodeInput
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	item, err := service.DecideAgentEpisode(r.Context(), chi.URLParam(r, "id"), body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]domain.StewardAgentEpisode{"episode": item})
 }
 
 func (h *Handler) listStewardEvents(w http.ResponseWriter, r *http.Request) {

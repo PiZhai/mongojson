@@ -73,6 +73,7 @@ type StewardProactiveRun struct {
 	ConversationID *string        `json:"conversation_id,omitempty"`
 	MessageID      *string        `json:"message_id,omitempty"`
 	ExecutionID    *string        `json:"execution_id,omitempty"`
+	EpisodeID      *string        `json:"episode_id,omitempty"`
 	Provider       string         `json:"provider"`
 	Model          string         `json:"model"`
 	ErrorSummary   string         `json:"error_summary,omitempty"`

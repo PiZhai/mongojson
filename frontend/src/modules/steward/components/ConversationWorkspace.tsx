@@ -1,15 +1,19 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   createStewardConversation,
+  decideStewardAgentEpisode,
   decideStewardConversationExecution,
   decideStewardConversationSuggestion,
   getStewardExecutionControl,
+  getStewardModelSettings,
   getStewardConversationMessages,
   getStewardConversations,
   sendStewardConversationMessage,
+  updateStewardConversation,
 } from '../api'
 import type {
   StewardConversation,
+  StewardAgentEpisode,
   StewardConversationExecution,
   StewardConversationMessage,
   StewardConversationSuggestion,
@@ -17,6 +21,7 @@ import type {
 import { formatDate } from './model'
 import { authorityMatchesOrigin, issueWebAuthnApprovalProof } from './webauthnApproval'
 import { ModelSettingsDialog } from './ModelSettingsDialog'
+import { ArchivedConversationsDialog } from './ArchivedConversationsDialog'
 
 type Props = {
   onDataChanged: () => Promise<void>
@@ -30,13 +35,23 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  const [archivedConversations, setArchivedConversations] = useState<StewardConversation[]>([])
+  const [archiveLoading, setArchiveLoading] = useState(false)
+  const [archiveBusyId, setArchiveBusyId] = useState('')
+  const [archiveError, setArchiveError] = useState('')
+  const [agentProgressDetail, setAgentProgressDetail] = useState('compact')
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const archiveTriggerRef = useRef<HTMLButtonElement | null>(null)
 
   const loadConversations = async (preferredId?: string) => {
     const result = await getStewardConversations()
     setConversations(result.conversations)
-    const nextId = preferredId || activeId || result.conversations[0]?.id || ''
+    const requestedId = preferredId || activeId
+    const nextId = result.conversations.some((item) => item.id === requestedId)
+      ? requestedId
+      : result.conversations[0]?.id || ''
     setActiveId(nextId)
     if (nextId) {
       const messageResult = await getStewardConversationMessages(nextId)
@@ -66,6 +81,10 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
       alive = false
     }
   }, [])
+
+  useEffect(() => {
+    void getStewardModelSettings().then(({ settings }) => setAgentProgressDetail(settings.agent_progress_detail || 'compact')).catch(() => undefined)
+  }, [modelSettingsOpen])
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
@@ -211,6 +230,69 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     }
   }
 
+  const openArchive = async () => {
+    setArchiveOpen(true)
+    setArchiveLoading(true)
+    setArchiveError('')
+    try {
+      const result = await getStewardConversations(100, true)
+      setArchivedConversations(result.conversations)
+    } catch (reason) {
+      setArchiveError(reason instanceof Error ? reason.message : '加载归档对话失败')
+    } finally {
+      setArchiveLoading(false)
+    }
+  }
+
+  const closeArchive = useCallback(() => {
+    setArchiveOpen(false)
+    window.setTimeout(() => archiveTriggerRef.current?.focus(), 0)
+  }, [])
+
+  const archiveConversation = async (conversation: StewardConversation) => {
+    setArchiveBusyId(conversation.id)
+    setError('')
+    try {
+      await updateStewardConversation(conversation.id, { archived: true })
+      await loadConversations()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '归档对话失败')
+    } finally {
+      setArchiveBusyId('')
+    }
+  }
+
+  const restoreConversation = async (conversation: StewardConversation) => {
+    setArchiveBusyId(conversation.id)
+    setArchiveError('')
+    try {
+      await updateStewardConversation(conversation.id, { archived: false })
+      setArchivedConversations((current) => current.filter((item) => item.id !== conversation.id))
+      await loadConversations()
+    } catch (reason) {
+      setArchiveError(reason instanceof Error ? reason.message : '恢复对话失败')
+    } finally {
+      setArchiveBusyId('')
+    }
+  }
+
+  const decideEpisode = async (episode: StewardAgentEpisode, decision: 'pause' | 'resume' | 'cancel') => {
+    setBusy(true)
+    setError('')
+    try {
+      await decideStewardAgentEpisode(episode.id, decision)
+      if (activeId) {
+        const result = await getStewardConversationMessages(activeId)
+        setMessages(result.messages)
+      }
+      await onDataChanged()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '控制 Agent 任务失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <section className="steward-conversation-shell" aria-label="管家对话">
       <aside className="steward-conversation-list">
@@ -218,20 +300,32 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
           <strong>对话</strong>
           <div className="steward-conversation-header-actions">
             <button className="steward-icon-button steward-button-secondary" disabled={busy} onClick={() => setModelSettingsOpen(true)} type="button">模型</button>
+            <button className="steward-icon-button steward-button-secondary" disabled={busy} onClick={() => void openArchive()} ref={archiveTriggerRef} type="button">归档</button>
             <button className="steward-icon-button steward-button-secondary" disabled={busy} onClick={createConversation} type="button">新建</button>
           </div>
         </div>
         <div className="steward-conversation-list-scroll">
           {conversations.map((item) => (
-            <button
-              className={`steward-conversation-item${item.id === activeId ? ' is-active' : ''}`}
-              key={item.id}
-              onClick={() => selectConversation(item.id)}
-              type="button"
-            >
-              <strong>{item.title}</strong>
-              <small>{item.message_count} 条 · {formatDate(item.last_message_at || item.updated_at)}</small>
-            </button>
+            <div className={`steward-conversation-entry${item.id === activeId ? ' is-active' : ''}`} key={item.id}>
+              <button
+                aria-current={item.id === activeId ? 'true' : undefined}
+                className="steward-conversation-item"
+                onClick={() => selectConversation(item.id)}
+                type="button"
+              >
+                <strong>{item.title}</strong>
+                <small>{item.message_count} 条 · {formatDate(item.last_message_at || item.updated_at)}</small>
+              </button>
+              <button
+                aria-label={`归档对话：${item.title}`}
+                className="steward-conversation-archive-action"
+                disabled={Boolean(archiveBusyId)}
+                onClick={() => void archiveConversation(item)}
+                type="button"
+              >
+                {archiveBusyId === item.id ? '处理中' : '归档'}
+              </button>
+            </div>
           ))}
           {conversations.length === 0 ? <small className="steward-conversation-empty">暂无对话</small> : null}
         </div>
@@ -252,7 +346,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
                 <span>{formatDate(message.created_at)}</span>
               </div>
               <p>{message.content}</p>
-              {message.suggestions.map((suggestion) => (
+              {(message.suggestions ?? []).map((suggestion) => (
                 <div className="steward-conversation-suggestion" key={suggestion.id}>
                   <div>
                     <small>{suggestion.kind === 'memory' ? '记忆候选' : suggestion.kind === 'task' ? '任务候选' : '意图候选'}</small>
@@ -265,6 +359,49 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
                       <button className="steward-icon-button steward-button-secondary" disabled={busy} onClick={() => decide(suggestion, 'dismissed')} type="button">忽略</button>
                     </div>
                   ) : <small>{suggestion.status === 'accepted' ? '已采纳' : '已忽略'}</small>}
+                </div>
+              ))}
+              {(message.episodes ?? []).map((episode) => (
+                <div className={`steward-execution-card is-${episode.status}`} key={episode.id}>
+                  <div className="steward-execution-card-header">
+                    <div>
+                      <small>循环 Agent · 第 {episode.current_round} 轮</small>
+                      <strong>{episode.goal}</strong>
+                    </div>
+                    <span>{agentEpisodeStatusLabel(episode.status)}</span>
+                  </div>
+                  <div className="steward-execution-meta">
+                    <span>{episode.target_device_id || '自动选择设备'}</span>
+                    <span>{episode.tool_call_count} 次工具调用</span>
+                  </div>
+                  {episode.last_result_summary ? <p>{episode.last_result_summary}</p> : null}
+                  {episode.failure_summary ? <p className="steward-execution-failure">{episode.failure_summary}</p> : null}
+                  {episode.turns?.length && agentProgressDetail !== 'final_only' ? (
+                    <details open={agentProgressDetail === 'full'}>
+                      <summary>查看 {episode.turns.length} 轮工具记录</summary>
+                      {(episode.turns ?? []).map((turn) => (
+                        <div className="steward-execution-evidence" key={turn.id}>
+                          <span>第 {turn.round_index} 轮</span>
+                          <span>{(turn.tool_calls ?? []).map((call) => call.tool_name).join('、') || '最终回答'}</span>
+                          {(turn.tool_results ?? []).some((result) => result.error) ? <span>有失败结果</span> : null}
+                        </div>
+                      ))}
+                    </details>
+                  ) : null}
+                  <div className="steward-row-actions steward-execution-actions">
+                    {['thinking', 'executing'].includes(episode.status) ? (
+                      <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void decideEpisode(episode, 'pause')} type="button">暂停</button>
+                    ) : null}
+                    {['paused', 'blocked'].includes(episode.status) ? (
+                      <button className="steward-button" disabled={busy} onClick={() => void decideEpisode(episode, 'resume')} type="button">继续</button>
+                    ) : null}
+                    {['thinking', 'executing', 'awaiting_input', 'paused', 'blocked'].includes(episode.status) ? (
+                      <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void decideEpisode(episode, 'cancel')} type="button">取消</button>
+                    ) : null}
+                    {['paused', 'blocked'].includes(episode.status) ? (
+                      <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void sendControlCommand('换到另一台电脑')} type="button">换设备</button>
+                    ) : null}
+                  </div>
                 </div>
               ))}
               {(message.executions ?? []).map((execution) => (
@@ -349,6 +486,15 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
         </form>
       </div>
       <ModelSettingsDialog open={modelSettingsOpen} onClose={() => setModelSettingsOpen(false)} />
+      <ArchivedConversationsDialog
+        busyId={archiveBusyId}
+        conversations={archivedConversations}
+        error={archiveError}
+        loading={archiveLoading}
+        onClose={closeArchive}
+        onRestore={(conversation) => void restoreConversation(conversation)}
+        open={archiveOpen}
+      />
     </section>
   )
 }
@@ -364,6 +510,20 @@ function executionStatusLabel(status: StewardConversationExecution['status']) {
     failed: '失败',
     cancelled: '已取消',
     blocked: '已阻断',
+  }
+  return labels[status]
+}
+
+function agentEpisodeStatusLabel(status: StewardAgentEpisode['status']) {
+  const labels: Record<StewardAgentEpisode['status'], string> = {
+    thinking: '思考中',
+    executing: '执行中',
+    awaiting_input: '等待补充',
+    paused: '已暂停',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+    blocked: '已停止',
   }
   return labels[status]
 }

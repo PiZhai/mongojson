@@ -107,7 +107,7 @@ func (s *Service) claimProactiveRun(ctx context.Context, period proactivePeriod)
 		values ($1,$2,$3,$4,$5,'processing',$6,$6)
 		on conflict (cadence,period_key) do nothing
 		returning id,cadence,period_key,period_start,period_end,status,summary,analysis,decision,
-		          conversation_id::text,message_id::text,execution_id::text,provider,model,error_summary,
+		          conversation_id::text,message_id::text,execution_id::text,episode_id::text,provider,model,error_summary,
 		          audit_id::text,created_at,updated_at,completed_at
 	`, id, period.Cadence, period.Key, period.Start.UTC(), period.End.UTC(), now)
 	run, err := scanProactiveRun(row)
@@ -165,21 +165,21 @@ func (s *Service) processProactiveRun(ctx context.Context, run domain.StewardPro
 		return s.finishProactiveRun(ctx, run, "failed", "", nil, err)
 	}
 	analysisMap := map[string]any{"summary": analysis.Summary, "insights": analysis.Insights, "suggested_actions": analysis.SuggestedActions}
-	converser, ok := advisor.(ConversationAdvisor)
+	turnAdvisor, ok := advisor.(AgentTurnAdvisor)
 	if !ok {
 		return s.finishProactiveRun(ctx, run, "failed", analysis.Summary, analysisMap, fmt.Errorf("configured model does not support proactive tool decisions"))
 	}
 	prompt := proactiveDecisionPrompt(run, analysis)
-	decision, err := converser.Converse(ctx, ConversationAdvisorInput{
-		Message: prompt, DataLevel: DataD2, Tools: s.runtimeTools.specs(),
-		Devices: s.conversationAdvisorDevices(ctx), KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(),
+	decision, err := nextValidAgentTurn(ctx, turnAdvisor, AgentTurnInput{
+		Message: prompt, DataLevel: DataD2, TriggerKind: "proactive_" + run.Cadence, Tools: s.runtimeTools.specs(),
+		Devices: s.conversationAdvisorDevices(ctx), KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(), Round: 1,
 	})
 	if err != nil {
 		return s.finishProactiveRun(ctx, run, "failed", analysis.Summary, analysisMap, err)
 	}
 	status := advisor.Status()
 	run.Provider, run.Model = status.Provider, status.Model
-	if decision.Intent == "execution" && decision.ExecutionPlan != nil {
+	if len(decision.ToolCalls) > 0 {
 		conversation, err := s.ensureProactiveConversation(ctx)
 		if err != nil {
 			return s.finishProactiveRun(ctx, run, "failed", analysis.Summary, analysisMap, err)
@@ -188,18 +188,26 @@ func (s *Service) processProactiveRun(ctx context.Context, run domain.StewardPro
 		if err != nil {
 			return s.finishProactiveRun(ctx, run, "failed", analysis.Summary, analysisMap, err)
 		}
-		plan := *decision.ExecutionPlan
-		instruction, summary := proactiveExecutionText(run, analysis, plan)
-		plan.Summary = summary
-		message, execution, err := s.createConversationExecutionFromModel(ctx, conversation, trigger, instruction, DataD2, decision.TargetDevice, plan)
+		instruction := truncateAdvisorText(defaultString(decision.Content, analysis.Summary), 2000)
+		message, episode, err := s.startAgentEpisode(ctx, conversation, trigger, instruction, DataD2, "proactive_"+run.Cadence, decision)
 		if err != nil {
 			return s.finishProactiveRun(ctx, run, "failed", analysis.Summary, analysisMap, err)
 		}
-		run.ConversationID, run.MessageID, run.ExecutionID = &conversation.ID, &message.ID, &execution.ID
+		run.ConversationID, run.EpisodeID = &conversation.ID, &episode.ID
+		if message.ID != "" {
+			run.MessageID = &message.ID
+		}
+		if episode.ActiveExecutionID != "" {
+			run.ExecutionID = &episode.ActiveExecutionID
+		}
+		if episode.Status == agentEpisodeCompleted && len(decision.ToolCalls) == 1 && decision.ToolCalls[0].ToolName == agentStaySilentTool {
+			run.Decision = "silent"
+			return s.finishProactiveRun(ctx, run, "silent", analysis.Summary, analysisMap, nil)
+		}
 		run.Decision = "execution"
 		return s.finishProactiveRun(ctx, run, "execution", analysis.Summary, analysisMap, nil)
 	}
-	reply := strings.TrimSpace(decision.Reply)
+	reply := strings.TrimSpace(decision.Content)
 	if reply == "" || strings.EqualFold(reply, proactiveSilentToken) {
 		run.Decision = "silent"
 		return s.finishProactiveRun(ctx, run, "silent", analysis.Summary, analysisMap, nil)
@@ -320,7 +328,7 @@ func (s *Service) buildProactiveContext(ctx context.Context, run domain.StewardP
 
 func (s *Service) ensureProactiveConversation(ctx context.Context) (domain.StewardConversation, error) {
 	var id string
-	err := s.db.Pool.QueryRow(ctx, `select id::text from steward_conversations where title=$1 and status='active' order by created_at limit 1`, proactiveConversation).Scan(&id)
+	err := s.db.Pool.QueryRow(ctx, `select id::text from steward_conversations where title=$1 and status='active' and archived_at is null order by created_at limit 1`, proactiveConversation).Scan(&id)
 	if err == nil {
 		return s.getConversation(ctx, id)
 	}
@@ -355,10 +363,10 @@ func (s *Service) finishProactiveRun(ctx context.Context, run domain.StewardProa
 	}
 	_, _ = s.db.Pool.Exec(ctx, `
 		update steward_proactive_runs set status=$2,summary=$3,analysis=$4,decision=$5,
-		conversation_id=$6,message_id=$7,execution_id=$8,provider=$9,model=$10,error_summary=$11,
-		audit_id=$12,updated_at=$13,completed_at=$13 where id=$1
+		conversation_id=$6,message_id=$7,execution_id=$8,episode_id=$9,provider=$10,model=$11,error_summary=$12,
+		audit_id=$13,updated_at=$14,completed_at=$14 where id=$1
 	`, run.ID, run.Status, run.Summary, run.Analysis, run.Decision, run.ConversationID, run.MessageID,
-		run.ExecutionID, run.Provider, run.Model, run.ErrorSummary, run.AuditID, now)
+		run.ExecutionID, run.EpisodeID, run.Provider, run.Model, run.ErrorSummary, run.AuditID, now)
 	return run
 }
 
@@ -366,7 +374,7 @@ func (s *Service) ListProactiveRuns(ctx context.Context, limit int) ([]domain.St
 	limit = normalizeLimit(limit, 50, 200)
 	rows, err := s.db.Pool.Query(ctx, `
 		select id,cadence,period_key,period_start,period_end,status,summary,analysis,decision,
-		       conversation_id::text,message_id::text,execution_id::text,provider,model,error_summary,
+		       conversation_id::text,message_id::text,execution_id::text,episode_id::text,provider,model,error_summary,
 		       audit_id::text,created_at,updated_at,completed_at
 		from steward_proactive_runs order by created_at desc limit $1
 	`, limit)
@@ -389,7 +397,7 @@ func scanProactiveRun(row rowScanner) (domain.StewardProactiveRun, error) {
 	var item domain.StewardProactiveRun
 	err := row.Scan(&item.ID, &item.Cadence, &item.PeriodKey, &item.PeriodStart, &item.PeriodEnd,
 		&item.Status, &item.Summary, &item.Analysis, &item.Decision, &item.ConversationID,
-		&item.MessageID, &item.ExecutionID, &item.Provider, &item.Model, &item.ErrorSummary,
+		&item.MessageID, &item.ExecutionID, &item.EpisodeID, &item.Provider, &item.Model, &item.ErrorSummary,
 		&item.AuditID, &item.CreatedAt, &item.UpdatedAt, &item.CompletedAt)
 	return item, err
 }

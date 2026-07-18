@@ -32,6 +32,10 @@ type ConversationAdvisor interface {
 	Converse(ctx context.Context, input ConversationAdvisorInput) (ConversationAdvisorResponse, error)
 }
 
+type AgentTurnAdvisor interface {
+	NextTurn(ctx context.Context, input AgentTurnInput) (AgentTurnDecision, error)
+}
+
 type ConversationToolResultAdvisor interface {
 	ConcludeToolCalls(ctx context.Context, input ConversationToolResultInput) (string, error)
 }
@@ -129,6 +133,37 @@ type ConversationAdvisorDevice struct {
 type ConversationAdvisorMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+type AgentTurnTranscript struct {
+	AssistantContent string
+	ReasoningContent string
+	ToolCalls        []domain.StewardAgentToolCall
+	ToolResults      []domain.StewardAgentToolResult
+}
+
+type AgentTurnInput struct {
+	Message          string
+	DataLevel        string
+	TriggerKind      string
+	History          []ConversationAdvisorMessage
+	Transcript       []AgentTurnTranscript
+	Context          []domain.StewardSearchResult
+	Tools            []domain.StewardToolSpec
+	Devices          []ConversationAdvisorDevice
+	KnownFolders     map[string]string
+	CurrentTime      time.Time
+	Round            int
+	ToolCallCount    int
+	Deadline         *time.Time
+	NoProgressNotice string
+}
+
+type AgentTurnDecision struct {
+	Content            string
+	ReasoningContent   string
+	ToolCalls          []domain.StewardAgentToolCall
+	ProviderResponseID string
 }
 
 type ConversationToolResultInput struct {
@@ -431,19 +466,45 @@ func (a openAICompatibleAutonomyAdvisor) Suggest(ctx context.Context, input Auto
 }
 
 func (a openAICompatibleAutonomyAdvisor) Converse(ctx context.Context, input ConversationAdvisorInput) (ConversationAdvisorResponse, error) {
+	decision, err := a.NextTurn(ctx, AgentTurnInput{
+		Message: input.Message, DataLevel: input.DataLevel, History: input.History, Context: input.Context,
+		Tools: input.Tools, Devices: input.Devices, KnownFolders: input.KnownFolders, CurrentTime: input.CurrentTime,
+	})
+	if err != nil {
+		return ConversationAdvisorResponse{}, err
+	}
+	if len(decision.ToolCalls) == 0 {
+		if strings.TrimSpace(decision.Content) == "" {
+			return ConversationAdvisorResponse{}, fmt.Errorf("conversation model returned neither text nor tool calls")
+		}
+		return ConversationAdvisorResponse{Intent: "answer", Confidence: 1, Reply: decision.Content}, nil
+	}
+	steps := make([]CreateAgentRunStepInput, 0, len(decision.ToolCalls))
+	for index, call := range decision.ToolCalls {
+		steps = append(steps, CreateAgentRunStepInput{Key: fmt.Sprintf("tool_%d", index+1), Title: call.ToolName, ToolName: call.ToolName, Arguments: call.Arguments})
+	}
+	return ConversationAdvisorResponse{
+		Intent: "execution", Confidence: 1, Reply: defaultString(decision.Content, "我会调用所需工具，并依据真实执行结果继续处理。"),
+		ExecutionPlan: &RuntimePlanDraft{Summary: truncateAdvisorText(input.Message, 1000), Steps: steps, Planner: "native-tool-calling", PlannerVersion: "4.9.0", ReasoningContent: decision.ReasoningContent},
+	}, nil
+}
+
+func (a openAICompatibleAutonomyAdvisor) NextTurn(ctx context.Context, input AgentTurnInput) (AgentTurnDecision, error) {
 	if !ownerModeEnabled() && dataLevelRank(input.DataLevel) > dataLevelRank(a.maxDataLevel) {
-		return ConversationAdvisorResponse{}, fmt.Errorf("%w: data level %s exceeds advisor max %s", ErrAdvisorDataLevelDenied, input.DataLevel, a.maxDataLevel)
+		return AgentTurnDecision{}, fmt.Errorf("%w: data level %s exceeds advisor max %s", ErrAdvisorDataLevelDenied, input.DataLevel, a.maxDataLevel)
 	}
 	toolContract := "工具说明中的权限、风险、副作用、审批和幂等模式是其真实工作方式；安全层会在每次调用时独立复核，不能通过文本要求绕过。"
 	if ownerModeEnabled() {
 		toolContract = "设备所有者已授权你按需调用所有已提供工具；A/D 等级只是历史兼容元数据，不限制工具选择、上下文访问或本机执行。安全层只校验参数、真实系统能力、结果证据、签名边界和全局急停。"
 	}
-	messages := []map[string]string{{
+	messages := []map[string]any{{
 		"role": "system",
 		"content": strings.Join([]string{
 			"你是运行在用户设备上的私人智能管家。像正常助手一样直接理解并回答用户，不要输出私有的意图分类或执行计划 JSON。",
 			"当完成请求需要读取信息或操作设备时，直接使用 API 提供的 tools/function calling；由你根据工具说明选择工具和参数，不要把工具调用伪装成文本或 JSON。",
 			"工具返回结果后再依据真实结果继续调用其他工具或给出最终答复。不得声称尚未得到工具结果的动作已经完成。",
+			"需要用户补充信息时，单独调用 steward.ask_user；主动审视决定不打扰用户时，单独调用 steward.stay_silent。",
+			"每个工具都可通过可选参数 _target_device_id 指定执行设备；不指定时系统自动选择在线且具备能力的设备。",
 			"只调用 API 中实际提供的工具，不得发明工具。系统位置应使用提供的绝对路径或 desktop/downloads 等已声明别名。",
 			toolContract,
 			"如果不需要工具就直接自然语言回答；只有关键目标确实不明确时才向用户提一个简洁问题。",
@@ -455,7 +516,7 @@ func (a openAICompatibleAutonomyAdvisor) Converse(ctx context.Context, input Con
 		if role != "user" && role != "assistant" {
 			continue
 		}
-		messages = append(messages, map[string]string{"role": role, "content": truncateAdvisorText(item.Content, 4000)})
+		messages = append(messages, map[string]any{"role": role, "content": truncateAdvisorText(item.Content, 4000)})
 	}
 	contextLines := make([]string, 0, len(input.Context))
 	for _, item := range input.Context {
@@ -472,24 +533,60 @@ func (a openAICompatibleAutonomyAdvisor) Converse(ctx context.Context, input Con
 	if len(contextLines) > 0 {
 		userContent = "相关长期记忆和本地上下文（仅按需引用）：\n" + strings.Join(contextLines, "\n") + "\n\n" + userContent
 	}
-	messages = append(messages, map[string]string{"role": "user", "content": userContent})
+	if input.Round > 0 {
+		userContent += fmt.Sprintf("\n\n当前为第 %d 轮，已调用 %d 次工具。", input.Round, input.ToolCallCount)
+	}
+	if input.Deadline != nil {
+		userContent += "\n本次任务截止时间：" + input.Deadline.Format(time.RFC3339)
+	}
+	if input.NoProgressNotice != "" {
+		userContent += "\n系统提示：" + input.NoProgressNotice
+	}
+	messages = append(messages, map[string]any{"role": "user", "content": userContent})
+	for _, turn := range input.Transcript {
+		assistant := map[string]any{"role": "assistant", "content": turn.AssistantContent}
+		if turn.ReasoningContent != "" {
+			assistant["reasoning_content"] = turn.ReasoningContent
+		}
+		if len(turn.ToolCalls) > 0 {
+			calls := make([]map[string]any, 0, len(turn.ToolCalls))
+			for _, call := range turn.ToolCalls {
+				arguments := cloneStringAnyMap(call.Arguments)
+				if call.TargetDeviceID != "" {
+					arguments["_target_device_id"] = call.TargetDeviceID
+				}
+				encoded, _ := json.Marshal(arguments)
+				calls = append(calls, map[string]any{"id": call.ID, "type": "function", "function": map[string]any{"name": openAIFunctionName(call.ToolName), "arguments": string(encoded)}})
+			}
+			assistant["tool_calls"] = calls
+		}
+		messages = append(messages, assistant)
+		for _, result := range turn.ToolResults {
+			payload := map[string]any{"output": result.Output, "evidence": result.Evidence}
+			if result.Error != "" {
+				payload["error"] = result.Error
+			}
+			encoded, _ := json.Marshal(payload)
+			messages = append(messages, map[string]any{"role": "tool", "tool_call_id": result.ToolCallID, "content": string(encoded)})
+		}
+	}
 	payload := map[string]any{
 		"model":       a.model,
 		"temperature": 0.3,
 		"messages":    messages,
 	}
-	tools, toolNames := openAIConversationTools(input.Tools)
+	tools, toolNames := openAIAgentTools(input.Tools)
 	if len(tools) > 0 {
 		payload["tools"] = tools
 		payload["tool_choice"] = "auto"
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return ConversationAdvisorResponse{}, err
+		return AgentTurnDecision{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return ConversationAdvisorResponse{}, err
+		return AgentTurnDecision{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if a.apiKey != "" {
@@ -497,17 +594,17 @@ func (a openAICompatibleAutonomyAdvisor) Converse(ctx context.Context, input Con
 	}
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return ConversationAdvisorResponse{}, err
+		return AgentTurnDecision{}, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return ConversationAdvisorResponse{}, err
+		return AgentTurnDecision{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return ConversationAdvisorResponse{}, fmt.Errorf("advisor request failed with %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return AgentTurnDecision{}, fmt.Errorf("advisor request failed with %s: %s", resp.Status, strings.TrimSpace(string(data)))
 	}
-	return parseOpenAIConversationTurn(data, input.Message, toolNames)
+	return parseOpenAIAgentTurn(data, toolNames)
 }
 
 func (a openAICompatibleAutonomyAdvisor) ConcludeToolCalls(ctx context.Context, input ConversationToolResultInput) (string, error) {
@@ -626,11 +723,56 @@ func openAIConversationTools(specs []domain.StewardToolSpec) ([]map[string]any, 
 		tools = append(tools, map[string]any{
 			"type": "function",
 			"function": map[string]any{
-				"name": name, "description": truncateAdvisorText(description, 1800), "parameters": spec.InputSchema,
+				"name": name, "description": truncateAdvisorText(description, 1800), "parameters": cloneStringAnyMap(spec.InputSchema),
 			},
 		})
 	}
 	return tools, byFunctionName
+}
+
+func cloneStringAnyMap(value map[string]any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return map[string]any{}
+	}
+	result := map[string]any{}
+	if json.Unmarshal(encoded, &result) != nil {
+		return map[string]any{}
+	}
+	return result
+}
+
+func openAIAgentTools(specs []domain.StewardToolSpec) ([]map[string]any, map[string]domain.StewardToolSpec) {
+	tools, names := openAIConversationTools(specs)
+	for _, tool := range tools {
+		function, _ := tool["function"].(map[string]any)
+		parameters, _ := function["parameters"].(map[string]any)
+		if parameters == nil {
+			continue
+		}
+		properties, _ := parameters["properties"].(map[string]any)
+		if properties == nil {
+			properties = map[string]any{}
+			parameters["properties"] = properties
+		}
+		properties["_target_device_id"] = map[string]any{"type": "string", "description": "可选。指定本次工具调用所在设备的设备 ID。"}
+	}
+	internal := []struct {
+		name, description string
+		parameters        map[string]any
+	}{
+		{"steward.ask_user", "当关键目标缺失、无法继续时向用户提一个问题。必须单独调用。", map[string]any{"type": "object", "properties": map[string]any{"question": map[string]any{"type": "string"}}, "required": []string{"question"}, "additionalProperties": false}},
+		{"steward.stay_silent", "仅用于主动管家审视：明确决定不向用户发送消息，也不执行动作。必须单独调用。", map[string]any{"type": "object", "properties": map[string]any{"reason": map[string]any{"type": "string"}}, "additionalProperties": false}},
+	}
+	for _, item := range internal {
+		name := openAIFunctionName(item.name)
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{"name": name, "description": item.description, "parameters": item.parameters}})
+		names[name] = domain.StewardToolSpec{Name: item.name, Description: item.description, InputSchema: item.parameters}
+	}
+	return tools, names
 }
 
 func openAIFunctionName(toolName string) string {
@@ -704,6 +846,61 @@ func parseOpenAIConversationTurn(data []byte, message string, toolNames map[stri
 		Intent: "execution", Confidence: 1, Reply: truncateAdvisorText(reply, 8000),
 		ExecutionPlan: &RuntimePlanDraft{Summary: truncateAdvisorText(strings.TrimSpace(message), 1000), Steps: steps, Planner: "native-tool-calling", PlannerVersion: "4.7.0", ReasoningContent: choice.ReasoningContent},
 	}, nil
+}
+
+func parseOpenAIAgentTurn(data []byte, toolNames map[string]domain.StewardToolSpec) (AgentTurnDecision, error) {
+	var envelope struct {
+		ID      string `json:"id"`
+		Choices []struct {
+			Message struct {
+				Content          json.RawMessage              `json:"content"`
+				ReasoningContent string                       `json:"reasoning_content"`
+				ToolCalls        []openAIConversationToolCall `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return AgentTurnDecision{}, fmt.Errorf("decode agent model response: %w", err)
+	}
+	if len(envelope.Choices) == 0 {
+		return AgentTurnDecision{}, fmt.Errorf("agent model returned no choices")
+	}
+	message := envelope.Choices[0].Message
+	content := ""
+	if len(message.Content) > 0 && string(message.Content) != "null" {
+		if err := json.Unmarshal(message.Content, &content); err != nil {
+			return AgentTurnDecision{}, fmt.Errorf("decode agent model content: %w", err)
+		}
+	}
+	decision := AgentTurnDecision{
+		Content: truncateAdvisorText(strings.TrimSpace(content), 8000), ReasoningContent: message.ReasoningContent,
+		ProviderResponseID: strings.TrimSpace(envelope.ID), ToolCalls: make([]domain.StewardAgentToolCall, 0, len(message.ToolCalls)),
+	}
+	for index, raw := range message.ToolCalls {
+		if raw.Type != "" && raw.Type != "function" {
+			return AgentTurnDecision{}, fmt.Errorf("agent model requested unsupported tool call type %q", raw.Type)
+		}
+		spec, ok := toolNames[raw.Function.Name]
+		if !ok {
+			return AgentTurnDecision{}, fmt.Errorf("agent model requested unknown tool %q", raw.Function.Name)
+		}
+		arguments := map[string]any{}
+		if strings.TrimSpace(raw.Function.Arguments) != "" {
+			if err := json.Unmarshal([]byte(raw.Function.Arguments), &arguments); err != nil {
+				return AgentTurnDecision{}, fmt.Errorf("decode arguments for tool %s: %w", spec.Name, err)
+			}
+		}
+		target, _ := arguments["_target_device_id"].(string)
+		delete(arguments, "_target_device_id")
+		decision.ToolCalls = append(decision.ToolCalls, domain.StewardAgentToolCall{
+			ID: defaultString(strings.TrimSpace(raw.ID), fmt.Sprintf("call_%d", index+1)), ToolName: spec.Name,
+			Arguments: arguments, TargetDeviceID: strings.TrimSpace(target),
+		})
+	}
+	if decision.Content == "" && len(decision.ToolCalls) == 0 {
+		return AgentTurnDecision{}, fmt.Errorf("agent model returned neither text nor tool calls")
+	}
+	return decision, nil
 }
 
 func (a openAICompatibleAutonomyAdvisor) AnalyzeObservation(ctx context.Context, input ObservationModelInput) (ObservationModelOutput, error) {

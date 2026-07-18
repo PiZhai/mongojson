@@ -25,40 +25,55 @@ const (
 )
 
 type StewardModelSettings struct {
-	Provider         string                              `json:"provider"`
-	BaseURL          string                              `json:"base_url"`
-	Model            string                              `json:"model"`
-	APIKeyConfigured bool                                `json:"api_key_configured"`
-	APIKeyMask       string                              `json:"api_key_mask,omitempty"`
-	AllowNoAPIKey    bool                                `json:"allow_no_api_key"`
-	MaxDataLevel     string                              `json:"max_data_level,omitempty"`
-	TimeoutSeconds   int                                 `json:"timeout_seconds"`
-	Source           string                              `json:"source"`
-	Advisor          domain.StewardAutonomyAdvisorStatus `json:"advisor"`
-	Planner          domain.StewardRuntimePlannerStatus  `json:"planner"`
-	UpdatedAt        *time.Time                          `json:"updated_at,omitempty"`
+	Provider                string                              `json:"provider"`
+	BaseURL                 string                              `json:"base_url"`
+	Model                   string                              `json:"model"`
+	APIKeyConfigured        bool                                `json:"api_key_configured"`
+	APIKeyMask              string                              `json:"api_key_mask,omitempty"`
+	AllowNoAPIKey           bool                                `json:"allow_no_api_key"`
+	MaxDataLevel            string                              `json:"max_data_level,omitempty"`
+	TimeoutSeconds          int                                 `json:"timeout_seconds"`
+	AgentMaxRounds          int                                 `json:"agent_max_rounds"`
+	AgentMaxToolCalls       int                                 `json:"agent_max_tool_calls"`
+	AgentMaxDurationSeconds int                                 `json:"agent_max_duration_seconds"`
+	AgentNoProgressLimit    int                                 `json:"agent_no_progress_limit"`
+	AgentProgressDetail     string                              `json:"agent_progress_detail"`
+	Source                  string                              `json:"source"`
+	Advisor                 domain.StewardAutonomyAdvisorStatus `json:"advisor"`
+	Planner                 domain.StewardRuntimePlannerStatus  `json:"planner"`
+	UpdatedAt               *time.Time                          `json:"updated_at,omitempty"`
 }
 
 type UpdateStewardModelSettingsInput struct {
-	Provider       *string `json:"provider"`
-	BaseURL        *string `json:"base_url"`
-	Model          *string `json:"model"`
-	APIKey         *string `json:"api_key"`
-	AllowNoAPIKey  *bool   `json:"allow_no_api_key"`
-	MaxDataLevel   *string `json:"max_data_level"`
-	TimeoutSeconds *int    `json:"timeout_seconds"`
+	Provider                *string `json:"provider"`
+	BaseURL                 *string `json:"base_url"`
+	Model                   *string `json:"model"`
+	APIKey                  *string `json:"api_key"`
+	AllowNoAPIKey           *bool   `json:"allow_no_api_key"`
+	MaxDataLevel            *string `json:"max_data_level"`
+	TimeoutSeconds          *int    `json:"timeout_seconds"`
+	AgentMaxRounds          *int    `json:"agent_max_rounds"`
+	AgentMaxToolCalls       *int    `json:"agent_max_tool_calls"`
+	AgentMaxDurationSeconds *int    `json:"agent_max_duration_seconds"`
+	AgentNoProgressLimit    *int    `json:"agent_no_progress_limit"`
+	AgentProgressDetail     *string `json:"agent_progress_detail"`
 }
 
 type modelSettingsValues struct {
-	provider       string
-	baseURL        string
-	model          string
-	apiKey         string
-	allowNoAPIKey  bool
-	maxDataLevel   string
-	timeoutSeconds int
-	source         string
-	updatedAt      *time.Time
+	provider                string
+	baseURL                 string
+	model                   string
+	apiKey                  string
+	allowNoAPIKey           bool
+	maxDataLevel            string
+	timeoutSeconds          int
+	agentMaxRounds          int
+	agentMaxToolCalls       int
+	agentMaxDurationSeconds int
+	agentNoProgressLimit    int
+	agentProgressDetail     string
+	source                  string
+	updatedAt               *time.Time
 }
 
 func (s *Service) GetModelSettings(ctx context.Context) (StewardModelSettings, error) {
@@ -98,6 +113,21 @@ func (s *Service) UpdateModelSettings(ctx context.Context, input UpdateStewardMo
 	if input.TimeoutSeconds != nil {
 		current.timeoutSeconds = *input.TimeoutSeconds
 	}
+	if input.AgentMaxRounds != nil {
+		current.agentMaxRounds = *input.AgentMaxRounds
+	}
+	if input.AgentMaxToolCalls != nil {
+		current.agentMaxToolCalls = *input.AgentMaxToolCalls
+	}
+	if input.AgentMaxDurationSeconds != nil {
+		current.agentMaxDurationSeconds = *input.AgentMaxDurationSeconds
+	}
+	if input.AgentNoProgressLimit != nil {
+		current.agentNoProgressLimit = *input.AgentNoProgressLimit
+	}
+	if input.AgentProgressDetail != nil {
+		current.agentProgressDetail = strings.ToLower(strings.TrimSpace(*input.AgentProgressDetail))
+	}
 	current.source = modelSettingsSourceDB
 	if err := validateModelSettings(current); err != nil {
 		return StewardModelSettings{}, err
@@ -117,14 +147,20 @@ func (s *Service) UpdateModelSettings(ctx context.Context, input UpdateStewardMo
 	now := time.Now().UTC()
 	_, err = s.db.Pool.Exec(ctx, `
 		insert into steward_model_settings (
-			id, provider, base_url, model, api_key_encrypted, allow_no_api_key, max_data_level, timeout_seconds, updated_at
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			id, provider, base_url, model, api_key_encrypted, allow_no_api_key, max_data_level, timeout_seconds,
+			agent_max_rounds, agent_max_tool_calls, agent_max_duration_seconds, agent_no_progress_limit, agent_progress_detail, updated_at
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		on conflict (id) do update set
 			provider=excluded.provider, base_url=excluded.base_url, model=excluded.model,
 			api_key_encrypted=excluded.api_key_encrypted, allow_no_api_key=excluded.allow_no_api_key,
-			max_data_level=excluded.max_data_level, timeout_seconds=excluded.timeout_seconds, updated_at=excluded.updated_at
+			max_data_level=excluded.max_data_level, timeout_seconds=excluded.timeout_seconds,
+			agent_max_rounds=excluded.agent_max_rounds, agent_max_tool_calls=excluded.agent_max_tool_calls,
+			agent_max_duration_seconds=excluded.agent_max_duration_seconds,
+			agent_no_progress_limit=excluded.agent_no_progress_limit, agent_progress_detail=excluded.agent_progress_detail,
+			updated_at=excluded.updated_at
 	`, primaryModelSettingsID, current.provider, current.baseURL, current.model, encryptedKey,
-		current.allowNoAPIKey, current.maxDataLevel, current.timeoutSeconds, now)
+		current.allowNoAPIKey, current.maxDataLevel, current.timeoutSeconds, current.agentMaxRounds,
+		current.agentMaxToolCalls, current.agentMaxDurationSeconds, current.agentNoProgressLimit, current.agentProgressDetail, now)
 	if err != nil {
 		return StewardModelSettings{}, fmt.Errorf("save model settings: %w", err)
 	}
@@ -180,10 +216,12 @@ func (s *Service) loadPersistedModelSettings(ctx context.Context) (modelSettings
 	var encryptedKey map[string]any
 	var updatedAt time.Time
 	err := s.db.Pool.QueryRow(ctx, `
-		select provider, base_url, model, api_key_encrypted, allow_no_api_key, max_data_level, timeout_seconds, updated_at
+		select provider, base_url, model, api_key_encrypted, allow_no_api_key, max_data_level, timeout_seconds,
+		       agent_max_rounds, agent_max_tool_calls, agent_max_duration_seconds, agent_no_progress_limit, agent_progress_detail, updated_at
 		from steward_model_settings where id=$1
 	`, primaryModelSettingsID).Scan(&values.provider, &values.baseURL, &values.model, &encryptedKey,
-		&values.allowNoAPIKey, &values.maxDataLevel, &values.timeoutSeconds, &updatedAt)
+		&values.allowNoAPIKey, &values.maxDataLevel, &values.timeoutSeconds, &values.agentMaxRounds,
+		&values.agentMaxToolCalls, &values.agentMaxDurationSeconds, &values.agentNoProgressLimit, &values.agentProgressDetail, &updatedAt)
 	if err != nil {
 		return modelSettingsValues{}, err
 	}
@@ -210,14 +248,19 @@ func modelSettingsFromEnv() modelSettingsValues {
 	}
 	allowNoKey, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("STEWARD_LLM_ALLOW_NO_API_KEY")))
 	return modelSettingsValues{
-		provider:       provider,
-		baseURL:        strings.TrimSpace(envOrDefault("STEWARD_LLM_BASE_URL", "https://api.openai.com/v1")),
-		model:          strings.TrimSpace(os.Getenv("STEWARD_LLM_MODEL")),
-		apiKey:         strings.TrimSpace(os.Getenv("STEWARD_LLM_API_KEY")),
-		allowNoAPIKey:  allowNoKey,
-		maxDataLevel:   strings.ToUpper(strings.TrimSpace(envOrDefault("STEWARD_LLM_MAX_DATA_LEVEL", DataD1))),
-		timeoutSeconds: int(durationEnv("STEWARD_LLM_TIMEOUT", 30*time.Second) / time.Second),
-		source:         modelSettingsSourceEnv,
+		provider:                provider,
+		baseURL:                 strings.TrimSpace(envOrDefault("STEWARD_LLM_BASE_URL", "https://api.openai.com/v1")),
+		model:                   strings.TrimSpace(os.Getenv("STEWARD_LLM_MODEL")),
+		apiKey:                  strings.TrimSpace(os.Getenv("STEWARD_LLM_API_KEY")),
+		allowNoAPIKey:           allowNoKey,
+		maxDataLevel:            strings.ToUpper(strings.TrimSpace(envOrDefault("STEWARD_LLM_MAX_DATA_LEVEL", DataD1))),
+		timeoutSeconds:          int(durationEnv("STEWARD_LLM_TIMEOUT", 30*time.Second) / time.Second),
+		agentMaxRounds:          intEnv("STEWARD_AGENT_MAX_ROUNDS", 12),
+		agentMaxToolCalls:       intEnv("STEWARD_AGENT_MAX_TOOL_CALLS", 40),
+		agentMaxDurationSeconds: int(durationEnv("STEWARD_AGENT_MAX_DURATION", 30*time.Minute) / time.Second),
+		agentNoProgressLimit:    intEnv("STEWARD_AGENT_NO_PROGRESS_LIMIT", 3),
+		agentProgressDetail:     strings.ToLower(strings.TrimSpace(envOrDefault("STEWARD_AGENT_PROGRESS_DETAIL", "compact"))),
+		source:                  modelSettingsSourceEnv,
 	}
 }
 
@@ -246,6 +289,18 @@ func validateModelSettings(values modelSettingsValues) error {
 	}
 	if values.timeoutSeconds < 1 || values.timeoutSeconds > 120 {
 		return errors.New("timeout_seconds must be between 1 and 120")
+	}
+	if values.agentMaxRounds < 0 || values.agentMaxRounds > 1000 || values.agentMaxToolCalls < 0 || values.agentMaxToolCalls > 10000 {
+		return errors.New("agent limits must be zero or within supported bounds")
+	}
+	if values.agentMaxDurationSeconds < 0 || values.agentMaxDurationSeconds > 604800 {
+		return errors.New("agent_max_duration_seconds must be between 0 and 604800")
+	}
+	if values.agentNoProgressLimit != 0 && (values.agentNoProgressLimit < 1 || values.agentNoProgressLimit > 100) {
+		return errors.New("agent_no_progress_limit must be between 1 and 100")
+	}
+	if values.agentProgressDetail != "" && values.agentProgressDetail != "compact" && values.agentProgressDetail != "full" && values.agentProgressDetail != "final_only" {
+		return errors.New("agent_progress_detail must be compact, full, or final_only")
 	}
 	return nil
 }
@@ -281,7 +336,10 @@ func (s *Service) publicModelSettings(values modelSettingsValues) StewardModelSe
 		Provider: values.provider, BaseURL: values.baseURL, Model: values.model,
 		APIKeyConfigured: values.apiKey != "", AllowNoAPIKey: values.allowNoAPIKey,
 		MaxDataLevel: values.maxDataLevel, TimeoutSeconds: values.timeoutSeconds,
-		Source: defaultString(values.source, modelSettingsSourceNone), UpdatedAt: values.updatedAt,
+		AgentMaxRounds: values.agentMaxRounds, AgentMaxToolCalls: values.agentMaxToolCalls,
+		AgentMaxDurationSeconds: values.agentMaxDurationSeconds, AgentNoProgressLimit: values.agentNoProgressLimit,
+		AgentProgressDetail: values.agentProgressDetail,
+		Source:              defaultString(values.source, modelSettingsSourceNone), UpdatedAt: values.updatedAt,
 		Advisor: s.autonomyAdvisor().Status(), Planner: s.runtimePlannerValue().Status(),
 	}
 	if ownerModeEnabled() {

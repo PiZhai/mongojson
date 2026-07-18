@@ -120,6 +120,7 @@ type StewardConversation struct {
 	DataLevel     string     `json:"data_level"`
 	MessageCount  int        `json:"message_count"`
 	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
+	ArchivedAt    *time.Time `json:"archived_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
@@ -135,7 +136,72 @@ type StewardConversationMessage struct {
 	PayloadEncrypted bool                            `json:"payload_encrypted"`
 	Suggestions      []StewardConversationSuggestion `json:"suggestions"`
 	Executions       []StewardConversationExecution  `json:"executions"`
+	Episodes         []StewardAgentEpisode           `json:"episodes"`
 	CreatedAt        time.Time                       `json:"created_at"`
+}
+
+type StewardAgentToolCall struct {
+	ID             string         `json:"id"`
+	ToolName       string         `json:"tool_name"`
+	Arguments      map[string]any `json:"arguments"`
+	TargetDeviceID string         `json:"target_device_id,omitempty"`
+}
+
+type StewardAgentToolResult struct {
+	ToolCallID string         `json:"tool_call_id"`
+	ToolName   string         `json:"tool_name"`
+	Output     map[string]any `json:"output,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	Evidence   map[string]any `json:"evidence,omitempty"`
+}
+
+type StewardAgentTurn struct {
+	ID                 string                   `json:"id"`
+	EpisodeID          string                   `json:"episode_id"`
+	RoundIndex         int                      `json:"round_index"`
+	Status             string                   `json:"status"`
+	AssistantContent   string                   `json:"assistant_content,omitempty"`
+	ReasoningContent   string                   `json:"-"`
+	ToolCalls          []StewardAgentToolCall   `json:"tool_calls"`
+	ToolResults        []StewardAgentToolResult `json:"tool_results"`
+	Provider           string                   `json:"provider,omitempty"`
+	Model              string                   `json:"model,omitempty"`
+	ProviderResponseID string                   `json:"provider_response_id,omitempty"`
+	ExecutionID        string                   `json:"execution_id,omitempty"`
+	FailureSummary     string                   `json:"failure_summary,omitempty"`
+	CreatedAt          time.Time                `json:"created_at"`
+	UpdatedAt          time.Time                `json:"updated_at"`
+	CompletedAt        *time.Time               `json:"completed_at,omitempty"`
+}
+
+type StewardAgentEpisode struct {
+	ID                 string             `json:"id"`
+	ConversationID     string             `json:"conversation_id"`
+	TriggerMessageID   string             `json:"trigger_message_id"`
+	ProgressMessageID  string             `json:"progress_message_id,omitempty"`
+	FinalMessageID     string             `json:"final_message_id,omitempty"`
+	TriggerKind        string             `json:"trigger_kind"`
+	Goal               string             `json:"goal"`
+	DataLevel          string             `json:"data_level"`
+	Status             string             `json:"status"`
+	CurrentRound       int                `json:"current_round"`
+	ToolCallCount      int                `json:"tool_call_count"`
+	MaxRounds          int                `json:"max_rounds"`
+	MaxToolCalls       int                `json:"max_tool_calls"`
+	MaxDurationSeconds int                `json:"max_duration_seconds"`
+	NoProgressLimit    int                `json:"no_progress_limit"`
+	NoProgressCount    int                `json:"no_progress_count"`
+	ModelFailureCount  int                `json:"model_failure_count"`
+	TargetDeviceID     string             `json:"target_device_id,omitempty"`
+	ActiveExecutionID  string             `json:"active_execution_id,omitempty"`
+	ControlGeneration  int64              `json:"control_generation,omitempty"`
+	FailureSummary     string             `json:"failure_summary,omitempty"`
+	LastResultSummary  string             `json:"last_result_summary,omitempty"`
+	Turns              []StewardAgentTurn `json:"turns,omitempty"`
+	CreatedAt          time.Time          `json:"created_at"`
+	UpdatedAt          time.Time          `json:"updated_at"`
+	DeadlineAt         *time.Time         `json:"deadline_at,omitempty"`
+	CompletedAt        *time.Time         `json:"completed_at,omitempty"`
 }
 
 // StewardConversationExecution is the durable R4.5 bridge between one
@@ -165,6 +231,9 @@ type StewardConversationExecution struct {
 	ControlGeneration    int64          `json:"control_generation,omitempty"`
 	Evidence             map[string]any `json:"evidence"`
 	ModelState           map[string]any `json:"-"`
+	EpisodeID            string         `json:"episode_id,omitempty"`
+	TurnID               string         `json:"turn_id,omitempty"`
+	RoundIndex           int            `json:"round_index,omitempty"`
 	FailureSummary       string         `json:"failure_summary,omitempty"`
 	CreatedAt            time.Time      `json:"created_at"`
 	UpdatedAt            time.Time      `json:"updated_at"`
