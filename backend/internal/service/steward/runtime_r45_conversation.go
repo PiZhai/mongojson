@@ -442,7 +442,7 @@ func (s *Service) createConversationOrchestration(ctx context.Context, idempoten
 	}
 	return s.CreateOrchestration(ctx, CreateOrchestrationInput{
 		Goal: summary, IdempotencyKey: idempotencyKey, RequestedBy: "conversation",
-		PermissionCeiling: permission, DataLevel: level, FailurePolicy: "fail_fast",
+		PermissionCeiling: permission, DataLevel: level, FailurePolicy: "collect_all",
 		MaxParallel: 2, MaxChildren: len(nodes), AutoStart: false, Nodes: nodes,
 	})
 }
@@ -529,7 +529,10 @@ func (s *Service) listConversationExecutions(ctx context.Context, messageID stri
 				return nil, keyErr
 			}
 		}
-		item, _ = s.refreshConversationExecution(ctx, item)
+		item, err = s.refreshConversationExecution(ctx, item)
+		if err != nil {
+			return nil, err
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -599,47 +602,116 @@ func (s *Service) refreshConversationExecution(ctx context.Context, item domain.
 	}
 	encoded, _ := json.Marshal(evidence)
 	now := time.Now().UTC()
-	_, err := s.db.Pool.Exec(ctx, `
+	tag, err := s.db.Pool.Exec(ctx, `
 		update steward_conversation_executions set status=$2, failure_summary=$3, evidence=$4::jsonb,
-		       completed_at=$5, updated_at=$6 where id=$1
-	`, item.ID, status, failure, string(encoded), completed, now)
+		       completed_at=$5, updated_at=$6 where id=$1 and status=$7
+	`, item.ID, status, failure, string(encoded), completed, now, previousStatus)
 	if err != nil {
 		return item, err
+	}
+	if tag.RowsAffected() != 1 {
+		// A pause, cancel, or another terminal projection won after this refresh
+		// took its child-runtime snapshot. Never let that stale snapshot overwrite
+		// the newer control decision, and never emit callbacks from it.
+		var currentEvidence []byte
+		if err := s.db.Pool.QueryRow(ctx, `
+			select status,failure_summary,evidence,updated_at,completed_at
+			from steward_conversation_executions where id=$1
+		`, item.ID).Scan(&item.Status, &item.FailureSummary, &currentEvidence, &item.UpdatedAt, &item.CompletedAt); err != nil {
+			return item, err
+		}
+		_ = json.Unmarshal(currentEvidence, &item.Evidence)
+		return item, nil
 	}
 	item.Status, item.FailureSummary, item.Evidence, item.CompletedAt, item.UpdatedAt = status, failure, evidence, completed, now
 	if status == RuntimeRunSucceeded && previousStatus != RuntimeRunSucceeded && item.EpisodeID == "" {
 		_ = s.recordConversationExecutionMemory(ctx, item)
 	}
-	if runtimeRunTerminal(status) && status != previousStatus {
+	if runtimeRunTerminal(status) {
 		if item.EpisodeID != "" {
-			_ = s.completeAgentEpisodeExecution(ctx, item, toolResults)
-		} else {
-			_ = s.recordConversationExecutionResultMessage(ctx, item, toolResults)
+			// Episode completion is intentionally retried even when the projected
+			// execution was already terminal. A process can stop after persisting
+			// the child status but before committing the corresponding tool turn.
+			if err := s.completeAgentEpisodeExecution(ctx, item, toolResults); err != nil {
+				return item, err
+			}
+		} else if status != previousStatus {
+			if err := s.recordConversationExecutionResultMessage(ctx, item, toolResults); err != nil {
+				return item, err
+			}
 		}
 	}
 	return item, nil
 }
 
 func (s *Service) conversationOrchestrationToolResults(ctx context.Context, orchestration domain.StewardOrchestration) []ConversationToolResult {
-	results := []ConversationToolResult{}
-	for _, node := range orchestration.Nodes {
+	nodes := append([]domain.StewardOrchestrationNode(nil), orchestration.Nodes...)
+	sort.SliceStable(nodes, func(i, j int) bool {
+		if nodes[i].Position != nodes[j].Position {
+			return nodes[i].Position < nodes[j].Position
+		}
+		return nodes[i].ID < nodes[j].ID
+	})
+	results := make([]ConversationToolResult, 0)
+	for _, node := range nodes {
+		var runResults []ConversationToolResult
+		var runLoadError error
 		if node.RuntimeRunID != "" {
 			if run, err := s.GetAgentRun(ctx, node.RuntimeRunID); err == nil {
-				results = append(results, s.conversationRunToolResults(ctx, run)...)
+				runResults = s.conversationRunToolResults(ctx, run)
+			} else {
+				runLoadError = err
 			}
-			continue
 		}
-		if node.RemoteDispatch != nil {
-			for index, step := range node.Steps {
-				result := ConversationToolResult{
-					ID: fmt.Sprintf("remote_%s_%d", node.ID, index+1), ToolName: step.ToolName, Arguments: step.Arguments,
-					Output: node.RemoteDispatch.ResultPayload, Error: node.RemoteDispatch.LastError,
-				}
-				results = append(results, result)
+		for index, step := range node.Steps {
+			result := ConversationToolResult{
+				ID:        fmt.Sprintf("orchestration_%s_%d", node.ID, index+1),
+				ToolName:  step.ToolName,
+				Arguments: step.Arguments,
 			}
+			available := false
+			switch {
+			case index < len(runResults):
+				candidate := runResults[index]
+				if candidate.ToolName != "" && candidate.ToolName != step.ToolName {
+					result.Error = fmt.Sprintf("tool result mapping mismatch: expected %s, child run returned %s", step.ToolName, candidate.ToolName)
+					available = true
+				} else {
+					result = candidate
+					result.ToolName = step.ToolName
+					result.Arguments = step.Arguments
+					result.ID = defaultString(result.ID, fmt.Sprintf("orchestration_%s_%d", node.ID, index+1))
+					available = true
+				}
+			case node.RemoteDispatch != nil:
+				result.ID = fmt.Sprintf("remote_%s_%d", node.ID, index+1)
+				result.Output = node.RemoteDispatch.ResultPayload
+				result.Error = node.RemoteDispatch.LastError
+				available = true
+			}
+			if !available {
+				result.Error = conversationOrchestrationMissingResultError(node, runLoadError)
+			} else if result.Error == "" && len(result.Output) == 0 && orchestrationNodeTerminal(node.Status) && node.Status != OrchestrationNodeSucceeded {
+				result.Error = conversationOrchestrationMissingResultError(node, nil)
+			}
+			results = append(results, result)
 		}
 	}
 	return results
+}
+
+func conversationOrchestrationMissingResultError(node domain.StewardOrchestrationNode, cause error) string {
+	if cause != nil {
+		return fmt.Sprintf("tool result unavailable: child run %s could not be loaded: %s",
+			node.RuntimeRunID, sanitizeRuntimeError(cause))
+	}
+	if summary := strings.TrimSpace(node.FailureSummary); summary != "" {
+		return "tool was not invoked or produced no result: " + sanitizeRuntimeError(errors.New(summary))
+	}
+	if node.Status != "" {
+		return fmt.Sprintf("tool was not invoked or produced no result; orchestration node ended as %s", node.Status)
+	}
+	return "tool was not invoked or produced no result"
 }
 
 func (s *Service) conversationRunToolResults(ctx context.Context, run domain.StewardAgentRun) []ConversationToolResult {
@@ -881,14 +953,20 @@ func runtimeRunRequiresApproval(run domain.StewardAgentRun) bool {
 func (s *Service) cancelConversationExecution(ctx context.Context, item domain.StewardConversationExecution, pause bool) (domain.StewardConversationExecution, error) {
 	if item.Kind == conversationExecutionRun && item.RunID != "" {
 		run, err := s.GetAgentRun(ctx, item.RunID)
-		if err == nil && !runtimeRunTerminal(run.Status) {
+		if err == nil && runtimeRunTerminal(run.Status) {
+			return s.refreshConversationExecution(ctx, item)
+		}
+		if err == nil {
 			if _, err := s.CancelAgentRun(ctx, item.RunID); err != nil {
 				return item, err
 			}
 		}
 	} else if item.Kind == conversationExecutionOrchestration && item.OrchestrationID != "" {
 		orchestration, err := s.GetOrchestration(ctx, item.OrchestrationID)
-		if err == nil && !orchestrationTerminal(orchestration.Status) {
+		if err == nil && orchestrationTerminal(orchestration.Status) {
+			return s.refreshConversationExecution(ctx, item)
+		}
+		if err == nil {
 			if _, err := s.CancelOrchestration(ctx, item.OrchestrationID); err != nil {
 				return item, err
 			}
@@ -899,12 +977,27 @@ func (s *Service) cancelConversationExecution(ctx context.Context, item domain.S
 		status = conversationExecutionPaused
 	}
 	now := time.Now().UTC()
-	_, err := s.db.Pool.Exec(ctx, `update steward_conversation_executions set status=$2::text, updated_at=$3::timestamptz, completed_at=case when $2::text='cancelled' then $3::timestamptz else null::timestamptz end where id=$1`, item.ID, status, now)
+	tag, err := s.db.Pool.Exec(ctx, `update steward_conversation_executions set status=$2::text, updated_at=$3::timestamptz,
+		completed_at=case when $2::text='cancelled' then $3::timestamptz else null::timestamptz end
+		where id=$1 and status not in ('succeeded','failed','cancelled')`, item.ID, status, now)
+	if err != nil {
+		return item, err
+	}
+	if tag.RowsAffected() != 1 {
+		var currentEvidence []byte
+		if err := s.db.Pool.QueryRow(ctx, `select status,failure_summary,evidence,updated_at,completed_at
+			from steward_conversation_executions where id=$1`, item.ID).
+			Scan(&item.Status, &item.FailureSummary, &currentEvidence, &item.UpdatedAt, &item.CompletedAt); err != nil {
+			return item, err
+		}
+		_ = json.Unmarshal(currentEvidence, &item.Evidence)
+		return item, nil
+	}
 	item.Status, item.UpdatedAt = status, now
 	if !pause {
 		item.CompletedAt = &now
 	}
-	return item, err
+	return item, nil
 }
 
 func (s *Service) failConversationExecution(ctx context.Context, id string, cause error) error {
@@ -923,7 +1016,7 @@ func (s *Service) applyConversationExecutionCommand(ctx context.Context, convers
 		}
 		targetID := ""
 		if decision == "switch_device" {
-			episode, getErr := s.GetAgentEpisode(ctx, episodeID)
+			episode, getErr := s.getAgentEpisodeState(ctx, episodeID)
 			if getErr != nil {
 				return domain.StewardConversationMessage{}, getErr
 			}
@@ -1073,9 +1166,14 @@ func (s *Service) RunConversationExecutionRefreshCycle(ctx context.Context, limi
 		limit = 20
 	}
 	rows, err := s.db.Pool.Query(ctx, `
-		select id::text from steward_conversation_executions
-		where status in ('queued','running')
-		order by updated_at, created_at limit $1
+		select execution.id::text
+		from steward_conversation_executions execution
+		left join steward_agent_episodes episode on episode.id=execution.episode_id
+		where execution.status in ('queued','running')
+		   or (execution.status in ('succeeded','failed','cancelled','blocked')
+		       and episode.status='executing'
+		       and episode.active_execution_id=execution.id)
+		order by execution.updated_at, execution.created_at limit $1
 	`, limit)
 	if err != nil {
 		return 0, err

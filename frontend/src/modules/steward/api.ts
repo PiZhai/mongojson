@@ -57,6 +57,7 @@ import type {
   StewardTimelineSegment,
   StewardAgentRun,
   StewardAgentRunSummary,
+	StewardAgentTurnPage,
   StewardEvidenceArtifact,
   StewardRunEvent,
   StewardRuntimeExecutionControl,
@@ -433,6 +434,14 @@ export async function decideStewardAgentEpisode(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision, target_device_id: targetDeviceID }),
     },
+  )
+}
+
+export async function getStewardAgentEpisodeTurns(id: string, beforeRound = 0, limit = 25) {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (beforeRound > 0) query.set('before_round', String(beforeRound))
+  return request<StewardAgentTurnPage>(
+    `${API_BASE}/steward/agent-episodes/${encodeURIComponent(id)}/turns?${query.toString()}`,
   )
 }
 

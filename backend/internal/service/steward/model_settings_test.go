@@ -62,3 +62,41 @@ func TestPublicModelSettingsNeverReturnsAPIKey(t *testing.T) {
 		t.Fatal("public settings exposed the API key")
 	}
 }
+
+func TestModelSettingsFromEnvDefaultsToUnlimitedAgentLoop(t *testing.T) {
+	t.Setenv("STEWARD_AGENT_MAX_ROUNDS", "")
+	t.Setenv("STEWARD_AGENT_MAX_TOOL_CALLS", "")
+	t.Setenv("STEWARD_AGENT_MAX_DURATION", "")
+	t.Setenv("STEWARD_AGENT_NO_PROGRESS_LIMIT", "")
+
+	values := modelSettingsFromEnv()
+	if values.agentMaxRounds != 0 || values.agentMaxToolCalls != 0 || values.agentMaxDurationSeconds != 0 {
+		t.Fatalf("expected unlimited long-task defaults, got rounds=%d tools=%d duration=%d",
+			values.agentMaxRounds, values.agentMaxToolCalls, values.agentMaxDurationSeconds)
+	}
+	if values.agentNoProgressLimit != defaultAgentNoProgressLimit {
+		t.Fatalf("expected no-progress safeguard %d, got %d", defaultAgentNoProgressLimit, values.agentNoProgressLimit)
+	}
+}
+
+func TestModelSettingsFromEnvAcceptsExplicitZeroAgentLimits(t *testing.T) {
+	t.Setenv("STEWARD_AGENT_MAX_ROUNDS", "0")
+	t.Setenv("STEWARD_AGENT_MAX_TOOL_CALLS", "0")
+	t.Setenv("STEWARD_AGENT_MAX_DURATION", "0")
+
+	values := modelSettingsFromEnv()
+	if values.agentMaxRounds != 0 || values.agentMaxToolCalls != 0 || values.agentMaxDurationSeconds != 0 {
+		t.Fatalf("explicit zero limits were not preserved: %+v", values)
+	}
+}
+
+func TestModelSettingsFromEnvPreservesExplicitFiniteAgentLimits(t *testing.T) {
+	t.Setenv("STEWARD_AGENT_MAX_ROUNDS", "128")
+	t.Setenv("STEWARD_AGENT_MAX_TOOL_CALLS", "512")
+	t.Setenv("STEWARD_AGENT_MAX_DURATION", "4h")
+
+	values := modelSettingsFromEnv()
+	if values.agentMaxRounds != 128 || values.agentMaxToolCalls != 512 || values.agentMaxDurationSeconds != 4*60*60 {
+		t.Fatalf("explicit finite limits were not preserved: %+v", values)
+	}
+}

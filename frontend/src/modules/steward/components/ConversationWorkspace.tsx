@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import {
   createStewardConversation,
   decideStewardAgentEpisode,
   decideStewardConversationExecution,
   decideStewardConversationSuggestion,
+  getStewardAgentEpisodeTurns,
   getStewardExecutionControl,
   getStewardModelSettings,
   getStewardConversationMessages,
@@ -12,8 +13,9 @@ import {
   updateStewardConversation,
 } from '../api'
 import type {
-  StewardConversation,
   StewardAgentEpisode,
+  StewardAgentTurn,
+  StewardConversation,
   StewardConversationExecution,
   StewardConversationMessage,
   StewardConversationSuggestion,
@@ -450,34 +452,26 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
                     <span>{episode.target_device_id || '自动选择设备'}</span>
                     <span>{episode.tool_call_count} 次工具调用</span>
                   </div>
-                  {episode.last_result_summary ? <p>{episode.last_result_summary}</p> : null}
-                  {episode.failure_summary ? <p className="steward-execution-failure">{episode.failure_summary}</p> : null}
-                  {episode.turns?.length && agentProgressDetail !== 'final_only' ? (
-                    <details open={agentProgressDetail === 'full'}>
-                      <summary>查看 {episode.turns.length} 轮工具记录</summary>
-                      {(episode.turns ?? []).map((turn) => (
-                        <div className="steward-execution-evidence" key={turn.id}>
-                          <span>第 {turn.round_index} 轮</span>
-                          <span>{(turn.tool_calls ?? []).map((call) => call.tool_name).join('、') || '最终回答'}</span>
-                          {(turn.tool_results ?? []).some((result) => result.error) ? <span>有失败结果</span> : null}
-                        </div>
-                      ))}
-                    </details>
-                  ) : null}
+                  <AgentEpisodeProgress episode={episode} />
                   <div className="steward-row-actions steward-execution-actions">
                     {['thinking', 'executing'].includes(episode.status) ? (
                       <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void decideEpisode(episode, 'pause')} type="button">暂停</button>
                     ) : null}
-                    {['paused', 'blocked'].includes(episode.status) ? (
-                      <button className="steward-button" disabled={busy} onClick={() => void decideEpisode(episode, 'resume')} type="button">继续</button>
+                    {['paused', 'blocked', 'failed'].includes(episode.status) ? (
+                      <button className="steward-button" disabled={busy} onClick={() => void decideEpisode(episode, 'resume')} type="button">
+                        {episode.status === 'failed' ? '重试' : '继续'}
+                      </button>
                     ) : null}
                     {['thinking', 'executing', 'awaiting_input', 'paused', 'blocked'].includes(episode.status) ? (
                       <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void decideEpisode(episode, 'cancel')} type="button">取消</button>
                     ) : null}
-                    {['paused', 'blocked'].includes(episode.status) ? (
+                    {['paused', 'blocked', 'failed'].includes(episode.status) ? (
                       <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void sendControlCommand('换到另一台电脑')} type="button">换设备</button>
                     ) : null}
                   </div>
+                  {(episode.turn_count ?? episode.turns?.length ?? 0) > 0 && agentProgressDetail !== 'final_only' ? (
+                    <AgentEpisodeTurnHistory episode={episode} initiallyOpen={agentProgressDetail === 'full'} />
+                  ) : null}
                 </div>
               ))}
               {(message.executions ?? []).map((execution) => (
@@ -601,6 +595,144 @@ function executionStatusLabel(status: StewardConversationExecution['status']) {
     blocked: '已阻断',
   }
   return labels[status]
+}
+
+function mergeAgentTurns(...groups: StewardAgentTurn[][]): StewardAgentTurn[] {
+  const byID = new Map<string, StewardAgentTurn>()
+  for (const group of groups) {
+    for (const turn of group) byID.set(turn.id, turn)
+  }
+  return [...byID.values()].sort((left, right) => left.round_index - right.round_index)
+}
+
+const agentProgressPreviewLimit = 180
+
+function summarizeAgentProgress(value?: string, limit = agentProgressPreviewLimit) {
+  const normalized = value?.trim() ?? ''
+  if (normalized.length <= limit) return { preview: normalized, truncated: false }
+  return { preview: `${normalized.slice(0, Math.max(1, limit - 1)).trimEnd()}…`, truncated: true }
+}
+
+function recentAgentToolLabel(episode: StewardAgentEpisode) {
+  const latestTurn = [...(episode.turns ?? [])].sort((left, right) => right.round_index - left.round_index)[0]
+  const names = [...new Set([
+    ...(latestTurn?.tool_calls ?? []).map((call) => call.tool_name),
+    ...(latestTurn?.tool_results ?? []).map((result) => result.tool_name),
+  ].filter(Boolean))]
+  if (names.length === 0) return episode.status === 'thinking' ? '准备模型决策' : '尚无工具调用'
+  if (names.length <= 3) return names.join('、')
+  return `${names.slice(0, 3).join('、')} 等 ${names.length} 项`
+}
+
+export function AgentEpisodeProgress({ episode }: { episode: StewardAgentEpisode }) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const detailID = useId()
+  const result = summarizeAgentProgress(episode.last_result_summary)
+  const failure = summarizeAgentProgress(episode.failure_summary)
+  const hasDetails = result.truncated || failure.truncated
+  const detailsLabel = episode.failure_summary ? '错误详情' : '运行详情'
+  const toolStateLabel = episode.status === 'executing' ? '当前工具' : '最近工具'
+
+  return (
+    <div className="steward-agent-progress">
+      <div className="steward-agent-progress-tool" aria-label={`${toolStateLabel}：${recentAgentToolLabel(episode)}`}>
+        <small>{toolStateLabel}</small>
+        <strong>{recentAgentToolLabel(episode)}</strong>
+      </div>
+      {result.preview ? <p className="steward-agent-result-summary"><small>最近结果</small>{result.preview}</p> : null}
+      {failure.preview ? <p className="steward-execution-failure" role="alert"><small>失败原因</small>{failure.preview}</p> : null}
+      {hasDetails ? (
+        <>
+          <button
+            aria-controls={detailID}
+            aria-expanded={detailsOpen}
+            className="steward-button steward-button-secondary steward-agent-details-toggle"
+            onClick={() => setDetailsOpen((current) => !current)}
+            type="button"
+          >
+            {detailsOpen ? `收起${detailsLabel}` : `查看${detailsLabel}`}
+          </button>
+          {detailsOpen ? (
+            <div className="steward-agent-progress-details" id={detailID}>
+              {episode.last_result_summary ? <p><small>完整结果</small>{episode.last_result_summary}</p> : null}
+              {episode.failure_summary ? <p className="steward-execution-failure"><small>完整错误</small>{episode.failure_summary}</p> : null}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+export function AgentEpisodeTurnHistory({ episode, initiallyOpen }: { episode: StewardAgentEpisode; initiallyOpen: boolean }) {
+  const [open, setOpen] = useState(initiallyOpen)
+  const historyID = useId()
+  const [loadedTurns, setLoadedTurns] = useState<StewardAgentTurn[]>([])
+  const [hasMore, setHasMore] = useState(episode.turns_has_more ?? false)
+  const [nextBeforeRound, setNextBeforeRound] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const loadedRef = useRef(false)
+
+  const loadPage = useCallback(async (loadOlder = false) => {
+    if (loading) return
+    setLoading(true)
+    setLoadError('')
+    try {
+      const page = await getStewardAgentEpisodeTurns(episode.id, loadOlder ? nextBeforeRound : 0, 25)
+      setLoadedTurns((current) => mergeAgentTurns(loadOlder ? current : [], page.turns))
+      setHasMore(page.has_more)
+      setNextBeforeRound(page.next_before_round ?? 0)
+      loadedRef.current = true
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : '加载工具回合失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [episode.id, loading, nextBeforeRound])
+
+  useEffect(() => {
+    if (initiallyOpen && !loadedRef.current) void loadPage(false)
+  }, [initiallyOpen, loadPage])
+
+  const turns = mergeAgentTurns(loadedTurns, episode.turns ?? [])
+  const total = episode.turn_count ?? Math.max(episode.current_round, turns.length)
+  const toggleHistory = () => {
+    const nextOpen = !open
+    setOpen(nextOpen)
+    if (nextOpen && !loadedRef.current) void loadPage(false)
+  }
+  return (
+    <div className="steward-agent-turn-history">
+      <button
+        aria-controls={historyID}
+        aria-expanded={open}
+        className="steward-agent-history-toggle"
+        onClick={toggleHistory}
+        type="button"
+      >
+        {open ? '收起工具记录' : `查看 ${total} 轮工具记录`}
+      </button>
+      {open ? (
+        <div className="steward-agent-turn-list" id={historyID}>
+          {turns.map((turn) => (
+            <div className="steward-execution-evidence" key={turn.id}>
+              <span>第 {turn.round_index} 轮</span>
+              <span>{(turn.tool_calls ?? []).map((call) => call.tool_name).join('、') || '最终回答'}</span>
+              {(turn.tool_results ?? []).some((result) => result.error) ? <span>有失败结果</span> : null}
+            </div>
+          ))}
+          {loading ? <small>正在加载回合…</small> : null}
+          {loadError ? <p className="steward-execution-failure" role="alert">{loadError}</p> : null}
+          {hasMore && nextBeforeRound > 0 ? (
+            <button className="steward-button steward-button-secondary" disabled={loading} onClick={() => void loadPage(true)} type="button">
+              加载更早回合
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function agentEpisodeStatusLabel(status: StewardAgentEpisode['status']) {

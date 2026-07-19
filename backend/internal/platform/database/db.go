@@ -616,19 +616,27 @@ func (db *DB) Migrate(ctx context.Context) error {
 			allow_no_api_key boolean not null default false,
 			max_data_level text not null default 'D1',
 			timeout_seconds integer not null default 30,
-			agent_max_rounds integer not null default 12,
-			agent_max_tool_calls integer not null default 40,
-			agent_max_duration_seconds integer not null default 1800,
+			agent_max_rounds integer not null default 0,
+			agent_max_tool_calls integer not null default 0,
+			agent_max_duration_seconds integer not null default 0,
 			agent_no_progress_limit integer not null default 3,
 			agent_progress_detail text not null default 'compact',
 			updated_at timestamptz not null default now()
 		);`,
 		`alter table steward_model_settings
-			add column if not exists agent_max_rounds integer not null default 12,
-			add column if not exists agent_max_tool_calls integer not null default 40,
-			add column if not exists agent_max_duration_seconds integer not null default 1800,
+			add column if not exists agent_max_rounds integer not null default 0,
+			add column if not exists agent_max_tool_calls integer not null default 0,
+			add column if not exists agent_max_duration_seconds integer not null default 0,
 			add column if not exists agent_no_progress_limit integer not null default 3,
 			add column if not exists agent_progress_detail text not null default 'compact';`,
+		// Change only the defaults used by new rows. Existing rows are left
+		// untouched because an old 12/40/1800 tuple is indistinguishable from a
+		// user who explicitly chose those values. Existing users can opt in from
+		// the model settings dialog without losing an intentional custom limit.
+		`alter table steward_model_settings
+			alter column agent_max_rounds set default 0,
+			alter column agent_max_tool_calls set default 0,
+			alter column agent_max_duration_seconds set default 0;`,
 		`create table if not exists steward_autonomy_rules (
 			id uuid primary key,
 			name text not null unique,
@@ -1244,7 +1252,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 			check (status in ('draft','queued','running','compensating','succeeded','failed','compensated','compensation_failed','cancelled','blocked'));`,
 		`alter table steward_orchestrations drop constraint if exists steward_orchestrations_failure_policy_check;`,
 		`alter table steward_orchestrations add constraint steward_orchestrations_failure_policy_check
-			check (failure_policy in ('fail_fast','compensate'));`,
+			check (failure_policy in ('fail_fast','compensate','collect_all'));`,
 		`create table if not exists steward_orchestration_nodes (
 			id uuid primary key,
 			orchestration_id uuid not null references steward_orchestrations(id) on delete cascade,
@@ -1530,6 +1538,9 @@ func (db *DB) Migrate(ctx context.Context) error {
 			add column if not exists hydrated_tool_names jsonb not null default '[]'::jsonb,
 			add column if not exists catalog_generation bigint not null default 0,
 			add column if not exists current_tool_versions jsonb not null default '{}'::jsonb;`,
+		`alter table steward_agent_episodes
+			add column if not exists working_state jsonb not null default '{}'::jsonb,
+			add column if not exists summary_through_round integer not null default 0;`,
 		`alter table steward_events
 			add column if not exists valid_from timestamptz,
 			add column if not exists valid_to timestamptz,

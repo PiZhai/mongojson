@@ -33,6 +33,34 @@ Describe 'Windows production installer transaction contracts' {
     $script.Contains('Join-Path $DataDir "migration-backup-')|Should Be $false
   }
 
+  It 'fails closed instead of replacing an existing local encryption key' {
+    $installer=Read-Script 'install-steward-production.ps1'
+    foreach($contract in @(
+      'Read-ProtectedLocalEncryptionKeyring',
+      'Resolve-InstallationLocalEncryptionKey',
+      'DataDir already exists but no protected STEWARD_LOCAL_ENCRYPTION_KEY could be inherited',
+      'DatabaseURL points to an external PostgreSQL server',
+      'LocalEncryptionKey does not match the protected key already associated with this DataDir'
+    )){$installer.Contains($contract)|Should Be $true}
+    $installer.IndexOf('$localKeyResolution=Resolve-InstallationLocalEncryptionKey')|Should BeLessThan $installer.IndexOf('$installMutationStarted=$true')
+    foreach($field in @('key','key_id','previous_keys')){
+      $installer.Contains("`$LocalEncryption$($field -replace '^key$','Key' -replace '^key_id$','KeyID' -replace '^previous_keys$','PreviousKeys')=[string]`$localKeyResolution.$field")|Should Be $true
+    }
+  }
+
+  It 'requires migration key recovery before destructive migration and preserves a generated key after started verification failure' {
+    $migration=Read-Script 'migrate-steward-production.ps1'
+    $migration.Contains("Assert-RecoverableLocalEncryptionKey `$envMap 'legacy installation'")|Should Be $true
+    $migration.IndexOf("Assert-RecoverableLocalEncryptionKey `$envMap 'legacy installation'")|Should BeLessThan $migration.IndexOf('Stop-Service $ServiceName -Force -ErrorAction Stop')
+    $installer=Read-Script 'install-steward-production.ps1'
+    foreach($contract in @(
+      'local-encryption-key-recovery.json',
+      '$localKeyMayHaveReachedDatabase=$true',
+      '$retainLocalKeyRecovery=$localKeyGenerated -and $localKeyMayHaveReachedDatabase',
+      'Reuse that key on the next installation attempt'
+    )){$installer.Contains($contract)|Should Be $true}
+  }
+
   It 'uses a mutation journal so an early Companion failure cannot delete the old install' {
     $script=Read-Script 'install-steward-companion.ps1'
     foreach($flag in @('$stageCreated','$oldTaskUnregistered','$oldInstallMoved','$stageActivated','$newTaskRegistered','$newTaskStarted')){

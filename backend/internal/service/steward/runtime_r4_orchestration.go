@@ -305,11 +305,16 @@ func (s *Service) normalizeOrchestrationInput(ctx context.Context, input CreateO
 	input.PermissionCeiling = strings.ToUpper(defaultString(strings.TrimSpace(input.PermissionCeiling), PermissionA0))
 	input.DataLevel = strings.ToUpper(defaultString(strings.TrimSpace(input.DataLevel), DataD0))
 	input.FailurePolicy = strings.ToLower(defaultString(strings.TrimSpace(input.FailurePolicy), "fail_fast"))
+	// "continue" was the name used by early Agent-loop clients. Store one
+	// canonical value so plan hashes and recovery behavior remain stable.
+	if input.FailurePolicy == "continue" {
+		input.FailurePolicy = "collect_all"
+	}
 	if input.Goal == "" || len([]rune(input.Goal)) > 2000 || len(input.IdempotencyKey) > 200 {
 		return input, "", fmt.Errorf("%w: goal is required and idempotency metadata exceeds its limit", ErrOrchestrationInvalid)
 	}
 	if !validRuntimePermission(input.PermissionCeiling) || !validRuntimeDataLevel(input.DataLevel) ||
-		(input.FailurePolicy != "fail_fast" && input.FailurePolicy != "compensate") {
+		(input.FailurePolicy != "fail_fast" && input.FailurePolicy != "compensate" && input.FailurePolicy != "collect_all") {
 		return input, "", fmt.Errorf("%w: invalid permission, data level or failure policy", ErrOrchestrationInvalid)
 	}
 	if input.MaxParallel == 0 {
@@ -896,6 +901,15 @@ func orchestrationTerminal(status string) bool {
 	}
 }
 
+func orchestrationNodeTerminal(status string) bool {
+	switch status {
+	case OrchestrationNodeSucceeded, OrchestrationNodeFailed, OrchestrationNodeCancelled, OrchestrationNodeBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) StartOrchestration(ctx context.Context, id string) (domain.StewardOrchestration, error) {
 	if err := s.orchestrationEnabled(); err != nil {
 		return domain.StewardOrchestration{}, err
@@ -1134,14 +1148,6 @@ func (s *Service) processOrchestration(ctx context.Context, id string, generatio
 	}
 	statusByKey := map[string]string{}
 	active := 0
-	allForwardSucceeded := false
-	forwardCount := 0
-	failedNode := ""
-	failedStatus := ""
-	compensationCount := 0
-	allCompensationsSucceeded := true
-	compensationFailedNode := ""
-	forwardDrainActive := 0
 	for index := range nodes {
 		node := &nodes[index]
 		next := orchestrationNodeStatusForRuntime(node.Status, node.RuntimeStatus)
@@ -1168,6 +1174,53 @@ func (s *Service) processOrchestration(ctx context.Context, id string, generatio
 		if node.Status == OrchestrationNodeDispatched || node.Status == OrchestrationNodeRunning {
 			active++
 		}
+	}
+	// collect_all keeps independent siblings running, but a node whose declared
+	// dependency has already failed can never become ready. Make that outcome
+	// explicit (and cascade it through dependent nodes) rather than leaving the
+	// parent running forever with pending work.
+	if failurePolicy == "collect_all" && status != OrchestrationCompensating {
+		for index := range nodes {
+			node := &nodes[index]
+			if node.Kind == "compensation" || node.Status != OrchestrationNodePending {
+				continue
+			}
+			for _, dependency := range node.DependsOn {
+				dependencyStatus := statusByKey[dependency]
+				if !orchestrationNodeTerminal(dependencyStatus) || dependencyStatus == OrchestrationNodeSucceeded {
+					continue
+				}
+				message := fmt.Sprintf("dependency %s ended as %s", dependency, dependencyStatus)
+				if _, err := tx.Exec(ctx, `
+					update steward_orchestration_nodes set status=$2, failure_summary=$3,
+					       completed_at=$4, updated_at=$4 where id=$1
+				`, node.ID, OrchestrationNodeBlocked, message, now); err != nil {
+					return false, err
+				}
+				node.Status = OrchestrationNodeBlocked
+				node.FailureSummary = message
+				statusByKey[node.Key] = node.Status
+				if err := appendOrchestrationEvent(ctx, tx, id, node.ID, "node.blocked", OrchestrationNodeBlocked,
+					message, map[string]any{"dependency": dependency, "dependency_status": dependencyStatus}); err != nil {
+					return false, err
+				}
+				break
+			}
+		}
+	}
+	allForwardSucceeded := false
+	allForwardTerminal := false
+	forwardCount := 0
+	forwardNonSuccess := 0
+	failedNode := ""
+	failedStatus := ""
+	collectAllHasFailure := false
+	compensationCount := 0
+	allCompensationsSucceeded := true
+	compensationFailedNode := ""
+	forwardDrainActive := 0
+	for index := range nodes {
+		node := &nodes[index]
 		if node.Kind == "compensation" {
 			compensationCount++
 			if node.Status != OrchestrationNodeSucceeded {
@@ -1182,18 +1235,29 @@ func (s *Service) processOrchestration(ctx context.Context, id string, generatio
 				forwardDrainActive++
 			}
 			if node.Status == OrchestrationNodeFailed || node.Status == OrchestrationNodeCancelled || node.Status == OrchestrationNodeBlocked {
-				failedNode, failedStatus = node.Key, node.Status
+				forwardNonSuccess++
+				if failedNode == "" {
+					failedNode, failedStatus = node.Key, node.Status
+				}
+				if node.Status == OrchestrationNodeFailed || node.Status == OrchestrationNodeCancelled {
+					collectAllHasFailure = true
+				}
 			}
 		}
 	}
 	if forwardCount == 0 {
-		allForwardSucceeded = false
+		allForwardSucceeded, allForwardTerminal = false, false
 	} else {
-		allForwardSucceeded = true
+		allForwardSucceeded, allForwardTerminal = true, true
 		for _, node := range nodes {
-			if node.Kind != "compensation" && node.Status != OrchestrationNodeSucceeded {
+			if node.Kind == "compensation" {
+				continue
+			}
+			if node.Status != OrchestrationNodeSucceeded {
 				allForwardSucceeded = false
-				break
+			}
+			if !orchestrationNodeTerminal(node.Status) {
+				allForwardTerminal = false
 			}
 		}
 	}
@@ -1268,6 +1332,23 @@ func (s *Service) processOrchestration(ctx context.Context, id string, generatio
 			return false, err
 		}
 		if err := appendOrchestrationEvent(ctx, tx, id, "", "orchestration."+parentStatus, parentStatus, message, map[string]any{"node": failedNode}); err != nil {
+			return false, err
+		}
+		return true, tx.Commit(ctx)
+	}
+	if failurePolicy == "collect_all" && allForwardTerminal && !allForwardSucceeded {
+		parentStatus := OrchestrationBlocked
+		if collectAllHasFailure {
+			parentStatus = OrchestrationFailed
+		}
+		message := fmt.Sprintf("%d of %d nodes ended without success; first: %s=%s",
+			forwardNonSuccess, forwardCount, failedNode, failedStatus)
+		if _, err := tx.Exec(ctx, `update steward_orchestrations set status=$2, failure_summary=$3, updated_at=$4, completed_at=$4 where id=$1`,
+			id, parentStatus, message, now); err != nil {
+			return false, err
+		}
+		if err := appendOrchestrationEvent(ctx, tx, id, "", "orchestration."+parentStatus, parentStatus, message,
+			map[string]any{"failed_node": failedNode, "non_success_count": forwardNonSuccess, "node_count": forwardCount}); err != nil {
 			return false, err
 		}
 		return true, tx.Commit(ctx)
@@ -1867,44 +1948,35 @@ func (s *Service) verifyRuntimeOrchestrationDelegationTx(ctx context.Context, tx
 
 func (s *Service) blockInvalidDelegatedRunTx(ctx context.Context, tx pgx.Tx, runID string, cause error, now time.Time) error {
 	message := "R4.0 delegation rejected: " + cause.Error()
-	var orchestrationID, nodeID string
-	if err := tx.QueryRow(ctx, `
-		select coalesce(orchestration_id::text,''), coalesce(orchestration_node_id::text,'')
-		from steward_agent_runs where id=$1
-	`, runID).Scan(&orchestrationID, &nodeID); err != nil {
-		return err
+	var transitioned int
+	// The Runtime run is the ownership boundary for a delegation rejection.
+	// Fence this write against a concurrent success/cancel/failure first. The
+	// orchestration scheduler will project the terminal child state to its node
+	// and parent on the next cycle. Updating parent rows here would invert the
+	// scheduler's parent -> child lock order and can deadlock with cancellation.
+	err := tx.QueryRow(ctx, `
+		update steward_agent_runs
+		set status=$2, failure_summary=$3, cancel_requested=false,
+		    updated_at=$4, completed_at=$4
+		where id=$1 and status in ('draft','planning','awaiting_approval','queued','running','verifying','compensating')
+		returning 1
+	`, runID, RuntimeRunBlocked, message, now).Scan(&transitioned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A newer terminal decision already won. An expired lease, stale NACK or
+		// delayed verifier must never rewrite it.
+		return nil
 	}
-	if _, err := tx.Exec(ctx, `
-		update steward_agent_runs set status=$2, failure_summary=$3, updated_at=$4, completed_at=$4 where id=$1
-	`, runID, RuntimeRunBlocked, message, now); err != nil {
+	if err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		update steward_run_steps set status=$2, last_error=$3, updated_at=$4, completed_at=$4
-		where run_id=$1 and status='pending'
+		where run_id=$1 and status in ('pending','running','verifying','blocked')
 	`, runID, RuntimeStepBlocked, message, now); err != nil {
 		return err
 	}
 	if err := appendRuntimeEvent(ctx, tx, runID, nil, "run.delegation_rejected", RuntimeRunBlocked, message, map[string]any{}); err != nil {
 		return err
-	}
-	if orchestrationID != "" && nodeID != "" {
-		if err := s.cancelOrchestrationChildrenTx(ctx, tx, orchestrationID, now, "sibling cancelled after delegation rejection"); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			update steward_orchestration_nodes set status=$2, failure_summary=$3, updated_at=$4, completed_at=$4 where id=$1
-		`, nodeID, OrchestrationNodeBlocked, message, now); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			update steward_orchestrations set status=$2, failure_summary=$3, updated_at=$4, completed_at=$4 where id=$1
-		`, orchestrationID, OrchestrationBlocked, message, now); err != nil {
-			return err
-		}
-		if err := appendOrchestrationEvent(ctx, tx, orchestrationID, nodeID, "node.delegation_rejected", OrchestrationNodeBlocked, message, map[string]any{"runtime_run_id": runID}); err != nil {
-			return err
-		}
 	}
 	return nil
 }

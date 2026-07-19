@@ -192,6 +192,18 @@ func (s *Service) agentToolContext(ctx context.Context, episode *domain.StewardA
 	if err != nil {
 		return nil, nil, err
 	}
+	specs, catalog, versions, hydratedNames := buildAgentToolContext(items, s.runtimeTools.specs(), episode)
+	if episode != nil {
+		episode.HydratedToolNames = hydratedNames
+		episode.CurrentToolVersions = versions
+		episode.CatalogGeneration = s.runtimeTools.generationValue()
+		_, _ = s.db.Pool.Exec(ctx, `update steward_agent_episodes set hydrated_tool_names=$2::jsonb,catalog_generation=$3,current_tool_versions=$4::jsonb,updated_at=now() where id=$1`,
+			episode.ID, encodeAgentJSON(hydratedNames, "[]"), episode.CatalogGeneration, encodeAgentJSON(versions, "{}"))
+	}
+	return specs, catalog, nil
+}
+
+func buildAgentToolContext(items []domain.StewardTool, allSpecs []domain.StewardToolSpec, episode *domain.StewardAgentEpisode) ([]domain.StewardToolSpec, []AgentToolCatalogEntry, map[string]string, []string) {
 	hydrated := map[string]bool{}
 	if episode != nil {
 		for _, name := range episode.HydratedToolNames {
@@ -200,6 +212,9 @@ func (s *Service) agentToolContext(ctx context.Context, episode *domain.StewardA
 		for _, turn := range episode.Turns {
 			for _, result := range turn.ToolResults {
 				if result.ToolName != "tool.describe" && result.ToolName != "tool.create" && result.ToolName != "tool.update" {
+					continue
+				}
+				if result.Error != "" {
 					continue
 				}
 				if name, _ := result.Output["name"].(string); name != "" {
@@ -215,7 +230,6 @@ func (s *Service) agentToolContext(ctx context.Context, episode *domain.StewardA
 			name == "fs.get_known_folders" || name == "fs.read_text" || name == "fs.create_directory" ||
 			name == "fs.write_text" || name == "application.open" || name == "process.list" || name == "system.info"
 	}
-	allSpecs := s.runtimeTools.specs()
 	byName := make(map[string]domain.StewardToolSpec, len(allSpecs))
 	for _, spec := range allSpecs {
 		byName[spec.Name] = spec
@@ -227,21 +241,18 @@ func (s *Service) agentToolContext(ctx context.Context, episode *domain.StewardA
 	for _, item := range items {
 		catalog = append(catalog, AgentToolCatalogEntry{Name: item.Name, Description: item.Description, Version: item.ActiveVersion, ExecutionTarget: item.ExecutionTarget, HealthStatus: item.HealthStatus})
 		versions[item.Name] = item.ActiveVersion
-		if spec, ok := byName[item.Name]; ok && (common(item.Name) || hydrated[item.Name]) {
+		spec, registered := byName[item.Name]
+		if !registered {
+			continue
+		}
+		if common(item.Name) || hydrated[item.Name] {
 			specs = append(specs, spec)
 		}
 		if hydrated[item.Name] {
 			hydratedNames = append(hydratedNames, item.Name)
 		}
 	}
-	if episode != nil {
-		episode.HydratedToolNames = hydratedNames
-		episode.CurrentToolVersions = versions
-		episode.CatalogGeneration = s.runtimeTools.generationValue()
-		_, _ = s.db.Pool.Exec(ctx, `update steward_agent_episodes set hydrated_tool_names=$2::jsonb,catalog_generation=$3,current_tool_versions=$4::jsonb,updated_at=now() where id=$1`,
-			episode.ID, encodeAgentJSON(hydratedNames, "[]"), episode.CatalogGeneration, encodeAgentJSON(versions, "{}"))
-	}
-	return specs, catalog, nil
+	return specs, catalog, versions, hydratedNames
 }
 
 func (s *Service) GetTool(ctx context.Context, name string) (domain.StewardTool, error) {

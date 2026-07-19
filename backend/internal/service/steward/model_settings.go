@@ -23,6 +23,15 @@ const (
 	modelSettingsSourceDB   = "database"
 	modelSettingsSourceEnv  = "environment"
 	modelSettingsSourceNone = "default"
+
+	// Long-running agent episodes should end because the model reached a final
+	// answer, the user stopped them, or a technical integrity control fired. A
+	// fixed round/tool/time ceiling is therefore opt-in. No-progress detection,
+	// Watchdog, pause, cancel, and global stop remain active when these are zero.
+	defaultAgentMaxRounds          = 0
+	defaultAgentMaxToolCalls       = 0
+	defaultAgentMaxDurationSeconds = 0
+	defaultAgentNoProgressLimit    = 3
 )
 
 var errModelSettingsDecryption = errors.New("model settings secret decryption failed")
@@ -315,13 +324,28 @@ func modelSettingsFromEnv() modelSettingsValues {
 		allowNoAPIKey:           allowNoKey,
 		maxDataLevel:            strings.ToUpper(strings.TrimSpace(envOrDefault("STEWARD_LLM_MAX_DATA_LEVEL", DataD1))),
 		timeoutSeconds:          int(durationEnv("STEWARD_LLM_TIMEOUT", 30*time.Second) / time.Second),
-		agentMaxRounds:          intEnv("STEWARD_AGENT_MAX_ROUNDS", 12),
-		agentMaxToolCalls:       intEnv("STEWARD_AGENT_MAX_TOOL_CALLS", 40),
-		agentMaxDurationSeconds: int(durationEnv("STEWARD_AGENT_MAX_DURATION", 30*time.Minute) / time.Second),
-		agentNoProgressLimit:    intEnv("STEWARD_AGENT_NO_PROGRESS_LIMIT", 3),
+		agentMaxRounds:          nonNegativeIntEnv("STEWARD_AGENT_MAX_ROUNDS", defaultAgentMaxRounds),
+		agentMaxToolCalls:       nonNegativeIntEnv("STEWARD_AGENT_MAX_TOOL_CALLS", defaultAgentMaxToolCalls),
+		agentMaxDurationSeconds: int(durationEnv("STEWARD_AGENT_MAX_DURATION", time.Duration(defaultAgentMaxDurationSeconds)*time.Second) / time.Second),
+		agentNoProgressLimit:    intEnv("STEWARD_AGENT_NO_PROGRESS_LIMIT", defaultAgentNoProgressLimit),
 		agentProgressDetail:     strings.ToLower(strings.TrimSpace(envOrDefault("STEWARD_AGENT_PROGRESS_DETAIL", "compact"))),
 		source:                  modelSettingsSourceEnv,
 	}
+}
+
+// nonNegativeIntEnv differs from the daemon's positive-only intEnv because
+// the Agent loop deliberately uses zero to mean "no fixed limit".
+func nonNegativeIntEnv(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		log.Printf("invalid %s=%q, using %d", key, value, fallback)
+		return fallback
+	}
+	return parsed
 }
 
 func validateModelSettings(values modelSettingsValues) error {

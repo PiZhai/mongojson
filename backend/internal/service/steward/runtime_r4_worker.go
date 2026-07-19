@@ -468,21 +468,31 @@ func (s *Service) nackAgentMessage(ctx context.Context, message domain.StewardAg
 	now := time.Now().UTC()
 	summary := sanitizeRuntimeError(cause)
 	if message.Attempt >= message.MaxAttempts {
-		if _, err := tx.Exec(ctx, `
+		command, err := tx.Exec(ctx, `
 			update steward_agent_messages set status='dead', lease_owner='', lease_expires_at=null,
-			       last_error=$3, updated_at=$4 where id=$1 and lease_owner=$2
-		`, message.ID, workerID, summary, now); err != nil {
+			       last_error=$3, updated_at=$4
+			where id=$1 and status='leased' and lease_owner=$2
+		`, message.ID, workerID, summary, now)
+		if err != nil {
 			return err
+		}
+		if command.RowsAffected() != 1 {
+			return fmt.Errorf("Agent message NACK lost its lease")
 		}
 		if err := s.blockInvalidDelegatedRunTx(ctx, tx, message.RuntimeRunID, fmt.Errorf("Agent message delivery exhausted: %s", summary), now); err != nil {
 			return err
 		}
 	} else {
-		if _, err := tx.Exec(ctx, `
+		command, err := tx.Exec(ctx, `
 			update steward_agent_messages set status='pending', lease_owner='', lease_expires_at=null,
-			       available_at=$3, last_error=$4, updated_at=$2 where id=$1 and lease_owner=$5
-		`, message.ID, now, now.Add(time.Duration(message.Attempt)*time.Second), summary, workerID); err != nil {
+			       available_at=$3, last_error=$4, updated_at=$2
+			where id=$1 and status='leased' and lease_owner=$5
+		`, message.ID, now, now.Add(time.Duration(message.Attempt)*time.Second), summary, workerID)
+		if err != nil {
 			return err
+		}
+		if command.RowsAffected() != 1 {
+			return fmt.Errorf("Agent message NACK lost its lease")
 		}
 	}
 	_, err = tx.Exec(ctx, `update steward_agent_workers set current_message_id=null, heartbeat_at=$2 where worker_id=$1`, workerID, now)

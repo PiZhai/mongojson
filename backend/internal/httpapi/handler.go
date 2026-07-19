@@ -1697,12 +1697,34 @@ func (h *Handler) getStewardAgentEpisode(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	item, err := service.GetAgentEpisode(r.Context(), chi.URLParam(r, "id"))
+	item, err := service.GetAgentEpisodeOverview(r.Context(), chi.URLParam(r, "id"), queryLimit(r, 6))
 	if err != nil {
 		httpError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]domain.StewardAgentEpisode{"episode": item})
+}
+
+func (h *Handler) listStewardAgentEpisodeTurns(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireStewardConversationService(w)
+	if !ok {
+		return
+	}
+	beforeRound := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("before_round")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			httpError(w, http.StatusBadRequest, "before_round must be a positive integer")
+			return
+		}
+		beforeRound = parsed
+	}
+	page, err := service.ListAgentEpisodeTurnsPage(r.Context(), chi.URLParam(r, "id"), beforeRound, queryLimit(r, 25))
+	if err != nil {
+		httpError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, page)
 }
 
 func (h *Handler) decideStewardAgentEpisode(w http.ResponseWriter, r *http.Request) {

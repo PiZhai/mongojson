@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +18,8 @@ import (
 type r45AgentAdvisor struct {
 	multi bool
 }
+
+const r45ConversationEchoProof = "r45-conversation-echo-proof"
 
 func (r45AgentAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
 	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r45-test", Model: "r45-agent-test", MaxDataLevel: "D6"}
@@ -38,31 +39,16 @@ func (a r45AgentAdvisor) NextTurn(_ context.Context, input steward.AgentTurnInpu
 			{ID: "summarize", ToolName: "runtime.echo", Arguments: map[string]any{"value": "summarized"}},
 		}}, nil
 	}
-	quoted := quotedR45Arguments(input.Message)
 	switch {
-	case strings.Contains(input.Message, "创建文件") && len(quoted) >= 2:
-		return steward.AgentTurnDecision{Content: "创建文件。", ToolCalls: []domain.StewardAgentToolCall{{
-			ID: "write_file", ToolName: "fs.write_text", Arguments: map[string]any{"path": quoted[0], "content": quoted[1], "create_parents": true},
-		}}}, nil
-	case strings.Contains(input.Message, "运行命令") && len(quoted) >= 1:
-		remainder := strings.TrimSpace(strings.SplitN(input.Message, quoted[0]+`"`, 2)[1])
-		return steward.AgentTurnDecision{Content: "运行命令。", ToolCalls: []domain.StewardAgentToolCall{{
-			ID: "run_command", ToolName: "shell.exec", Arguments: map[string]any{"command": quoted[0], "args": strings.Fields(remainder)},
+	case strings.Contains(input.Message, "执行内置回显"):
+		return steward.AgentTurnDecision{Content: "执行确定性内置工具。", ToolCalls: []domain.StewardAgentToolCall{{
+			ID: "echo_proof", ToolName: "runtime.echo", Arguments: map[string]any{"value": r45ConversationEchoProof},
 		}}}, nil
 	default:
 		return steward.AgentTurnDecision{ToolCalls: []domain.StewardAgentToolCall{{
 			ID: "ask", ToolName: "steward.ask_user", Arguments: map[string]any{"question": "你希望整理哪些内容？"},
 		}}}, nil
 	}
-}
-
-func quotedR45Arguments(value string) []string {
-	parts := strings.Split(value, `"`)
-	items := make([]string, 0, len(parts)/2)
-	for index := 1; index < len(parts); index += 2 {
-		items = append(items, parts[index])
-	}
-	return items
 }
 
 func TestStewardR45ConversationExecutesAndControlsLocalTasks(t *testing.T) {
@@ -74,51 +60,98 @@ func TestStewardR45ConversationExecutesAndControlsLocalTasks(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	root := t.TempDir()
-	goExecutable, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r45_conversation"), "r45-local",
-		steward.WithAutonomyAdvisor(r45AgentAdvisor{}), steward.WithRuntimeR2Enabled(true), steward.WithRuntimeAllowedRoots(root), steward.WithRuntimeExecutables(goExecutable))
+		steward.WithAutonomyAdvisor(r45AgentAdvisor{}), steward.WithRuntimeR2Enabled(true))
 	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R4.5 acceptance", DataLevel: "D0"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	filePath := filepath.Join(root, "conversation", "proof.txt")
 	created, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{
-		Content: fmt.Sprintf(`创建文件 "%s" 内容 "由普通对话真实执行"`, filePath), DataLevel: "D0",
+		Content: "执行内置回显并返回真实证据", DataLevel: "D0",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Message.Executions) != 1 || created.Message.Executions[0].Kind != "run" ||
-		created.Message.Executions[0].Status != "queued" || created.Message.Executions[0].RequiresConfirmation {
-		t.Fatalf("low-risk conversation was not silently queued: %+v", created.Message.Executions)
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" || created.Message.Episodes[0].CurrentRound != 0 {
+		t.Fatalf("low-risk conversation was not durably queued for the Agent worker: %+v", created.Message)
+	}
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err := node.service.GetAgentEpisode(ctx, created.Message.Episodes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched.Status != "executing" || dispatched.CurrentRound != 1 || len(dispatched.Turns) != 1 ||
+		len(dispatched.Turns[0].ToolCalls) != 1 || dispatched.Turns[0].ToolCalls[0].ToolName != "runtime.echo" {
+		t.Fatalf("worker did not dispatch the deterministic builtin tool: %+v", dispatched)
+	}
+	queuedMessages, err := node.service.ListConversationMessages(ctx, conversation.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedExecution := latestR45Execution(t, queuedMessages)
+	if queuedExecution.Kind != "run" || queuedExecution.Status != "queued" || queuedExecution.RequiresConfirmation {
+		t.Fatalf("worker did not silently queue the low-risk run: %+v", queuedExecution)
 	}
 	if _, err := node.service.RunAgentRuntimeCycle(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.service.RunConversationExecutionRefreshCycle(ctx, 5); err != nil {
 		t.Fatal(err)
 	}
 	messages, err := node.service.ListConversationMessages(ctx, conversation.ID, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileExecution := latestR45Execution(t, messages)
-	if fileExecution.Status != "succeeded" || intFromR45Evidence(fileExecution.Evidence["artifact_count"]) == 0 {
-		t.Fatalf("completed execution and evidence did not flow back to conversation: %+v", fileExecution)
+	echoExecution := latestR45Execution(t, messages)
+	if echoExecution.Status != "succeeded" || intFromR45Evidence(echoExecution.Evidence["artifact_count"]) == 0 {
+		t.Fatalf("completed builtin execution and evidence did not flow back to conversation: %+v", echoExecution)
 	}
-	content, err := os.ReadFile(filePath)
-	if err != nil || string(content) != "由普通对话真实执行" {
-		t.Fatalf("conversation did not create expected file: content=%q err=%v", content, err)
+	withResult, err := node.service.GetAgentEpisode(ctx, created.Message.Episodes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withResult.Status != "thinking" || len(withResult.Turns) != 1 || len(withResult.Turns[0].ToolResults) != 1 ||
+		withResult.Turns[0].ToolResults[0].Error != "" || withResult.Turns[0].ToolResults[0].Output["value"] != r45ConversationEchoProof {
+		t.Fatalf("runtime.echo result was not durably mapped back to the Agent turn: %+v", withResult)
+	}
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := node.service.GetAgentEpisode(ctx, created.Message.Episodes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != "completed" || completed.CurrentRound != 2 {
+		t.Fatalf("Agent did not complete after receiving verified builtin output: %+v", completed)
 	}
 
 	question, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "帮我整理一下", DataLevel: "D0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(question.Message.Episodes) != 1 || question.Message.Episodes[0].Status != "awaiting_input" || !strings.Contains(question.Message.Content, "整理哪些内容") {
-		t.Fatalf("ambiguous request did not enter the Agent input-wait state: %+v", question.Message)
+	if len(question.Message.Episodes) != 1 || question.Message.Episodes[0].Status != "thinking" {
+		t.Fatalf("ambiguous request was not durably queued: %+v", question.Message)
+	}
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	questionEpisode, err := node.service.GetAgentEpisode(ctx, question.Message.Episodes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	questionMessages, err := node.service.ListConversationMessages(ctx, conversation.ID, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundQuestion := false
+	for _, message := range questionMessages {
+		foundQuestion = foundQuestion || strings.Contains(message.Content, "整理哪些内容")
+	}
+	if questionEpisode.Status != "awaiting_input" || !foundQuestion {
+		t.Fatalf("worker did not enter the Agent input-wait state: episode=%+v messages=%+v", questionEpisode, questionMessages)
 	}
 }
 
@@ -180,8 +213,7 @@ func (a r46ModelFirstAdvisor) Converse(_ context.Context, input steward.Conversa
 }
 
 func TestStewardR46ModelFirstConversationRoutesExecutionMemoryAndReminder(t *testing.T) {
-	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
-	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY_ID", "r46-test")
+	startStewardTestCompanion(t, "r46-test")
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {
 		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed R4.6 conversation acceptance test")
@@ -314,13 +346,26 @@ func TestStewardR45ConversationAutomaticallyChoosesMultiAgentOrchestration(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Message.Executions) != 1 || result.Message.Executions[0].Kind != "orchestration" || result.Message.Executions[0].Status != "queued" {
-		t.Fatalf("multi-step instruction did not become a silent orchestration: %+v", result.Message.Executions)
+	if len(result.Message.Episodes) != 1 || result.Message.Episodes[0].Status != "thinking" || result.Message.Episodes[0].CurrentRound != 0 {
+		t.Fatalf("multi-step instruction was not durably queued: %+v", result.Message)
+	}
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	queuedMessages, err := node.service.ListConversationMessages(ctx, conversation.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedExecution := latestR45Execution(t, queuedMessages)
+	if queuedExecution.Kind != "orchestration" || queuedExecution.Status != "queued" {
+		t.Fatalf("worker did not create a silent orchestration: %+v", queuedExecution)
 	}
 	for index := 0; index < 12; index++ {
 		_, _ = node.service.RunOrchestrationCycle(ctx, 10)
 		_, _ = node.service.RunConversationExecutionCycle(ctx, 10)
 		_, _ = node.service.RunAgentRuntimeCycle(ctx, 10)
+		_, _ = node.service.RunConversationExecutionRefreshCycle(ctx, 10)
+		_, _ = node.service.RunAgentEpisodeCycle(ctx, 10)
 	}
 	messages, err := node.service.ListConversationMessages(ctx, conversation.ID, 20)
 	if err != nil {

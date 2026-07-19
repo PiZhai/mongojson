@@ -312,11 +312,17 @@ func decryptPayloadEnvelope(config syncPayloadCipher, additionalData string, env
 	if err != nil {
 		return nil, err
 	}
-	key, err := config.keyForDecrypt(keyID)
+	keys, err := config.keysForDecrypt(keyID)
 	if err != nil {
 		return nil, err
 	}
-	plain, err := openSyncPayloadWithKey(key, nonce, ciphertext, []byte(additionalData))
+	var plain []byte
+	for _, key := range keys {
+		plain, err = openSyncPayloadWithKey(key, nonce, ciphertext, []byte(additionalData))
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		label = defaultString(label, "sync payload")
 		if keyID != "" {
@@ -337,19 +343,23 @@ func decryptPayloadEnvelope(config syncPayloadCipher, additionalData string, env
 	return payload, nil
 }
 
-func (c syncPayloadCipher) keyForDecrypt(keyID string) ([]byte, error) {
+func (c syncPayloadCipher) keysForDecrypt(keyID string) ([][]byte, error) {
 	if len(c.keys) == 0 {
 		return nil, fmt.Errorf("no sync encryption keys configured")
 	}
 	if strings.TrimSpace(keyID) == "" {
-		return c.keys[0].key, nil
+		return [][]byte{c.keys[0].key}, nil
 	}
+	keys := make([][]byte, 0, 1)
 	for _, item := range c.keys {
 		if item.keyID == keyID {
-			return item.key, nil
+			keys = append(keys, item.key)
 		}
 	}
-	return nil, fmt.Errorf("sync payload key id %q is not configured", keyID)
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("sync payload key id %q is not configured", keyID)
+	}
+	return keys, nil
 }
 
 func openSyncPayloadWithKey(key []byte, nonce []byte, ciphertext []byte, additionalData []byte) ([]byte, error) {

@@ -678,6 +678,78 @@ func TestStewardR40LocalMultiAgentOrchestration(t *testing.T) {
 	}
 }
 
+func TestStewardR40CollectAllFinishesIndependentSiblingsBeforeParentFailure(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed collect-all orchestration acceptance test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r40_collect_all"), "r4-collect-all-node",
+		steward.WithRuntimeV2Enabled(true), steward.WithOrchestrationR4Enabled(true),
+		steward.WithOrchestrationSigningKey(bytes.Repeat([]byte{0x46}, 32)))
+	_, err := node.service.UpsertOrchestrationAgent(ctx, steward.UpsertOrchestrationAgentInput{
+		ID: "collect-all-worker", Name: "Collect All Worker", Role: "independent batch worker",
+		PermissionCeiling: "A0", DataLevelCeiling: "D0", ToolAllowlist: []string{"runtime.echo"},
+		MaxConcurrency: 2, MaxRuntimeSeconds: 900, MaxAttempts: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := node.service.CreateOrchestration(ctx, steward.CreateOrchestrationInput{
+		Goal: "collect every same-turn tool result", AutoStart: true, FailurePolicy: "continue",
+		PermissionCeiling: "A0", DataLevel: "D0", MaxParallel: 2,
+		Nodes: []steward.CreateOrchestrationNodeInput{
+			{
+				Key: "fails", AgentID: "collect-all-worker", Goal: "fail a postcondition",
+				Steps: []steward.CreateAgentRunStepInput{{Key: "fail", ToolName: "runtime.echo", Arguments: map[string]any{"value": "actual"}, ExpectedOutput: map[string]any{"value": "different"}}},
+			},
+			{
+				Key: "succeeds", AgentID: "collect-all-worker", Goal: "finish independently",
+				Steps: []steward.CreateAgentRunStepInput{{Key: "succeed", ToolName: "runtime.echo", Arguments: map[string]any{"value": "kept"}, ExpectedOutput: map[string]any{"value": "kept"}}},
+			},
+			{
+				Key: "dependent", AgentID: "collect-all-worker", Goal: "cannot run after failed dependency", DependsOn: []string{"fails"},
+				Steps: []steward.CreateAgentRunStepInput{{Key: "never", ToolName: "runtime.echo", Arguments: map[string]any{"value": "never"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.FailurePolicy != "collect_all" {
+		t.Fatalf("continue alias stored as %q, want collect_all", created.FailurePolicy)
+	}
+	if _, err := node.service.RunOrchestrationCycle(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := node.service.RunAgentRuntimeCycle(ctx, 1); err != nil || processed != 1 {
+		t.Fatalf("first child execution processed=%d err=%v", processed, err)
+	}
+	if _, err := node.service.RunOrchestrationCycle(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	partial := getR40Orchestration(t, ctx, node, created.ID)
+	if partial.Status != steward.OrchestrationRunning || partial.Nodes[0].Status != steward.OrchestrationNodeFailed ||
+		partial.Nodes[1].Status == steward.OrchestrationNodeCancelled || partial.Nodes[2].Status != steward.OrchestrationNodeBlocked {
+		t.Fatalf("collect_all terminated or cancelled siblings early: %+v", partial)
+	}
+	if processed, err := node.service.RunAgentRuntimeCycle(ctx, 1); err != nil || processed != 1 {
+		t.Fatalf("independent sibling execution processed=%d err=%v", processed, err)
+	}
+	if _, err := node.service.RunOrchestrationCycle(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	final := getR40Orchestration(t, ctx, node, created.ID)
+	if final.Status != steward.OrchestrationFailed || final.Nodes[1].Status != steward.OrchestrationNodeSucceeded ||
+		final.Nodes[2].Status != steward.OrchestrationNodeBlocked {
+		t.Fatalf("collect_all did not retain every sibling outcome: %+v", final)
+	}
+	if !hasR40Event(final.Events, "orchestration.failed") || !hasR40Event(final.Events, "node.blocked") {
+		t.Fatalf("collect_all terminal evidence is incomplete: %+v", final.Events)
+	}
+}
+
 func TestStewardR40RejectsTamperedDelegationAndPropagatesCancellation(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {
@@ -717,6 +789,9 @@ func TestStewardR40RejectsTamperedDelegationAndPropagatesCancellation(t *testing
 	}
 	if _, err := node.service.RunAgentRuntimeCycle(ctx, 1); err != nil {
 		t.Fatalf("tampered delegation should be durably blocked, not crash the worker: %v", err)
+	}
+	if _, err := node.service.RunOrchestrationCycle(ctx, 1); err != nil {
+		t.Fatalf("project blocked child into orchestration: %v", err)
 	}
 	blocked := getR40Orchestration(t, ctx, node, created.ID)
 	if blocked.Status != steward.OrchestrationBlocked || blocked.Nodes[0].Status != steward.OrchestrationNodeBlocked {

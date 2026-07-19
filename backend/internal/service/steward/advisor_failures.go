@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type advisorHTTPError struct {
@@ -14,6 +17,7 @@ type advisorHTTPError struct {
 	StatusCode  int
 	Status      string
 	ProviderMsg string
+	RetryAfter  time.Duration
 }
 
 func (e *advisorHTTPError) Error() string {
@@ -27,13 +31,31 @@ func (e *advisorHTTPError) Error() string {
 	return fmt.Sprintf("%s failed with %s: %s", defaultString(e.Operation, "advisor request"), e.Status, message)
 }
 
-func newAdvisorHTTPError(operation, status string, statusCode int, body []byte) error {
+func newAdvisorHTTPError(operation, status string, statusCode int, body []byte, retryAfter ...string) error {
+	delay := time.Duration(0)
+	if len(retryAfter) > 0 {
+		delay = parseAdvisorRetryAfter(retryAfter[0])
+	}
 	return &advisorHTTPError{
 		Operation:   operation,
 		StatusCode:  statusCode,
 		Status:      status,
 		ProviderMsg: advisorProviderErrorMessage(body),
+		RetryAfter:  delay,
 	}
+}
+
+func parseAdvisorRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if retryAt, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(retryAt); delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 func advisorProviderErrorMessage(body []byte) string {
@@ -86,6 +108,18 @@ func describeAdvisorFailure(cause error) AdvisorFailureDetails {
 	}
 
 	switch {
+	case advisorContextSizeExceeded(cause):
+		detail.Code = "MODEL_CONTEXT_TOO_LARGE"
+		detail.Title = "模型上下文仍然过大"
+		detail.Message = "系统已自动压缩较早回合并保留最近完整工具调用后重试，但模型服务仍拒绝了请求大小。"
+		detail.Suggestions = []string{"点击继续再次从持久化工作状态恢复", "检查模型服务实际支持的上下文窗口", "如使用兼容网关，检查其请求体大小限制"}
+		detail.Retryable = true
+	case advisorRequestedUnknownTool(lower):
+		detail.Code = "MODEL_TOOL_NOT_LOADED"
+		detail.Title = "模型请求的工具尚未加载"
+		detail.Message = "模型请求了当前轮次未注册的工具，系统已拒绝执行该调用；该工具可能尚未加载，也可能名称无效。"
+		detail.Suggestions = []string{"先在工具库确认该工具确实存在、已启用且健康", "重新发送原消息，让系统加载已确认工具的完整定义", "若问题持续，运行完整协议检查并核对工具名称"}
+		detail.Retryable = false
 	case strings.Contains(lower, "tool schema") || strings.Contains(lower, "invalid schema for function") || strings.Contains(lower, "function parameters"):
 		detail.Code = "MODEL_TOOL_SCHEMA_INVALID"
 		detail.Title = "工具调用协议配置错误"
@@ -166,6 +200,11 @@ func describeAdvisorFailure(cause error) AdvisorFailureDetails {
 		detail.Retryable = false
 	}
 	return detail
+}
+
+func advisorRequestedUnknownTool(lower string) bool {
+	return strings.Contains(lower, "agent model requested unknown tool ") ||
+		strings.Contains(lower, "conversation model requested unknown tool ")
 }
 
 func advisorNetworkError(cause error, lower string) bool {

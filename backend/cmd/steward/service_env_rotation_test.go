@@ -43,6 +43,42 @@ func TestApplyServiceEnvKeyRotationPreservesCurrentKeyAsPrevious(t *testing.T) {
 	}
 }
 
+func TestApplyServiceEnvKeyRotationPreservesHistoricalKeysSharingID(t *testing.T) {
+	currentKey := testBase64Key(1)
+	oldSameIDKey := testBase64Key(2)
+	olderKey := testBase64Key(3)
+	current := map[string]string{
+		"STEWARD_LOCAL_ENCRYPTION_KEY":    currentKey,
+		"STEWARD_LOCAL_ENCRYPTION_KEY_ID": "windows-local-v1",
+		"STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS": strings.Join([]string{
+			"windows-local-v1:" + oldSameIDKey,
+			"windows-local-v0:" + olderKey,
+			"windows-local-v1:" + currentKey,
+		}, ","),
+	}
+	target := map[string]string{}
+
+	err := applyServiceEnvKeyRotation(current, target, serviceEnvKeyRotation{
+		NewKeyID:     "windows-local-v2",
+		KeyName:      "STEWARD_LOCAL_ENCRYPTION_KEY",
+		KeyIDName:    "STEWARD_LOCAL_ENCRYPTION_KEY_ID",
+		PreviousName: "STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS",
+		Label:        "local encryption",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := strings.Join([]string{
+		"windows-local-v1:" + currentKey,
+		"windows-local-v1:" + oldSameIDKey,
+		"windows-local-v0:" + olderKey,
+	}, ",")
+	if got := target["STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS"]; got != want {
+		t.Fatalf("previous keys = %q, want %q", got, want)
+	}
+}
+
 func TestApplyServiceEnvKeyRotationRejectsUnsafeInputs(t *testing.T) {
 	current := map[string]string{
 		"STEWARD_SYNC_ENCRYPTION_KEY":    testBase64Key(1),

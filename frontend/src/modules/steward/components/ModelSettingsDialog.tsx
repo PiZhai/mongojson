@@ -26,6 +26,13 @@ type FormState = {
   agentProgressDetail: string
 }
 
+const unlimitedAgentLimits = {
+  agentMaxRounds: 0,
+  agentMaxToolCalls: 0,
+  agentMaxDurationSeconds: 0,
+  agentNoProgressLimit: 3,
+} as const
+
 const emptyForm: FormState = {
   provider: 'openai-compatible',
   baseURL: 'https://api.openai.com/v1',
@@ -33,10 +40,7 @@ const emptyForm: FormState = {
   apiKey: '',
   allowNoAPIKey: false,
   timeoutSeconds: 30,
-  agentMaxRounds: 12,
-  agentMaxToolCalls: 40,
-  agentMaxDurationSeconds: 1800,
-  agentNoProgressLimit: 3,
+  ...unlimitedAgentLimits,
   agentProgressDetail: 'compact',
 }
 
@@ -57,9 +61,9 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
       apiKey: '',
       allowNoAPIKey: value.allow_no_api_key,
       timeoutSeconds: value.timeout_seconds || 30,
-      agentMaxRounds: value.agent_max_rounds ?? 12,
-      agentMaxToolCalls: value.agent_max_tool_calls ?? 40,
-      agentMaxDurationSeconds: value.agent_max_duration_seconds ?? 1800,
+      agentMaxRounds: value.agent_max_rounds ?? unlimitedAgentLimits.agentMaxRounds,
+      agentMaxToolCalls: value.agent_max_tool_calls ?? unlimitedAgentLimits.agentMaxToolCalls,
+      agentMaxDurationSeconds: value.agent_max_duration_seconds ?? unlimitedAgentLimits.agentMaxDurationSeconds,
       agentNoProgressLimit: value.agent_no_progress_limit ?? 3,
       agentProgressDetail: value.agent_progress_detail || 'compact',
     })
@@ -215,18 +219,22 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
             <label>
               <span>最大模型轮次（0 为不限）</span>
               <input disabled={busy || !enabled} max={1000} min={0} onChange={(event) => setForm({ ...form, agentMaxRounds: Number(event.target.value) })} type="number" value={form.agentMaxRounds} />
+              <small>0 表示不设置固定轮次上限，模型可根据工具结果继续决策。</small>
             </label>
             <label>
               <span>最大工具调用（0 为不限）</span>
               <input disabled={busy || !enabled} max={10000} min={0} onChange={(event) => setForm({ ...form, agentMaxToolCalls: Number(event.target.value) })} type="number" value={form.agentMaxToolCalls} />
+              <small>0 表示不设置固定调用次数上限，多步骤任务不会因配额提前结束。</small>
             </label>
             <label>
               <span>最长运行（秒，0 为不限）</span>
               <input disabled={busy || !enabled} max={604800} min={0} onChange={(event) => setForm({ ...form, agentMaxDurationSeconds: Number(event.target.value) })} type="number" value={form.agentMaxDurationSeconds} />
+              <small>0 表示不设置 Episode 总时长上限，单次工具仍受各自超时和 Watchdog 约束。</small>
             </label>
             <label>
               <span>无进展检测轮数</span>
               <input disabled={busy || !enabled} max={100} min={1} onChange={(event) => setForm({ ...form, agentNoProgressLimit: Number(event.target.value) })} type="number" value={form.agentNoProgressLimit} />
+              <small>即使其他上限为 0，重复调用无实质进展时仍会停止循环。</small>
             </label>
             <label>
               <span>执行详情</span>
@@ -236,6 +244,19 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
                 <option value="final_only">只看最终结果</option>
               </select>
             </label>
+          </div>
+
+          <div className="steward-model-status-row">
+            <span className={form.agentMaxRounds === 0 && form.agentMaxToolCalls === 0 && form.agentMaxDurationSeconds === 0 ? 'is-ready' : ''}>
+              超长任务模式 {form.agentMaxRounds === 0 && form.agentMaxToolCalls === 0 && form.agentMaxDurationSeconds === 0 ? '已启用' : '使用自定义上限'}
+            </span>
+            <small>0 只移除固定配额；无进展检测、Watchdog、暂停、取消和全局停止始终生效。</small>
+            <button
+              className="steward-button-secondary"
+              disabled={busy || !enabled}
+              onClick={() => setForm({ ...form, ...unlimitedAgentLimits })}
+              type="button"
+            >使用超长任务模式</button>
           </div>
 
           {error ? <div className="steward-model-feedback is-error" role="alert">{error}</div> : null}

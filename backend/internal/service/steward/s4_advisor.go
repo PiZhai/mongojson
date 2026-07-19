@@ -19,6 +19,7 @@ import (
 const (
 	advisorProviderDisabled         = "disabled"
 	advisorProviderOpenAICompatible = "openai-compatible"
+	agentToolHydrationProgress      = "正在加载所需工具定义，加载完成后再继续执行。"
 )
 
 var ErrAdvisorDataLevelDenied = errors.New("autonomy advisor data level denied")
@@ -300,11 +301,19 @@ func (s *Service) ProbeAutonomyAdvisor(ctx context.Context, input ProbeAutonomyA
 		}
 		result.ProtocolChecked = true
 		result.ToolCount = len(tools)
-		decision, err := turnAdvisor.NextTurn(ctx, AgentTurnInput{
+		turnInput := AgentTurnInput{
 			Message:   "这是模型连接与工具调用协议检查。不要执行真实操作；请直接简短回复连接与工具协议可用。",
 			DataLevel: probeInput.DataLevel, TriggerKind: "verification_probe", Tools: tools, ToolCatalog: catalog,
 			Devices: s.conversationAdvisorDevices(ctx), KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(), Round: 1,
-		})
+		}
+		var decision AgentTurnDecision
+		if prober, ok := advisor.(interface {
+			ProbeNextTurn(context.Context, AgentTurnInput) (AgentTurnDecision, error)
+		}); ok {
+			decision, err = prober.ProbeNextTurn(ctx, turnInput)
+		} else {
+			decision, err = turnAdvisor.NextTurn(ctx, turnInput)
+		}
 		result.DurationMillis = time.Since(startedAt).Milliseconds()
 		result.Status = advisor.Status()
 		if err != nil {
@@ -321,7 +330,15 @@ func (s *Service) ProbeAutonomyAdvisor(ctx context.Context, input ProbeAutonomyA
 		s.recordAdvisorProbeAudit(ctx, result)
 		return result, nil
 	}
-	suggestion, err := advisor.Suggest(ctx, probeInput)
+	var suggestion AutonomyAdvisorSuggestion
+	var err error
+	if prober, ok := advisor.(interface {
+		ProbeSuggest(context.Context, AutonomyAdvisorInput) (AutonomyAdvisorSuggestion, error)
+	}); ok {
+		suggestion, err = prober.ProbeSuggest(ctx, probeInput)
+	} else {
+		suggestion, err = advisor.Suggest(ctx, probeInput)
+	}
 	result.DurationMillis = time.Since(startedAt).Milliseconds()
 	result.Status = advisor.Status()
 	if err != nil {
@@ -513,7 +530,7 @@ func (a openAICompatibleAutonomyAdvisor) Suggest(ctx context.Context, input Auto
 		return AutonomyAdvisorSuggestion{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return AutonomyAdvisorSuggestion{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data)
+		return AutonomyAdvisorSuggestion{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data, resp.Header.Get("Retry-After"))
 	}
 	content, err := openAICompatibleMessageContent(data)
 	if err != nil {
@@ -669,9 +686,9 @@ func (a openAICompatibleAutonomyAdvisor) NextTurn(ctx context.Context, input Age
 		return AgentTurnDecision{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return AgentTurnDecision{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data)
+		return AgentTurnDecision{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data, resp.Header.Get("Retry-After"))
 	}
-	return parseOpenAIAgentTurn(data, toolNames)
+	return parseOpenAIAgentTurnWithCatalog(data, toolNames, input.ToolCatalog)
 }
 
 func (a openAICompatibleAutonomyAdvisor) ConcludeToolCalls(ctx context.Context, input ConversationToolResultInput) (string, error) {
@@ -932,6 +949,10 @@ func parseOpenAIConversationTurn(data []byte, message string, toolNames map[stri
 }
 
 func parseOpenAIAgentTurn(data []byte, toolNames map[string]domain.StewardToolSpec) (AgentTurnDecision, error) {
+	return parseOpenAIAgentTurnWithCatalog(data, toolNames, nil)
+}
+
+func parseOpenAIAgentTurnWithCatalog(data []byte, toolNames map[string]domain.StewardToolSpec, toolCatalog []AgentToolCatalogEntry) (AgentTurnDecision, error) {
 	var envelope struct {
 		ID      string `json:"id"`
 		Choices []struct {
@@ -959,14 +980,77 @@ func parseOpenAIAgentTurn(data []byte, toolNames map[string]domain.StewardToolSp
 		Content: truncateAdvisorText(strings.TrimSpace(content), 8000), ReasoningContent: message.ReasoningContent,
 		ProviderResponseID: strings.TrimSpace(envelope.ID), ToolCalls: make([]domain.StewardAgentToolCall, 0, len(message.ToolCalls)),
 	}
+	loadedByCanonicalName := make(map[string]domain.StewardToolSpec, len(toolNames))
+	for _, spec := range toolNames {
+		if spec.Name != "" {
+			loadedByCanonicalName[spec.Name] = spec
+		}
+	}
+	catalogNames := make(map[string]bool, len(toolCatalog))
+	catalogNamesByAlias := make(map[string]string, len(toolCatalog))
+	ambiguousCatalogAliases := make(map[string]bool)
+	for _, entry := range toolCatalog {
+		if entry.Name == "" {
+			continue
+		}
+		catalogNames[entry.Name] = true
+		alias := openAIFunctionName(entry.Name)
+		if ambiguousCatalogAliases[alias] {
+			continue
+		}
+		if existing, exists := catalogNamesByAlias[alias]; exists && existing != entry.Name {
+			delete(catalogNamesByAlias, alias)
+			ambiguousCatalogAliases[alias] = true
+			continue
+		}
+		catalogNamesByAlias[alias] = entry.Name
+	}
+	resolvedSpecs := make([]domain.StewardToolSpec, len(message.ToolCalls))
+	hydrationCalls := make([]domain.StewardAgentToolCall, 0)
+	hydrationNames := make(map[string]bool)
 	for index, raw := range message.ToolCalls {
 		if raw.Type != "" && raw.Type != "function" {
 			return AgentTurnDecision{}, fmt.Errorf("agent model requested unsupported tool call type %q", raw.Type)
 		}
 		spec, ok := toolNames[raw.Function.Name]
 		if !ok {
+			spec, ok = loadedByCanonicalName[raw.Function.Name]
+		}
+		if ok {
+			resolvedSpecs[index] = spec
+			continue
+		}
+		hydrationName := raw.Function.Name
+		if !catalogNames[hydrationName] {
+			hydrationName = ""
+			if !ambiguousCatalogAliases[raw.Function.Name] {
+				hydrationName = catalogNamesByAlias[raw.Function.Name]
+			}
+		}
+		if hydrationName == "" {
 			return AgentTurnDecision{}, fmt.Errorf("agent model requested unknown tool %q", raw.Function.Name)
 		}
+		if !hydrationNames[hydrationName] {
+			hydrationNames[hydrationName] = true
+			hydrationCalls = append(hydrationCalls, domain.StewardAgentToolCall{
+				ID:        defaultString(strings.TrimSpace(raw.ID), fmt.Sprintf("call_%d", index+1)),
+				ToolName:  "tool.describe",
+				Arguments: map[string]any{"name": hydrationName},
+			})
+		}
+	}
+	if len(hydrationCalls) > 0 {
+		if _, available := loadedByCanonicalName["tool.describe"]; !available {
+			return AgentTurnDecision{}, fmt.Errorf("agent model requested catalog tool %q but tool.describe is not available in this turn", hydrationCalls[0].Arguments["name"])
+		}
+		// Hydration is atomic for the model turn: defer every originally requested
+		// action until all catalog-known tools have full schemas on the next turn.
+		decision.Content = agentToolHydrationProgress
+		decision.ToolCalls = hydrationCalls
+		return decision, nil
+	}
+	for index, raw := range message.ToolCalls {
+		spec := resolvedSpecs[index]
 		arguments := map[string]any{}
 		if strings.TrimSpace(raw.Function.Arguments) != "" {
 			if err := json.Unmarshal([]byte(raw.Function.Arguments), &arguments); err != nil {
@@ -1031,7 +1115,7 @@ func (a openAICompatibleAutonomyAdvisor) AnalyzeObservation(ctx context.Context,
 		return ObservationModelOutput{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return ObservationModelOutput{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data)
+		return ObservationModelOutput{}, newAdvisorHTTPError("advisor request", resp.Status, resp.StatusCode, data, resp.Header.Get("Retry-After"))
 	}
 	content, err := openAICompatibleMessageContent(data)
 	if err != nil {

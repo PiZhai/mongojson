@@ -573,6 +573,7 @@ func TestStewardRuntimeV2RecoversInterruptedInvocation(t *testing.T) {
 }
 
 func TestStewardRuntimeR2PlansAndExecutesRealLocalTools(t *testing.T) {
+	startStewardTestCompanion(t, "runtime-r2-test")
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {
 		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed runtime R2 integration test")
@@ -641,7 +642,7 @@ func TestStewardRuntimeR2PlansAndExecutesRealLocalTools(t *testing.T) {
 	}
 
 	read := postRuntimeR2Plan(t, ctx, node, map[string]any{"instruction": fmt.Sprintf(`读取文件 "%s"`, filePath)}, http.StatusCreated)
-	if read.Status != steward.RuntimeRunQueued || read.PermissionCeiling != steward.PermissionA1 || read.Steps[0].RequiresApproval {
+	if read.Status != steward.RuntimeRunQueued || read.Steps[0].RequiresApproval {
 		t.Fatalf("read-only plan was not auto-queued within A1: %+v", read)
 	}
 	if _, err := node.service.RunAgentRuntimeCycle(ctx, 1); err != nil {

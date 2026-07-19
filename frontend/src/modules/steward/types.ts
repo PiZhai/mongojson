@@ -822,6 +822,21 @@ export type StewardAgentTurn = {
   failure_summary?: string;
 };
 
+export type StewardAgentWorkingState = {
+  summary?: string;
+  anchors?: string[];
+  pending_items?: string[];
+  evidence_references?: string[];
+  completed_rounds?: number;
+};
+
+export type StewardAgentTurnPage = {
+  turns: StewardAgentTurn[];
+  next_before_round?: number;
+  has_more: boolean;
+  total: number;
+};
+
 export type StewardAgentEpisode = {
   id: string;
   conversation_id: string;
@@ -838,11 +853,16 @@ export type StewardAgentEpisode = {
   max_duration_seconds: number;
   no_progress_limit: number;
   no_progress_count: number;
+  model_failure_count?: number;
   target_device_id?: string;
   active_execution_id?: string;
   failure_summary?: string;
   last_result_summary?: string;
-  turns: StewardAgentTurn[];
+  working_state?: StewardAgentWorkingState;
+  summary_through_round?: number;
+  turn_count?: number;
+  turns_has_more?: boolean;
+  turns?: StewardAgentTurn[];
   created_at: string;
   updated_at: string;
   deadline_at?: string;

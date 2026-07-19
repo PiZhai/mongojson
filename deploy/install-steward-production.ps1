@@ -49,6 +49,94 @@ function Assert-Base64Key([string]$Value,[int]$Length,[string]$Name) {
   try{$bytes=[Convert]::FromBase64String($Value)}catch{throw "$Name must be base64 encoding of exactly $Length random bytes"}
   if($bytes.Length -ne $Length){throw "$Name must be base64 encoding of exactly $Length random bytes"}
 }
+function ConvertTo-SIDValue([object]$Identity) {
+  if($null -eq $Identity){return ''}
+  if($Identity -is [Security.Principal.SecurityIdentifier]){return $Identity.Value}
+  try{
+    if($Identity -is [Security.Principal.NTAccount]){return $Identity.Translate([Security.Principal.SecurityIdentifier]).Value}
+    $value=[string]$Identity
+    if($value -match '^S-\d(?:-\d+)+$'){return $value}
+    return ([Security.Principal.NTAccount]::new($value)).Translate([Security.Principal.SecurityIdentifier]).Value
+  }catch{return [string]$Identity}
+}
+function Assert-PreviousBase64Keys([string]$Value,[string]$Name) {
+  foreach($entry in @(([string]$Value).Split(',',[StringSplitOptions]::RemoveEmptyEntries))){
+    $parts=$entry.Trim().Split(':',2)
+    if($parts.Count -ne 2 -or [string]::IsNullOrWhiteSpace($parts[0]) -or [string]::IsNullOrWhiteSpace($parts[1])){
+      throw "$Name must use comma-separated key_id:base64 entries"
+    }
+    Assert-Base64Key $parts[1].Trim() 32 "$Name $($parts[0].Trim())"
+  }
+}
+function Read-ProtectedLocalEncryptionKeyring([string]$Path) {
+  if(-not(Test-Path -LiteralPath $Path)){return $null}
+  $item=Get-Item -LiteralPath $Path -Force
+  if($item.PSIsContainer){throw "existing private environment must be a file: $Path"}
+  if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "existing private environment must not be a reparse point: $Path"}
+  $acl=Get-Acl -LiteralPath $Path
+  $owner=ConvertTo-SIDValue $acl.Owner
+  if(-not $acl.AreAccessRulesProtected -or $owner -notin @('S-1-5-18','S-1-5-32-544')){
+    throw "existing private environment is not protected strongly enough to inherit its encryption key: $Path"
+  }
+  foreach($rule in @($acl.Access|Where-Object AccessControlType -eq 'Allow')){
+    $sid=ConvertTo-SIDValue $rule.IdentityReference
+    if($sid -notin @('S-1-5-18','S-1-5-19','S-1-5-32-544') -and -not $sid.StartsWith('S-1-5-80-',[StringComparison]::Ordinal)){
+      throw "existing private environment grants access to an untrusted principal ($sid); refusing to inherit its encryption key"
+    }
+  }
+  try{$private=Get-Content -LiteralPath $Path -Raw -ErrorAction Stop|ConvertFrom-Json -ErrorAction Stop}catch{throw "existing private environment is not valid JSON: $($_.Exception.Message)"}
+  if($null -eq $private -or $private -is [Array]){throw 'existing private environment must contain one JSON object'}
+  $property=$private.PSObject.Properties['STEWARD_LOCAL_ENCRYPTION_KEY']
+  if($null -eq $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$property.Value)){
+    throw "existing private environment does not contain a recoverable STEWARD_LOCAL_ENCRYPTION_KEY: $Path"
+  }
+  $key=([string]$property.Value).Trim()
+  Assert-Base64Key $key 32 'existing STEWARD_LOCAL_ENCRYPTION_KEY'
+  $keyID=([string]$private.PSObject.Properties['STEWARD_LOCAL_ENCRYPTION_KEY_ID'].Value).Trim()
+  $previous=([string]$private.PSObject.Properties['STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS'].Value).Trim()
+  Assert-PreviousBase64Keys $previous 'existing STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS'
+  return [pscustomobject]@{key=$key;key_id=$keyID;previous_keys=$previous}
+}
+function Test-ExternalPostgresURL([string]$Value) {
+  try{$uri=[Uri]$Value}catch{throw 'DatabaseURL must be an absolute PostgreSQL URL'}
+  if(-not $uri.IsAbsoluteUri -or $uri.Scheme -notin @('postgres','postgresql') -or [string]::IsNullOrWhiteSpace($uri.Host)){
+    throw 'DatabaseURL must be an absolute postgres:// or postgresql:// URL'
+  }
+  if($uri.Host -ieq 'localhost'){return $false}
+  $address=$null
+  if([Net.IPAddress]::TryParse($uri.Host,[ref]$address)){return -not [Net.IPAddress]::IsLoopback($address)}
+  return $true
+}
+function Resolve-InstallationLocalEncryptionKey([string]$RequestedKey,[string]$RequestedKeyID,[string]$RequestedPreviousKeys,[string]$PrivateEnvironmentPath,[bool]$DataDirectoryExisted,[string]$DatabaseURL) {
+  $requested=([string]$RequestedKey).Trim()
+  $requestedID=([string]$RequestedKeyID).Trim()
+  $requestedPrevious=([string]$RequestedPreviousKeys).Trim()
+  Assert-PreviousBase64Keys $requestedPrevious 'LocalEncryptionPreviousKeys'
+  $inherited=Read-ProtectedLocalEncryptionKeyring $PrivateEnvironmentPath
+  if($null -ne $inherited){
+    if($requested -and $requested -ne $inherited.key){
+      throw 'LocalEncryptionKey does not match the protected key already associated with this DataDir; use the production key-rotation workflow instead of first-install replacement'
+    }
+    if($requestedID -and $requestedID -ne $inherited.key_id){
+      throw 'LocalEncryptionKeyID does not match the protected key ID already associated with this DataDir; use the production key-rotation workflow instead of first-install replacement'
+    }
+    if($requestedPrevious -and $requestedPrevious -ne $inherited.previous_keys){
+      throw 'LocalEncryptionPreviousKeys does not match the protected historical keyring already associated with this DataDir; use the production key-rotation workflow instead of first-install replacement'
+    }
+    return [pscustomobject]@{key=$inherited.key;key_id=$inherited.key_id;previous_keys=$inherited.previous_keys;generated=$false;source='protected_private_environment'}
+  }
+  if($requested){
+    Assert-Base64Key $requested 32 'LocalEncryptionKey'
+    return [pscustomobject]@{key=$requested;key_id=$requestedID;previous_keys=$requestedPrevious;generated=$false;source='explicit'}
+  }
+  if($DataDirectoryExisted){
+    throw 'DataDir already exists but no protected STEWARD_LOCAL_ENCRYPTION_KEY could be inherited. Supply the original key explicitly; refusing to generate a replacement key for existing data.'
+  }
+  if(Test-ExternalPostgresURL $DatabaseURL){
+    throw 'DatabaseURL points to an external PostgreSQL server. Supply a durable LocalEncryptionKey explicitly; refusing to generate an unrecoverable key for an external database.'
+  }
+  return [pscustomobject]@{key=(New-Key 32);key_id=$requestedID;previous_keys=$requestedPrevious;generated=$true;source='fresh_loopback_install'}
+}
 function Assert-Loopback([string]$Address,[string]$Name) {
   $hostPart=($Address -split ':')[0].Trim('[',']')
   if ($hostPart -notin @('127.0.0.1','localhost','::1')) { throw "$Name must bind to loopback: $Address" }
@@ -387,7 +475,14 @@ $dataDirExisted=Test-Path -LiteralPath $DataDir;$dataDirSddl=if($dataDirExisted)
 $storageDirExisted=Test-Path -LiteralPath (Join-Path $DataDir 'data');$logsDirExisted=Test-Path -LiteralPath (Join-Path $DataDir 'logs');$configDirExisted=Test-Path -LiteralPath (Join-Path $DataDir 'config')
 $storageDirSddl=if($storageDirExisted){(Get-Acl -LiteralPath (Join-Path $DataDir 'data')).Sddl}else{''};$logsDirSddl=if($logsDirExisted){(Get-Acl -LiteralPath (Join-Path $DataDir 'logs')).Sddl}else{''};$configDirSddl=if($configDirExisted){(Get-Acl -LiteralPath (Join-Path $DataDir 'config')).Sddl}else{''}
 $privateSnapshot=$null;$markerSnapshot=$null;$managementSnapshot=$null;$protectedPolicyInput=''
-$installationSucceeded=$false
+$installationSucceeded=$false;$localKeyMayHaveReachedDatabase=$false;$localKeyRecoveryPath=''
+$privateEnvironmentPath=Join-Path $DataDir 'config\service-secrets.json'
+$localKeyResolution=Resolve-InstallationLocalEncryptionKey $LocalEncryptionKey $LocalEncryptionKeyID $LocalEncryptionPreviousKeys $privateEnvironmentPath $dataDirExisted $DatabaseURL
+$LocalEncryptionKey=[string]$localKeyResolution.key
+$LocalEncryptionKeyID=[string]$localKeyResolution.key_id
+$LocalEncryptionPreviousKeys=[string]$localKeyResolution.previous_keys
+$localKey=$LocalEncryptionKey
+$localKeyGenerated=[bool]$localKeyResolution.generated
 $managementAccessPath=$ManagementAccessTokenFile
 if(-not $managementAccessPath){$managementAccessPath=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'MongojsonSteward\management-access-token.txt'}
 $managementAccessPath=Get-CanonicalPath $managementAccessPath 'ManagementAccessTokenFile' $false
@@ -401,6 +496,12 @@ try {
   $transactionDir=Join-Path $transactionRoot ('install-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $transactionDir|Out-Null;Protect-AdminPath $transactionDir
   $transactionPath=Join-Path $transactionDir 'install-transaction.json'
   Write-TransactionRecord $transactionPath 'validating' @{install_dir=$InstallDir;data_dir=$DataDir;broker_install_dir=$BrokerInstallDir;broker_data_dir=$BrokerDataDir}
+  if($localKeyGenerated){
+    $localKeyRecoveryPath=Join-Path $transactionDir 'local-encryption-key-recovery.json'
+    $recovery=[ordered]@{schema='mongojson.steward.local-encryption-key-recovery/v1';STEWARD_LOCAL_ENCRYPTION_KEY=$localKey;STEWARD_LOCAL_ENCRYPTION_KEY_ID=$LocalEncryptionKeyID;STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS=$LocalEncryptionPreviousKeys;created_at=[DateTimeOffset]::UtcNow.ToString('o')}
+    [IO.File]::WriteAllText($localKeyRecoveryPath,($recovery|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+    Protect-AdminFile $localKeyRecoveryPath
+  }
   $snapshotRoot=Join-Path $transactionDir 'rollback'
   New-Item -ItemType Directory -Path $snapshotRoot|Out-Null
   Protect-AdminPath $snapshotRoot
@@ -466,8 +567,6 @@ try {
   Copy-Item -LiteralPath $policy -Destination $protectedPolicyInput -Force
   Protect-AdminFile $protectedPolicyInput
   $policy=$protectedPolicyInput
-  $localKey=$LocalEncryptionKey
-  if(-not $localKey){$localKey=New-Key 32}
   $syncSecretValue=$SyncSecret
   if(-not $syncSecretValue){$syncSecretValue=New-Key 32}
   $orchestrationKey=$OrchestrationSigningKey
@@ -504,7 +603,7 @@ try {
 	}
 
   $stewardExe=Join-Path $InstallDir 'steward.exe'
-  $privateEnvironmentFile=Join-Path $DataDir 'config\service-secrets.json'
+  $privateEnvironmentFile=$privateEnvironmentPath
   $serviceArgs=@('service','install','--name',$ServiceName,'--scope','system','--binary',$stewardExe,
     '--workdir',$DataDir,'--http-addr',$HTTPAddress,'--peer-http-addr',$PeerHTTPAddress,
     '--storage-dir',(Join-Path $DataDir 'data'),'--log-dir',(Join-Path $DataDir 'logs'),
@@ -538,6 +637,7 @@ try {
   $mainPrevious=@{}
   try{
     foreach($entry in $mainPrivateEnvironment.GetEnumerator()){$mainPrevious[$entry.Key]=[Environment]::GetEnvironmentVariable($entry.Key,'Process');[Environment]::SetEnvironmentVariable($entry.Key,$entry.Value,'Process')}
+    if($localKeyGenerated -and $Start){$localKeyMayHaveReachedDatabase=$true}
     $mainOutput=& $stewardExe @serviceArgs 2>&1 | Out-String
     $mainExitCode=$LASTEXITCODE
   }finally{foreach($entry in $mainPrevious.GetEnumerator()){[Environment]::SetEnvironmentVariable($entry.Key,$entry.Value,'Process')}}
@@ -594,6 +694,7 @@ try {
   [ordered]@{ok=$true;service=$ServiceName;service_account='NT AUTHORITY\LocalService';service_sid='restricted';broker=$BrokerServiceName;broker_account='LocalSystem';companion=$companionInstalled;install_dir=$InstallDir;data_dir=$DataDir;management_access_token_file=$managementAccessPath;release_trust_file=$releaseTrustPath}|ConvertTo-Json
 } catch {
   $failure=ConvertTo-RedactedText $_.Exception.Message $sensitiveValues.ToArray()
+  $retainLocalKeyRecovery=$localKeyGenerated -and $localKeyMayHaveReachedDatabase -and -not[string]::IsNullOrWhiteSpace($localKeyRecoveryPath)
   if($transactionPath -and (Test-Path -LiteralPath (Split-Path -Parent $transactionPath))){try{Write-TransactionRecord $transactionPath 'rolling_back' @{reason='installation failed'}}catch{$rollbackErrors.Add("record rollback state: $($_.Exception.Message)")}}
   if($companionInstalled -and (Test-Path -LiteralPath (Join-Path $InstallDir 'uninstall-steward-companion.ps1'))){
     try{& (Join-Path $InstallDir 'uninstall-steward-companion.ps1') -TaskName $CompanionTaskName -Confirm:$false|Out-Null;if($LASTEXITCODE -ne 0){throw 'companion uninstaller returned failure'}}catch{$rollbackErrors.Add("remove Session Companion: $($_.Exception.Message)")}
@@ -618,10 +719,12 @@ try {
   $rollbackState=if($rollbackErrors.Count -eq 0){'rolled_back'}else{'rollback_incomplete'}
   if($transactionPath -and (Test-Path -LiteralPath (Split-Path -Parent $transactionPath))){try{Write-TransactionRecord $transactionPath $rollbackState @{rollback_errors=@($rollbackErrors)}}catch{$rollbackErrors.Add("record rollback result: $($_.Exception.Message)")}}
   $suffix=if($rollbackErrors.Count -gt 0){" Rollback also reported: $($rollbackErrors -join '; ')"}else{''}
+  if($retainLocalKeyRecovery){$suffix+=" The generated local encryption key was retained in the administrator-protected recovery file $localKeyRecoveryPath because the started service may have written encrypted rows. Reuse that key on the next installation attempt."}
   $prefix=if($rollbackErrors.Count -eq 0){'R5.1 installation failed; created services and owned paths were rolled back'}else{'R5.1 installation failed; rollback was incomplete and the protected transaction record was retained'}
   throw "${prefix}: $failure.$suffix"
 } finally {
   foreach($entry in @($mainPrivateEnvironment,$brokerSecretEnvironment)){if($entry -is [Collections.IDictionary]){foreach($key in @($entry.Keys)){$entry[$key]=$null}}}
   if($releaseStage -and (Test-Path -LiteralPath $releaseStage)){Remove-Item -LiteralPath $releaseStage -Recurse -Force -ErrorAction SilentlyContinue}
-  if($transactionDir -and (Test-Path -LiteralPath $transactionDir) -and ($installationSucceeded -or -not $installMutationStarted -or $rollbackErrors.Count -eq 0)){Remove-Item -LiteralPath $transactionDir -Recurse -Force -ErrorAction SilentlyContinue}
+  $retainLocalKeyRecovery=$localKeyGenerated -and $localKeyMayHaveReachedDatabase -and -not $installationSucceeded
+  if($transactionDir -and (Test-Path -LiteralPath $transactionDir) -and -not $retainLocalKeyRecovery -and ($installationSucceeded -or -not $installMutationStarted -or $rollbackErrors.Count -eq 0)){Remove-Item -LiteralPath $transactionDir -Recurse -Force -ErrorAction SilentlyContinue}
 }

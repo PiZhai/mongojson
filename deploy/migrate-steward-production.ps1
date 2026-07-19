@@ -131,6 +131,12 @@ function ConvertTo-StringMap($Value) {
   foreach($property in $Value.PSObject.Properties){$result[$property.Name]=[string]$property.Value}
   return $result
 }
+function Assert-RecoverableLocalEncryptionKey([hashtable]$Environment,[string]$Context) {
+  $key=([string]$Environment['STEWARD_LOCAL_ENCRYPTION_KEY']).Trim()
+  if(-not $key){throw "$Context does not expose STEWARD_LOCAL_ENCRYPTION_KEY. Migration cannot safely reuse the existing PostgreSQL data; restore the protected service-secrets.json or provide the original legacy service environment before retrying."}
+  try{$bytes=[Convert]::FromBase64String($key)}catch{throw "$Context contains an invalid STEWARD_LOCAL_ENCRYPTION_KEY; expected base64 encoding of exactly 32 bytes"}
+  if($bytes.Length -ne 32){throw "$Context contains an invalid STEWARD_LOCAL_ENCRYPTION_KEY; expected base64 encoding of exactly 32 bytes"}
+}
 function StartMode([string]$Mode) {
   switch($Mode){'Auto'{'auto'};'Automatic'{'auto'};'Disabled'{'disabled'};default{'demand'}}
 }
@@ -362,6 +368,7 @@ if($old -and -not $resumeCandidate){
   $envMap=Read-ServiceEnvironment $ServiceName
   $oldPrivate=Join-Path $DataDir 'config\service-secrets.json'
   if(Test-Path $oldPrivate){$private=Get-Content $oldPrivate -Raw|ConvertFrom-Json;foreach($p in $private.PSObject.Properties){$envMap[$p.Name]=[string]$p.Value}}
+  Assert-RecoverableLocalEncryptionKey $envMap 'legacy installation'
   $stamp=(Get-Date -Format yyyyMMdd-HHmmss)+'-'+[guid]::NewGuid().ToString('N').Substring(0,8)
   $backupRoot=Assert-PathWithin (Join-Path $MigrationBackupRoot "migration-backup-$stamp") $MigrationBackupRoot 'migration backup'
   New-Item -ItemType Directory -Path $backupRoot|Out-Null
@@ -422,6 +429,7 @@ if(-not $DatabaseURL){$DatabaseURL=[string]$envMap['DATABASE_URL']}
 if(-not $DatabaseURL){throw 'DATABASE_URL was not recoverable; provide -DatabaseURL explicitly'}
 $rollbackErrors=New-Object System.Collections.Generic.List[string]
 try{
+  Assert-RecoverableLocalEncryptionKey $envMap 'captured migration state'
   if($forceRollback){throw 'recovering an interrupted migration before any further installation attempt'}
   $state.phase='migrating';Write-MigrationState $statePath $state
   Stop-Service $ServiceName -Force -ErrorAction SilentlyContinue

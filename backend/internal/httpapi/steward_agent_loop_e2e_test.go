@@ -64,6 +64,78 @@ type r50ToolsmithAdvisor struct{}
 func (r50ToolsmithAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
 	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r50-test", Model: "toolsmith-test"}
 }
+
+type durableFirstTurnAdvisor struct {
+	calls           int
+	sawQueueMessage bool
+}
+
+func (a *durableFirstTurnAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "durable-test", Model: "durable-test"}
+}
+
+func (a *durableFirstTurnAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
+	return steward.AutonomyAdvisorSuggestion{}, nil
+}
+
+func (a *durableFirstTurnAdvisor) NextTurn(_ context.Context, input steward.AgentTurnInput) (steward.AgentTurnDecision, error) {
+	a.calls++
+	for _, message := range input.History {
+		if strings.Contains(message.Content, "持续分析、调用工具") {
+			a.sawQueueMessage = true
+		}
+	}
+	return steward.AgentTurnDecision{Content: "后台模型回合已经完成。"}, nil
+}
+
+func TestStewardAgentFirstTurnIsDurableAndRunsOutsideSendRequest(t *testing.T) {
+	t.Setenv("STEWARD_OWNER_MODE", "true")
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the durable first-turn test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	advisor := &durableFirstTurnAdvisor{}
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "agent_durable_first_turn"), "agent-durable-first-turn",
+		steward.WithAutonomyAdvisor(advisor))
+	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "durable first turn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "直接回答但通过后台回合"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advisor.calls != 0 {
+		t.Fatalf("advisor was called inside SendConversationMessage: calls=%d", advisor.calls)
+	}
+	if len(result.Message.Episodes) != 1 {
+		t.Fatalf("durable Episode was not returned: %+v", result.Message)
+	}
+	episodeID := result.Message.Episodes[0].ID
+	episode, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.Status != "thinking" || episode.CurrentRound != 0 || episode.ProgressMessageID != result.Message.ID {
+		t.Fatalf("Episode was not durable before model call: %+v", episode)
+	}
+	processed, err := node.service.RunAgentEpisodeCycle(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed != 1 || advisor.calls != 1 {
+		t.Fatalf("worker did not perform exactly one model turn: processed=%d calls=%d", processed, advisor.calls)
+	}
+	episode, err = node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.Status != "completed" || episode.CurrentRound != 1 || advisor.sawQueueMessage {
+		t.Fatalf("worker finalization/history filtering failed: %+v queue_in_history=%v", episode, advisor.sawQueueMessage)
+	}
+}
 func (r50ToolsmithAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
 	return steward.AutonomyAdvisorSuggestion{}, nil
 }
@@ -231,10 +303,29 @@ func TestStewardR49ParallelToolBatchPreservesCallIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Message.Episodes) != 1 || len(created.Message.Executions) != 1 || created.Message.Executions[0].Kind != "orchestration" {
-		t.Fatalf("parallel tool calls did not create one orchestration batch: %+v", created.Message)
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" ||
+		created.Message.Episodes[0].CurrentRound != 0 || len(created.Message.Executions) != 0 {
+		t.Fatalf("parallel request was not durably queued before the first model turn: %+v", created.Message)
 	}
 	episodeID := created.Message.Episodes[0].ID
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched.Status != "executing" || dispatched.CurrentRound != 1 || dispatched.ActiveExecutionID == "" {
+		t.Fatalf("worker did not create the first parallel tool batch: %+v", dispatched)
+	}
+	queuedMessages, err := node.service.ListConversationMessages(ctx, conversation.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedExecution := latestR45Execution(t, queuedMessages)
+	if queuedExecution.ID != dispatched.ActiveExecutionID || queuedExecution.Kind != "orchestration" {
+		t.Fatalf("parallel tool calls did not create one orchestration execution: %+v", queuedExecution)
+	}
 	for index := 0; index < 12; index++ {
 		if _, err := node.service.RunOrchestrationCycle(ctx, 10); err != nil {
 			t.Fatal(err)
@@ -258,6 +349,90 @@ func TestStewardR49ParallelToolBatchPreservesCallIDs(t *testing.T) {
 	}
 	if episode.Turns[0].ToolResults[0].ToolCallID != "parallel_a" || episode.Turns[0].ToolResults[1].ToolCallID != "parallel_b" {
 		t.Fatalf("tool results lost native call IDs: %+v", episode.Turns[0].ToolResults)
+	}
+}
+
+type r49CollectAllAdvisor struct{ missingPath string }
+
+func (r49CollectAllAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "collect-all-test", MaxDataLevel: "D6"}
+}
+func (r49CollectAllAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
+	return steward.AutonomyAdvisorSuggestion{}, nil
+}
+func (a r49CollectAllAdvisor) NextTurn(_ context.Context, input steward.AgentTurnInput) (steward.AgentTurnDecision, error) {
+	if len(input.Transcript) == 0 {
+		return steward.AgentTurnDecision{Content: "执行三个独立工具。", ToolCalls: []domain.StewardAgentToolCall{
+			{ID: "collect_success_a", ToolName: "runtime.echo", Arguments: map[string]any{"value": "alpha"}},
+			{ID: "collect_failure_b", ToolName: "fs.read_text", Arguments: map[string]any{"path": a.missingPath}},
+			{ID: "collect_success_c", ToolName: "runtime.echo", Arguments: map[string]any{"value": "charlie"}},
+		}}, nil
+	}
+	results := input.Transcript[0].ToolResults
+	if len(results) != 3 || results[0].ToolCallID != "collect_success_a" || results[1].ToolCallID != "collect_failure_b" || results[2].ToolCallID != "collect_success_c" {
+		return steward.AgentTurnDecision{Content: "三个工具结果的原始调用 ID 或顺序错误。"}, nil
+	}
+	if results[0].Error != "" || results[1].Error == "" || results[2].Error != "" || len(results[2].Output) == 0 {
+		return steward.AgentTurnDecision{Content: "独立工具失败导致结果缺失或错绑。"}, nil
+	}
+	return steward.AgentTurnDecision{Content: "三个独立工具均返回了对应结果，失败未中断后续工具。"}, nil
+}
+
+func TestStewardR49CollectAllPreservesThreeCallResultsAcrossFailure(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed R4.9 collect-all Agent test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing.txt")
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r49_collect_all_agent"), "r49-collect-all-agent",
+		steward.WithAutonomyAdvisor(r49CollectAllAdvisor{missingPath: missing}), steward.WithRuntimeR2Enabled(true),
+		steward.WithRuntimeAllowedRoots(root), steward.WithOrchestrationR4Enabled(true),
+		steward.WithOrchestrationSigningKey(bytes.Repeat([]byte{0x4a}, 32)))
+	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R4.9 collect all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "同时执行三个独立检查，即使一个失败也继续"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Message.Episodes) != 1 {
+		t.Fatalf("three tool calls did not create one Agent Episode: %+v", created.Message)
+	}
+	episodeID := created.Message.Episodes[0].ID
+	for index := 0; index < 20; index++ {
+		if _, err := node.service.RunOrchestrationCycle(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := node.service.RunAgentRuntimeCycle(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := node.service.RunConversationExecutionRefreshCycle(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		episode, getErr := node.service.GetAgentEpisode(ctx, episodeID)
+		if getErr == nil && episode.Status == "completed" {
+			break
+		}
+	}
+	episode, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.Status != "completed" || len(episode.Turns) != 2 || len(episode.Turns[0].ToolResults) != 3 {
+		t.Fatalf("collect-all Agent episode did not complete with three results: %+v", episode)
+	}
+	results := episode.Turns[0].ToolResults
+	if results[0].ToolCallID != "collect_success_a" || results[0].Error != "" ||
+		results[1].ToolCallID != "collect_failure_b" || results[1].Error == "" ||
+		results[2].ToolCallID != "collect_success_c" || results[2].Error != "" || len(results[2].Output) == 0 {
+		t.Fatalf("collect-all results were missing or misbound: %+v", results)
 	}
 }
 
@@ -293,7 +468,13 @@ func TestStewardR49RestartAfterToolCompletionResumesEpisode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" || created.Message.Episodes[0].CurrentRound != 0 {
+		t.Fatalf("recovery request was not durably queued before the first model turn: %+v", created.Message)
+	}
 	episodeID := created.Message.Episodes[0].ID
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := node.service.RunAgentRuntimeCycle(ctx, 10); err != nil {
 		t.Fatal(err)
 	}
@@ -327,9 +508,87 @@ func TestStewardR49RestartAfterToolCompletionResumesEpisode(t *testing.T) {
 	}
 }
 
+func TestStewardR49RestartReconcilesAlreadyTerminalConversationExecution(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed terminal projection recovery test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	dbConfig := temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r49_terminal_projection")
+	node := newStewardHTTPNode(t, ctx, dbConfig.Copy(), "r49-terminal-projection",
+		steward.WithAutonomyAdvisor(r49RecoveryAdvisor{}), steward.WithRuntimeR2Enabled(true))
+	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R4.9 terminal projection recovery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "执行一次，模拟终态投影后立即重启"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Message.Episodes) != 1 {
+		t.Fatalf("first tool Episode was not persisted: %+v", created.Message)
+	}
+	episodeID := created.Message.Episodes[0].ID
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil || dispatched.Status != "executing" || dispatched.ActiveExecutionID == "" {
+		t.Fatalf("first model turn did not create its child execution: episode=%+v err=%v", dispatched, err)
+	}
+	executionID := dispatched.ActiveExecutionID
+	if _, err := node.service.RunAgentRuntimeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the crash window: the child status was projected as terminal,
+	// but its callback did not commit tool_results / Episode=thinking.
+	if _, err := node.pool.Exec(ctx, `update steward_conversation_executions
+		set status='succeeded',completed_at=now(),updated_at=now() where id=$1`, executionID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil || before.Status != "executing" {
+		t.Fatalf("test did not establish the executing/terminal crash window: episode=%+v err=%v", before, err)
+	}
+
+	restartedPool, err := pgxpool.NewWithConfig(ctx, dbConfig.Copy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restartedPool.Close)
+	restarted := steward.NewService(&database.DB{Pool: restartedPool}, steward.WithAgentID("r49-terminal-projection"),
+		steward.WithStorageDir(t.TempDir()), steward.WithAutonomyAdvisor(r49RecoveryAdvisor{}), steward.WithRuntimeR2Enabled(true))
+	if err := restarted.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if refreshed, err := restarted.RunConversationExecutionRefreshCycle(ctx, 10); err != nil || refreshed == 0 {
+		t.Fatalf("terminal execution was not selected for reconciliation: refreshed=%d err=%v", refreshed, err)
+	}
+	reconciled, err := restarted.GetAgentEpisode(ctx, episodeID)
+	if err != nil || reconciled.Status != "thinking" || len(reconciled.Turns) != 1 || len(reconciled.Turns[0].ToolResults) != 1 {
+		t.Fatalf("terminal execution did not restore its Episode tool turn: episode=%+v err=%v", reconciled, err)
+	}
+	if _, err := restarted.RunAgentEpisodeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	final, err := restarted.GetAgentEpisode(ctx, episodeID)
+	if err != nil || final.Status != "completed" || final.ToolCallCount != 1 {
+		t.Fatalf("reconciled Episode did not continue at the next turn: episode=%+v err=%v", final, err)
+	}
+	var invocationCount int
+	if err := restartedPool.QueryRow(ctx, `select count(*) from steward_tool_invocations invocation
+		join steward_conversation_executions execution on execution.run_id=invocation.run_id
+		where execution.id=$1`, executionID).Scan(&invocationCount); err != nil {
+		t.Fatal(err)
+	}
+	if invocationCount != 1 {
+		t.Fatalf("terminal reconciliation repeated a side effect: invocations=%d", invocationCount)
+	}
+}
+
 type r49LoopAdvisor struct {
-	root string
-	file string
+	content string
 }
 
 func (r49LoopAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
@@ -344,16 +603,18 @@ func (a r49LoopAdvisor) NextTurn(_ context.Context, input steward.AgentTurnInput
 	switch len(input.Transcript) {
 	case 0:
 		return steward.AgentTurnDecision{Content: "先查看目录。", ToolCalls: []domain.StewardAgentToolCall{{
-			ID: "call_list", ToolName: "fs.list", Arguments: map[string]any{"path": a.root},
+			ID: "call_list", ToolName: "runtime.echo", Arguments: map[string]any{"value": map[string]any{"entries": []any{"answer.txt"}}},
 		}}}, nil
 	case 1:
 		return steward.AgentTurnDecision{Content: "找到候选文件，继续读取。", ToolCalls: []domain.StewardAgentToolCall{{
-			ID: "call_read", ToolName: "fs.read_text", Arguments: map[string]any{"path": a.file},
+			ID: "call_read", ToolName: "runtime.echo", Arguments: map[string]any{"value": map[string]any{"content": a.content}},
 		}}}, nil
 	default:
 		content := ""
 		if results := input.Transcript[len(input.Transcript)-1].ToolResults; len(results) > 0 {
-			content, _ = results[0].Output["content"].(string)
+			if value, ok := results[0].Output["value"].(map[string]any); ok {
+				content, _ = value["content"].(string)
+			}
 		}
 		return steward.AgentTurnDecision{Content: "已读取真实文件内容：" + content}, nil
 	}
@@ -366,13 +627,8 @@ func TestStewardR49AgentLoopsFromListToReadToFinalAnswer(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	root := t.TempDir()
-	file := filepath.Join(root, "answer.txt")
-	if err := os.WriteFile(file, []byte("R4.9-loop-proof"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r49_agent_loop"), "r49-local",
-		steward.WithAutonomyAdvisor(r49LoopAdvisor{root: root, file: file}), steward.WithRuntimeR2Enabled(true), steward.WithRuntimeAllowedRoots(root))
+		steward.WithAutonomyAdvisor(r49LoopAdvisor{content: "R4.9-loop-proof"}), steward.WithRuntimeR2Enabled(true))
 	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R4.9 loop"})
 	if err != nil {
 		t.Fatal(err)
@@ -381,10 +637,21 @@ func TestStewardR49AgentLoopsFromListToReadToFinalAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Message.Episodes) != 1 || len(created.Message.Executions) != 1 {
-		t.Fatalf("first model turn did not create an episode execution: %+v", created.Message)
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" ||
+		created.Message.Episodes[0].CurrentRound != 0 || len(created.Message.Executions) != 0 {
+		t.Fatalf("agent request was not durably queued before the first model turn: %+v", created.Message)
 	}
 	episodeID := created.Message.Episodes[0].ID
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	firstTurn, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstTurn.Status != "executing" || firstTurn.CurrentRound != 1 || firstTurn.ActiveExecutionID == "" {
+		t.Fatalf("worker did not dispatch the first list tool turn: %+v", firstTurn)
+	}
 	for round := 0; round < 2; round++ {
 		if _, err := node.service.RunAgentRuntimeCycle(ctx, 10); err != nil {
 			t.Fatal(err)
@@ -459,10 +726,20 @@ func TestStewardR49AskUserResumesSameEpisode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Message.Episodes) != 1 || first.Message.Episodes[0].Status != "awaiting_input" {
-		t.Fatalf("ask_user did not pause the episode: %+v", first.Message)
+	if len(first.Message.Episodes) != 1 || first.Message.Episodes[0].Status != "thinking" || first.Message.Episodes[0].CurrentRound != 0 {
+		t.Fatalf("ask-user request was not durably queued before the first model turn: %+v", first.Message)
 	}
 	episodeID := first.Message.Episodes[0].ID
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	waiting, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting.Status != "awaiting_input" || waiting.CurrentRound != 1 {
+		t.Fatalf("worker did not pause the episode for ask_user: %+v", waiting)
+	}
 	if _, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "answer.txt"}); err != nil {
 		t.Fatal(err)
 	}
@@ -485,13 +762,8 @@ func TestStewardR49PauseResumeReplansWithoutRepeatingSideEffects(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	root := t.TempDir()
-	file := filepath.Join(root, "pause.txt")
-	if err := os.WriteFile(file, []byte("pause-proof"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r49_pause"), "r49-pause",
-		steward.WithAutonomyAdvisor(r49LoopAdvisor{root: root, file: file}), steward.WithRuntimeR2Enabled(true), steward.WithRuntimeAllowedRoots(root))
+		steward.WithAutonomyAdvisor(r49LoopAdvisor{content: "pause-proof"}), steward.WithRuntimeR2Enabled(true))
 	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R4.9 pause"})
 	if err != nil {
 		t.Fatal(err)
@@ -500,7 +772,20 @@ func TestStewardR49PauseResumeReplansWithoutRepeatingSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" || created.Message.Episodes[0].CurrentRound != 0 {
+		t.Fatalf("pause request was not durably queued before the first model turn: %+v", created.Message)
+	}
 	episodeID := created.Message.Episodes[0].ID
+	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	firstTurn, err := node.service.GetAgentEpisode(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstTurn.Status != "executing" || firstTurn.CurrentRound != 1 || firstTurn.ActiveExecutionID == "" {
+		t.Fatalf("worker did not dispatch the first tool turn before pause: %+v", firstTurn)
+	}
 	paused, err := node.service.DecideAgentEpisode(ctx, episodeID, steward.DecideAgentEpisodeInput{Decision: "pause"})
 	if err != nil || paused.Status != "paused" {
 		t.Fatalf("episode was not paused: %+v err=%v", paused, err)
@@ -516,7 +801,8 @@ func TestStewardR49PauseResumeReplansWithoutRepeatingSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if episode.Status != "executing" || episode.CurrentRound != 2 {
+	if episode.Status != "executing" || episode.CurrentRound != 2 || episode.ToolCallCount != 2 || len(episode.Turns) != 2 ||
+		len(episode.Turns[1].ToolCalls) != 1 || episode.Turns[1].ToolCalls[0].ID != "call_read" {
 		t.Fatalf("resumed episode did not let the model replan: %+v", episode)
 	}
 }

@@ -415,10 +415,22 @@ func (s *Service) requeueAgentRunForGlobalPause(ctx context.Context, runID strin
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	now := time.Now().UTC()
+	var cancelRequested bool
+	if err := tx.QueryRow(ctx, `select cancel_requested from steward_agent_runs where id = $1 for update`, runID).Scan(&cancelRequested); errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	} else if err != nil {
+		return err
+	}
+	if cancelRequested {
+		if err := finishAgentRunCancelledTx(ctx, tx, runID, "cancellation observed while global pause tried to requeue the run", now); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
 	commandTag, err := tx.Exec(ctx, `
 		update steward_agent_runs
 		set status = $2, failure_summary = '', updated_at = $3, completed_at = null
-		where id = $1 and status in ($4,$5)
+		where id = $1 and status in ($4,$5) and cancel_requested = false
 	`, runID, RuntimeRunQueued, now, RuntimeRunRunning, RuntimeRunVerifying)
 	if err != nil {
 		return err
@@ -808,8 +820,28 @@ func (s *Service) finishAgentRunSucceeded(ctx context.Context, runID string) err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	now := time.Now().UTC()
-	if _, err := tx.Exec(ctx, `update steward_agent_runs set status = $2, updated_at = $3 where id = $1`, runID, RuntimeRunVerifying, now); err != nil {
+	var status string
+	var cancelRequested bool
+	if err := tx.QueryRow(ctx, `select status, cancel_requested from steward_agent_runs where id = $1 for update`, runID).Scan(&status, &cancelRequested); errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	} else if err != nil {
 		return err
+	}
+	if status == RuntimeRunCancelled {
+		return tx.Commit(ctx)
+	}
+	if cancelRequested {
+		if err := finishAgentRunCancelledTx(ctx, tx, runID, "cancellation won the race before success was committed", now); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	commandTag, err := tx.Exec(ctx, `update steward_agent_runs set status = $2, updated_at = $3 where id = $1 and status in ($4,$5) and cancel_requested = false`, runID, RuntimeRunVerifying, now, RuntimeRunRunning, RuntimeRunVerifying)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
 	}
 	if err := appendRuntimeEvent(ctx, tx, runID, nil, "run.verifying", RuntimeRunVerifying, "all step postconditions passed; verifying run invariant", map[string]any{}); err != nil {
 		return err
@@ -821,12 +853,16 @@ func (s *Service) finishAgentRunSucceeded(ctx context.Context, runID string) err
 	if incomplete != 0 {
 		return fmt.Errorf("run invariant failed: %d steps are not succeeded", incomplete)
 	}
-	if _, err := tx.Exec(ctx, `
+	commandTag, err = tx.Exec(ctx, `
 		update steward_agent_runs
 		set status = $2, failure_summary = '', cancel_requested = false, updated_at = $3, completed_at = $3
-		where id = $1
-	`, runID, RuntimeRunSucceeded, now); err != nil {
+		where id = $1 and status = $4 and cancel_requested = false
+	`, runID, RuntimeRunSucceeded, now, RuntimeRunVerifying)
+	if err != nil {
 		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
 	}
 	if err := appendRuntimeEvent(ctx, tx, runID, nil, "run.succeeded", RuntimeRunSucceeded, "run completed with verified evidence", map[string]any{}); err != nil {
 		return err
@@ -849,23 +885,73 @@ func (s *Service) finishAgentRunWithStatus(ctx context.Context, runID string, ru
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	now := time.Now().UTC()
+	var status string
+	var cancelRequested bool
+	if err := tx.QueryRow(ctx, `select status, cancel_requested from steward_agent_runs where id = $1 for update`, runID).Scan(&status, &cancelRequested); errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	} else if err != nil {
+		return err
+	}
+	if status == RuntimeRunCancelled {
+		return tx.Commit(ctx)
+	}
+	if cancelRequested {
+		if err := finishAgentRunCancelledTx(ctx, tx, runID, reason, now); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
 	if _, err := tx.Exec(ctx, `
 		update steward_run_steps set status = $2, last_error = $3, updated_at = $4, completed_at = $4
 		where run_id = $1 and status in ('pending','running','verifying','blocked')
 	`, runID, stepStatus, reason, now); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
+	commandTag, err := tx.Exec(ctx, `
 		update steward_agent_runs
 		set status = $2, failure_summary = $3, cancel_requested = false, updated_at = $4, completed_at = $4
-		where id = $1
-	`, runID, runStatus, reason, now); err != nil {
+		where id = $1 and cancel_requested = false and status not in ($5,$6)
+	`, runID, runStatus, reason, now, RuntimeRunSucceeded, RuntimeRunCancelled)
+	if err != nil {
 		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
 	}
 	if err := appendRuntimeEvent(ctx, tx, runID, nil, eventType, runStatus, reason, map[string]any{}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func finishAgentRunCancelledTx(ctx context.Context, tx pgx.Tx, runID string, reason string, now time.Time) error {
+	commandTag, err := tx.Exec(ctx, `
+		update steward_agent_runs
+		set status = $2, failure_summary = $3, cancel_requested = false,
+		    updated_at = $4, completed_at = coalesce(completed_at, $4)
+		where id = $1 and status in ('draft','planning','awaiting_approval','queued','running','verifying','compensating')
+	`, runID, RuntimeRunCancelled, reason, now)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		update steward_tool_invocations
+		set status = $2, error_summary = $3, finished_at = coalesce(finished_at, $4), lease_expires_at = null
+		where run_id = $1 and status = $5
+	`, runID, RuntimeStepCancelled, reason, now, RuntimeStepRunning); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		update steward_run_steps
+		set status = $2, last_error = $3, updated_at = $4, completed_at = coalesce(completed_at, $4)
+		where run_id = $1 and status in ('pending','running','verifying','blocked')
+	`, runID, RuntimeStepCancelled, reason, now); err != nil {
+		return err
+	}
+	return appendRuntimeEvent(ctx, tx, runID, nil, "run.cancelled", RuntimeRunCancelled, reason, map[string]any{"cancel_requested": true})
 }
 
 func (s *Service) pauseAgentRunForApproval(ctx context.Context, runID string, stepID string) error {
@@ -930,27 +1016,64 @@ func (s *Service) RecoverAgentRuntime(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	now := time.Now().UTC()
+	cancelRows, err := tx.Query(ctx, `
+		select id::text from steward_agent_runs
+		where cancel_requested = true and status in ($1,$2,$3,$4,$5)
+		for update
+	`, RuntimeRunQueued, RuntimeRunAwaitingApproval, RuntimeRunRunning, RuntimeRunVerifying, RuntimeRunCompensating)
+	if err != nil {
+		return 0, err
+	}
+	var cancelRunIDs []string
+	for cancelRows.Next() {
+		var runID string
+		if err := cancelRows.Scan(&runID); err != nil {
+			cancelRows.Close()
+			return 0, err
+		}
+		cancelRunIDs = append(cancelRunIDs, runID)
+	}
+	cancelRows.Close()
+	if err := cancelRows.Err(); err != nil {
+		return 0, err
+	}
+	for _, runID := range cancelRunIDs {
+		if err := finishAgentRunCancelledTx(ctx, tx, runID, "cancellation observed during runtime recovery", now); err != nil {
+			return 0, err
+		}
+	}
 	rows, err := tx.Query(ctx, `
-		select id::text from steward_agent_runs where status in ($1,$2) for update
+		select id::text, cancel_requested from steward_agent_runs where status in ($1,$2) for update
 	`, RuntimeRunRunning, RuntimeRunVerifying)
 	if err != nil {
 		return 0, err
 	}
-	var runIDs []string
+	type recoveryRun struct {
+		id              string
+		cancelRequested bool
+	}
+	var runIDs []recoveryRun
 	for rows.Next() {
-		var runID string
-		if err := rows.Scan(&runID); err != nil {
+		var run recoveryRun
+		if err := rows.Scan(&run.id, &run.cancelRequested); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		runIDs = append(runIDs, runID)
+		runIDs = append(runIDs, run)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	now := time.Now().UTC()
-	for _, runID := range runIDs {
+	for _, run := range runIDs {
+		runID := run.id
+		if run.cancelRequested {
+			if err := finishAgentRunCancelledTx(ctx, tx, runID, "cancellation observed during runtime recovery", now); err != nil {
+				return 0, err
+			}
+			continue
+		}
 		var activeStepID, idempotencyMode string
 		err := tx.QueryRow(ctx, `
 			select id::text, tool_idempotency
@@ -1027,7 +1150,7 @@ func (s *Service) RecoverAgentRuntime(ctx context.Context) (int, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return len(runIDs), nil
+	return len(cancelRunIDs) + len(runIDs), nil
 }
 
 func sanitizeRuntimeError(err error) string {

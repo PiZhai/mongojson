@@ -124,10 +124,10 @@ Describe 'Steward atomic release publication' {
       $result.succeeded|Should Be $false
       $result.error|Should Match 'Injected release build failure before atomic publication'
       (Test-Path -LiteralPath $output)|Should Be $false
-      @(Get-ChildItem -LiteralPath $parent -Force -Filter ('.'+$leaf+'.stage-*') -ErrorAction SilentlyContinue).Count|Should Be 0
+      @(Get-ChildItem -LiteralPath $parent -Force -Filter '.stg-*' -ErrorAction SilentlyContinue).Count|Should Be 0
     }finally{
       Remove-Item -LiteralPath $output -Recurse -Force -ErrorAction SilentlyContinue
-      Get-ChildItem -LiteralPath $parent -Force -Filter ('.'+$leaf+'.stage-*') -ErrorAction SilentlyContinue|Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+      Get-ChildItem -LiteralPath $parent -Force -Filter '.stg-*' -ErrorAction SilentlyContinue|Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
 }

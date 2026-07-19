@@ -611,7 +611,7 @@ func TestProbeAutonomyAdvisorReturnsSuggestion(t *testing.T) {
 
 func TestResilientAutonomyAdvisorOpensCircuitAfterConsecutiveFailures(t *testing.T) {
 	now := time.Date(2026, 7, 6, 9, 0, 0, 0, time.UTC)
-	base := &scriptedAutonomyAdvisor{err: errors.New("upstream unavailable")}
+	base := &scriptedAutonomyAdvisor{err: &advisorHTTPError{Operation: "probe", StatusCode: 503, Status: "503 Service Unavailable", ProviderMsg: "upstream unavailable"}}
 	advisor := &resilientAutonomyAdvisor{
 		base:             base,
 		failureThreshold: 2,

@@ -165,6 +165,8 @@ type StewardConversationStore interface {
 	DecideConversationSuggestion(context.Context, string, steward.DecideConversationSuggestionInput) (domain.StewardConversationSuggestion, error)
 	DecideConversationExecution(context.Context, string, steward.DecideConversationExecutionInput) (domain.StewardConversationExecution, error)
 	GetAgentEpisode(context.Context, string) (domain.StewardAgentEpisode, error)
+	GetAgentEpisodeOverview(context.Context, string, int) (domain.StewardAgentEpisode, error)
+	ListAgentEpisodeTurnsPage(context.Context, string, int, int) (domain.StewardAgentTurnPage, error)
 	DecideAgentEpisode(context.Context, string, steward.DecideAgentEpisodeInput) (domain.StewardAgentEpisode, error)
 }
 
@@ -365,6 +367,7 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/steward/conversation-suggestions/{id}/decision", handler.decideStewardConversationSuggestion)
 		r.Post("/steward/conversation-executions/{id}/decision", handler.decideStewardConversationExecution)
 		r.Get("/steward/agent-episodes/{id}", handler.getStewardAgentEpisode)
+		r.Get("/steward/agent-episodes/{id}/turns", handler.listStewardAgentEpisodeTurns)
 		r.Post("/steward/agent-episodes/{id}/decision", handler.decideStewardAgentEpisode)
 		r.Get("/steward/model-settings", handler.getStewardModelSettings)
 		r.Patch("/steward/model-settings", handler.updateStewardModelSettings)

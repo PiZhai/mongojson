@@ -192,9 +192,12 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 		return SendConversationMessageResult{}, err
 	}
 	level, _ = ClassifyObservationDataLevel(CreateObservationInput{DataLevel: level, Summary: content})
-	history, err := s.conversationAdvisorHistory(ctx, conversationID, 12)
-	if err != nil {
-		return SendConversationMessageResult{}, err
+	var history []ConversationAdvisorMessage
+	if !supportsNativeAgentTurns(s.autonomyAdvisor()) {
+		history, err = s.conversationAdvisorHistory(ctx, conversationID, 12)
+		if err != nil {
+			return SendConversationMessageResult{}, err
+		}
 	}
 	userMessage, err := s.insertConversationMessage(ctx, conversationID, conversationRoleUser, content, level, "", "")
 	if err != nil {
@@ -229,10 +232,6 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	if contextLimit <= 0 || contextLimit > 20 {
 		contextLimit = 10
 	}
-	localContext, err := s.conversationContext(ctx, content, level, contextLimit)
-	if err != nil {
-		return SendConversationMessageResult{}, err
-	}
 	response := localConversationFallback(content)
 	model := "local-fallback"
 	dataPolicy, policyErr := s.ResolveDataPolicy(ctx, level, "conversation")
@@ -240,7 +239,23 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	// model requests is evaluated separately against the tool's real A-level.
 	permissionPolicy, permissionErr := s.ResolvePermissionPolicy(ctx, PermissionA3, "model:conversation")
 	modelAllowed := policyErr == nil && permissionErr == nil && dataPolicyAllowsManualModel(dataPolicy) && permissionPolicy.ExecutionMode != PolicyModeDeny
-	if s.autonomyAdvisor().Status().Enabled && modelAllowed {
+	advisorEnabled := s.autonomyAdvisor().Status().Enabled
+	if advisorEnabled && modelAllowed && supportsNativeAgentTurns(s.autonomyAdvisor()) {
+		progress, _, queueErr := s.enqueueConversationAgentEpisode(ctx, conversation, userMessage, content, level)
+		if queueErr != nil {
+			return SendConversationMessageResult{}, queueErr
+		}
+		conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
+		if err != nil {
+			return SendConversationMessageResult{}, err
+		}
+		return SendConversationMessageResult{Conversation: conversation, Message: progress}, nil
+	}
+	localContext, err := s.conversationContext(ctx, content, level, contextLimit)
+	if err != nil {
+		return SendConversationMessageResult{}, err
+	}
+	if advisorEnabled && modelAllowed {
 		modelContent := conversationModelText(content, level, dataPolicy.ModelContentMode)
 		modelHistory := conversationModelHistory(history, dataPolicy.ModelContentMode)
 		devices := s.conversationAdvisorDevices(ctx)
@@ -325,6 +340,43 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 		return SendConversationMessageResult{}, err
 	}
 	return SendConversationMessageResult{Conversation: conversation, Message: assistantMessage}, nil
+}
+
+func (s *Service) enqueueConversationAgentEpisode(ctx context.Context, conversation domain.StewardConversation, trigger domain.StewardConversationMessage, goal, level string) (domain.StewardConversationMessage, domain.StewardAgentEpisode, error) {
+	values, err := s.loadModelSettings(ctx)
+	if err != nil {
+		return domain.StewardConversationMessage{}, domain.StewardAgentEpisode{}, err
+	}
+	limits := normalizeAgentLoopLimits(values)
+	now := time.Now().UTC()
+	episode := domain.StewardAgentEpisode{
+		ID: uuid.NewString(), ConversationID: conversation.ID, TriggerMessageID: trigger.ID,
+		TriggerKind: "conversation", Goal: goal, DataLevel: level, Status: agentEpisodeThinking,
+		CurrentRound: 0, ToolCallCount: 0, MaxRounds: limits.MaxRounds, MaxToolCalls: limits.MaxToolCalls,
+		MaxDurationSeconds: limits.MaxDurationSeconds, NoProgressLimit: limits.NoProgressLimit,
+		HydratedToolNames: []string{}, CurrentToolVersions: map[string]string{}, CatalogGeneration: s.runtimeTools.generationValue(),
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if limits.MaxDurationSeconds > 0 {
+		deadline := now.Add(time.Duration(limits.MaxDurationSeconds) * time.Second)
+		episode.DeadlineAt = &deadline
+	}
+	if err := s.insertAgentEpisode(ctx, episode); err != nil {
+		return domain.StewardConversationMessage{}, episode, err
+	}
+	progress, err := s.insertConversationMessage(ctx, conversation.ID, conversationRoleAssistant,
+		"已收到，我会持续分析、调用工具并在这里更新结果。", level, "agent-loop-r4.9", "agent-queued:"+episode.ID)
+	if err != nil {
+		_ = s.failAgentEpisode(ctx, episode.ID, err)
+		return progress, episode, err
+	}
+	if _, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set progress_message_id=$2,updated_at=$3 where id=$1`, episode.ID, progress.ID, now); err != nil {
+		_ = s.failAgentEpisode(ctx, episode.ID, err)
+		return progress, episode, err
+	}
+	episode.ProgressMessageID = progress.ID
+	progress.Episodes = []domain.StewardAgentEpisode{episode}
+	return progress, episode, nil
 }
 
 func (s *Service) conversationAdvisorDevices(ctx context.Context) []ConversationAdvisorDevice {
@@ -454,7 +506,12 @@ func (s *Service) insertConversationMessage(ctx context.Context, conversationID,
 func (s *Service) conversationAdvisorHistory(ctx context.Context, conversationID string, limit int) ([]ConversationAdvisorMessage, error) {
 	rows, err := s.db.Pool.Query(ctx, `
 		select id, role, content, data_level, payload_encrypted, encrypted_payload from (
-			select id, role, content, data_level, payload_encrypted, encrypted_payload, created_at from steward_conversation_messages where conversation_id = $1 order by created_at desc limit $2
+			select id, role, content, data_level, payload_encrypted, encrypted_payload, created_at
+			from steward_conversation_messages
+			where conversation_id = $1 and not (
+				role = 'assistant' and (model = 'agent-loop-r4.9' or context_summary like 'agent-queued:%')
+			)
+			order by created_at desc limit $2
 		) recent order by created_at
 	`, conversationID, limit)
 	if err != nil {

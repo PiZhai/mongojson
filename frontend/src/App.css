@@ -1288,6 +1288,96 @@
 .steward-execution-actions { justify-content: flex-end; }
 .steward-execution-evidence code { color: #475569; font-size: 12px; }
 
+.steward-agent-progress {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.steward-agent-progress-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--steward-line, var(--border));
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.steward-agent-progress-tool small,
+.steward-agent-result-summary small,
+.steward-agent-progress .steward-execution-failure small,
+.steward-agent-progress-details small {
+  display: block;
+  color: var(--steward-muted, var(--text-muted));
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.steward-agent-progress-tool strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.steward-agent-result-summary,
+.steward-agent-progress > .steward-execution-failure {
+  margin: 0;
+}
+
+.steward-agent-details-toggle {
+  justify-self: start;
+}
+
+.steward-agent-progress-details {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--steward-line, var(--border));
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.steward-agent-progress-details p {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+}
+
+.steward-agent-turn-history {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--steward-line, var(--border));
+}
+
+.steward-agent-history-toggle {
+  justify-self: start;
+  min-height: 44px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: #334155;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+
+.steward-agent-history-toggle:hover {
+  color: #2563eb;
+}
+
+.steward-agent-history-toggle:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.2);
+  outline-offset: 2px;
+}
+
+.steward-agent-turn-list {
+  display: grid;
+  gap: 8px;
+}
+
 .steward-message-pending {
   color: var(--steward-muted, var(--text-muted));
 }

@@ -735,12 +735,21 @@ func (s *Service) reconcileRemoteOutbox(ctx context.Context, limit int) (int, er
 			now := time.Now().UTC()
 			_, _ = s.db.Pool.Exec(ctx, `
 				update steward_remote_dispatches set status='cancelled', last_error='cancelled before remote acceptance',
-				       updated_at=$2, completed_at=$2, cancel_requested=false where id=$1
+				       updated_at=$2, completed_at=$2, cancel_requested=false
+				where id=$1 and status='pending' and cancel_requested=true
 			`, value.id, now)
 			continue
 		} else if value.status == "pending" || value.status == "sent" {
 			if value.status == "pending" {
-				_, _ = s.db.Pool.Exec(ctx, `update steward_remote_dispatches set status='sent', updated_at=now() where id=$1 and status='pending'`, value.id)
+				tag, updateErr := s.db.Pool.Exec(ctx, `update steward_remote_dispatches set status='sent', updated_at=now()
+					where id=$1 and status='pending' and cancel_requested=false`, value.id)
+				if updateErr != nil {
+					return 0, updateErr
+				}
+				if tag.RowsAffected() != 1 {
+					continue
+				}
+				value.status = "sent"
 			}
 			var payload RemoteExecutionDispatchPayload
 			if err := json.Unmarshal(value.payload, &payload); err != nil {
@@ -750,8 +759,8 @@ func (s *Service) reconcileRemoteOutbox(ctx context.Context, limit int) (int, er
 				now := time.Now().UTC()
 				_, _ = s.db.Pool.Exec(ctx, `
 					update steward_remote_dispatches set status='blocked',
-					       last_error='Broker delegation expired before target acceptance',
-					       updated_at=$2, completed_at=$2 where id=$1
+					       last_error='Broker delegation expired before target acceptance', updated_at=$2, completed_at=$2
+					where id=$1 and status in ('pending','sent') and cancel_requested=false
 				`, value.id, now)
 				continue
 			}
@@ -793,7 +802,7 @@ func (s *Service) recordRemoteDispatchError(ctx context.Context, dispatchID stri
 	_, _ = s.db.Pool.Exec(ctx, `
 		update steward_remote_dispatches set attempt=least(attempt+1,100), last_error=$2,
 		       available_at=now()+interval '1 second' * least(greatest(attempt+1,1),30), updated_at=now()
-		where id=$1
+		where id=$1 and status in ('pending','sent','accepted','running')
 	`, dispatchID, sanitizeRuntimeError(cause))
 }
 
@@ -854,15 +863,20 @@ func (s *Service) acceptRemoteStatus(ctx context.Context, item struct {
 		completed = defaultTime(payload.CompletedAt, payload.HeartbeatAt)
 		resultSignature = envelope.Signature
 	}
+	// Fence the network response against any control decision or newer status
+	// response committed after the outbox row was read. In particular, an old
+	// running response must never overwrite cancellation or a newer terminal
+	// receipt, and heartbeats are monotonic even while status stays "running".
 	_, err := s.db.Pool.Exec(ctx, `
 		update steward_remote_dispatches set status=$2, remote_run_id=$3, heartbeat_at=$4,
 		       lease_expires_at=$5, result_payload=$6::jsonb, result_signature=$7,
 		       last_error=$8, attempt=attempt+1, available_at=$9, updated_at=now(), completed_at=$10,
 		       cancel_requested=case when $10::timestamptz is not null then false else cancel_requested end
-		where id=$1
+		where id=$1 and status=$11 and cancel_requested=$12
+		  and (heartbeat_at is null or heartbeat_at <= $4)
 	`, item.id, payload.Status, payload.RemoteRunID, payload.HeartbeatAt, payload.LeaseExpiresAt,
 		string(encodedResult), resultSignature, payload.FailureSummary,
-		time.Now().UTC().Add(s.remoteExecutionLease/3), completed)
+		time.Now().UTC().Add(s.remoteExecutionLease/3), completed, item.status, item.cancelRequested)
 	return err
 }
 

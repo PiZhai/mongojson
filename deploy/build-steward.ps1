@@ -143,7 +143,13 @@ function New-ProtectedBuildStage {
   }
   New-Item -ItemType Directory -Force -Path $parent | Out-Null
 
-  $stage = Join-Path $parent ("." + $leaf + ".stage-" + [guid]::NewGuid().ToString("N"))
+  # Keep the sibling stage name deliberately short. Windows' FileCatalog
+  # implementation still reaches MAX_PATH-era hashing code even when normal
+  # PowerShell file APIs can read the same payload. Repeating a long release
+  # name here made deeply nested UI assets cross that boundary during signing.
+  # A GUID keeps concurrent stages unique while the shared parent preserves the
+  # same-volume atomic rename required by Publish-StagedBuild.
+  $stage = Join-Path $parent (".stg-" + [guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $stage | Out-Null
   try {
     if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {

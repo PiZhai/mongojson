@@ -76,6 +76,49 @@ func TestSyncPayloadEncryptionDecryptsPreviousKey(t *testing.T) {
 	}
 }
 
+func TestSyncPayloadEncryptionDecryptsKeysSharingID(t *testing.T) {
+	const keyID = "sync-key-stable"
+	oldKey := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	newKey := []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+	oldEncrypted, err := encryptSyncPayload(testSyncPayloadCipher(keyID, oldKey), "aad", map[string]any{"title": "old private task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentEncrypted, err := encryptSyncPayload(testSyncPayloadCipher(keyID, newKey), "aad", map[string]any{"title": "current private task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("STEWARD_SYNC_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(newKey))
+	t.Setenv("STEWARD_SYNC_ENCRYPTION_KEY_ID", keyID)
+	t.Setenv("STEWARD_SYNC_ENCRYPTION_PREVIOUS_KEYS", keyID+":"+base64.StdEncoding.EncodeToString(oldKey))
+	rotatedConfig, err := syncPayloadKeyringFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		envelope  map[string]any
+		wantTitle string
+	}{
+		{name: "previous key", envelope: oldEncrypted, wantTitle: "old private task"},
+		{name: "current key", envelope: currentEncrypted, wantTitle: "current private task"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decrypted, err := decryptSyncPayload(rotatedConfig, "aad", tt.envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decrypted["title"] != tt.wantTitle {
+				t.Fatalf("unexpected decrypted payload: %#v", decrypted)
+			}
+		})
+	}
+}
+
 func TestPrepareImportSyncChangesDecryptsTransportPayload(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	t.Setenv("STEWARD_SYNC_ENCRYPTION_KEY", key)
@@ -182,6 +225,43 @@ func TestDecryptStoredSyncPayloadAcceptsPreviousLocalKey(t *testing.T) {
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(newKey))
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY_ID", "local-key-v1")
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS", "local-key-v0:"+base64.StdEncoding.EncodeToString(oldKey))
+
+	decrypted, err := decryptStoredSyncPayload(change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decrypted["title"] != "old local memory" {
+		t.Fatalf("unexpected decrypted local payload: %#v", decrypted)
+	}
+}
+
+func TestDecryptStoredSyncPayloadAcceptsPreviousLocalKeySharingID(t *testing.T) {
+	const keyID = "windows-local-v1"
+	oldKey := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	newKey := []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	change := domain.StewardSyncChange{
+		ID:             "11111111-1111-1111-1111-111111111111",
+		EntityType:     EntityMemory,
+		EntityID:       "22222222-2222-2222-2222-222222222222",
+		Operation:      SyncCreate,
+		OriginDeviceID: "windows-main",
+		Version:        1,
+		DataLevel:      DataD1,
+	}
+	encrypted, err := encryptPayloadEnvelope(
+		testSyncPayloadCipher(keyID, oldKey),
+		syncChangeEncryptionAAD(change),
+		map[string]any{"title": "old local memory"},
+		SyncEncryptionScopeLocalAtRest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change.Payload = encrypted
+
+	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(newKey))
+	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY_ID", keyID)
+	t.Setenv("STEWARD_LOCAL_ENCRYPTION_PREVIOUS_KEYS", keyID+":"+base64.StdEncoding.EncodeToString(oldKey))
 
 	decrypted, err := decryptStoredSyncPayload(change)
 	if err != nil {

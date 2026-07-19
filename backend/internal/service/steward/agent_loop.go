@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"mongojson/backend/internal/domain"
 )
@@ -28,7 +29,36 @@ const (
 
 	agentAskUserTool    = "steward.ask_user"
 	agentStaySilentTool = "steward.stay_silent"
+
+	agentModelFailureLimit         = 5
+	agentTechnicalRetryDelay       = 5 * time.Second
+	agentTranscriptRecentTurnLimit = 20
+	agentTranscriptSummaryBudget   = 16000
+	agentTranscriptRecentBudget    = 96000
 )
+
+var errAgentEpisodeClaimLost = errors.New("agent episode claim lost")
+
+// agentModelTurnError marks failures from the actual model-decision stage.
+// Database, catalog, dispatch and tool-runtime failures must not consume the
+// model failure budget.
+type agentModelTurnError struct {
+	cause error
+}
+
+func (e *agentModelTurnError) Error() string {
+	if e == nil || e.cause == nil {
+		return "agent model turn failed"
+	}
+	return e.cause.Error()
+}
+
+func (e *agentModelTurnError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
 
 type DecideAgentEpisodeInput struct {
 	Decision       string `json:"decision"`
@@ -56,18 +86,19 @@ func normalizeAgentLoopLimits(values modelSettingsValues) agentLoopLimits {
 }
 
 func nextValidAgentTurn(ctx context.Context, advisor AgentTurnAdvisor, input AgentTurnInput) (AgentTurnDecision, error) {
-	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		decision, err := advisor.NextTurn(ctx, input)
-		if err == nil && (strings.TrimSpace(decision.Content) != "" || len(decision.ToolCalls) > 0) {
+		if err != nil {
+			// A second identical request can hide the provider's original error and,
+			// after the breaker opens, replace it with a less useful circuit-open
+			// message. Only an otherwise successful but empty response is retried.
+			return AgentTurnDecision{}, err
+		}
+		if strings.TrimSpace(decision.Content) != "" || len(decision.ToolCalls) > 0 {
 			return decision, nil
 		}
-		if err == nil {
-			err = fmt.Errorf("agent model returned neither text nor tool calls")
-		}
-		lastErr = err
 	}
-	return AgentTurnDecision{}, lastErr
+	return AgentTurnDecision{}, fmt.Errorf("agent model returned neither text nor tool calls")
 }
 
 func (s *Service) startAgentEpisode(ctx context.Context, conversation domain.StewardConversation, trigger domain.StewardConversationMessage, goal, level, triggerKind string, decision AgentTurnDecision) (domain.StewardConversationMessage, domain.StewardAgentEpisode, error) {
@@ -107,10 +138,18 @@ func (s *Service) startAgentEpisode(ctx context.Context, conversation domain.Ste
 	}
 	message, err := s.applyAgentTurnDecision(ctx, conversation, trigger, episode, turn)
 	if err != nil {
-		_ = s.failAgentEpisode(ctx, episode.ID, err)
-		return message, episode, err
+		// The model decision is already durable. Convert a local preflight or
+		// dispatch rejection into a tool result so the next model turn can choose
+		// another route, just as an interactive tool agent would. If persistence
+		// itself is unavailable this recovery also fails and remains terminal.
+		message, recoveryErr := s.recordUndispatchedAgentTurnError(ctx, episode, turn, err)
+		if recoveryErr != nil {
+			_ = s.failAgentEpisode(ctx, episode.ID, errors.Join(err, recoveryErr))
+			return message, episode, errors.Join(err, recoveryErr)
+		}
+		err = nil
 	}
-	episode, _ = s.GetAgentEpisode(ctx, episode.ID)
+	episode, _ = s.GetAgentEpisodeOverview(ctx, episode.ID, agentEpisodeOverviewTurnLimit)
 	if message.ID != "" {
 		message.Episodes = []domain.StewardAgentEpisode{episode}
 	}
@@ -142,6 +181,14 @@ func (s *Service) insertAgentEpisode(ctx context.Context, item domain.StewardAge
 }
 
 func (s *Service) insertAgentTurn(ctx context.Context, item domain.StewardAgentTurn) error {
+	return insertAgentTurnWithExecer(ctx, s.db.Pool, item)
+}
+
+type agentTurnExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func insertAgentTurnWithExecer(ctx context.Context, execer agentTurnExecer, item domain.StewardAgentTurn) error {
 	if item.ToolCalls == nil {
 		item.ToolCalls = []domain.StewardAgentToolCall{}
 	}
@@ -150,7 +197,7 @@ func (s *Service) insertAgentTurn(ctx context.Context, item domain.StewardAgentT
 	}
 	calls, _ := json.Marshal(item.ToolCalls)
 	results, _ := json.Marshal(item.ToolResults)
-	_, err := s.db.Pool.Exec(ctx, `
+	_, err := execer.Exec(ctx, `
 		insert into steward_agent_turns (
 			id,episode_id,round_index,status,assistant_content,reasoning_content,tool_calls,tool_results,
 			provider,model,provider_response_id,execution_id,failure_summary,created_at,updated_at,completed_at
@@ -243,7 +290,7 @@ func (s *Service) listAgentEpisodesForMessage(ctx context.Context, messageID str
 	rows.Close()
 	items := make([]domain.StewardAgentEpisode, 0, len(ids))
 	for _, id := range ids {
-		item, err := s.GetAgentEpisode(ctx, id)
+		item, err := s.GetAgentEpisodeOverview(ctx, id, agentEpisodeOverviewTurnLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -311,6 +358,9 @@ func (s *Service) rejectAgentControlBatch(ctx context.Context, episode domain.St
 }
 
 func (s *Service) dispatchAgentTurn(ctx context.Context, conversation domain.StewardConversation, trigger domain.StewardConversationMessage, episode domain.StewardAgentEpisode, turn domain.StewardAgentTurn) (domain.StewardConversationMessage, error) {
+	if message, found, err := s.resumeExistingAgentTurnExecution(ctx, episode, turn); err != nil || found {
+		return message, err
+	}
 	steps := make([]CreateAgentRunStepInput, 0, len(turn.ToolCalls))
 	stepTargets := map[string]string{}
 	uniqueTargets := map[string]conversationExecutionTarget{}
@@ -338,47 +388,303 @@ func (s *Service) dispatchAgentTurn(ctx context.Context, conversation domain.Ste
 	if len(turn.ToolCalls) == 1 {
 		idempotencyKey = fmt.Sprintf("agent:%s:%d:%s", episode.ID, turn.RoundIndex, turn.ToolCalls[0].ID)
 	}
-	message, execution, err := s.createConversationExecutionFromPlanLinked(ctx, conversation, trigger, episode.Goal, episode.DataLevel, target, plan, agentExecutionLink{
-		EpisodeID: episode.ID, TurnID: turn.ID, RoundIndex: turn.RoundIndex, IdempotencyKey: idempotencyKey, StepTargets: stepTargets,
+	message, execution, found, err := s.ensureAgentTurnExecution(ctx, episode, turn, func() (domain.StewardConversationMessage, domain.StewardConversationExecution, error) {
+		return s.createConversationExecutionFromPlanLinked(ctx, conversation, trigger, episode.Goal, episode.DataLevel, target, plan, agentExecutionLink{
+			EpisodeID: episode.ID, TurnID: turn.ID, RoundIndex: turn.RoundIndex, IdempotencyKey: idempotencyKey, StepTargets: stepTargets,
+		})
 	})
 	if err != nil {
 		return message, err
 	}
-	now := time.Now().UTC()
+	if !found {
+		return message, fmt.Errorf("agent turn %s dispatch did not create a linked execution", turn.ID)
+	}
 	if strings.TrimSpace(turn.AssistantContent) != "" {
 		_, _ = s.db.Pool.Exec(ctx, `update steward_conversation_messages set content=$2 where id=$1`, message.ID, truncateAdvisorText(turn.AssistantContent, 8000))
 		message.Content = truncateAdvisorText(turn.AssistantContent, 8000)
 	}
-	_, err = s.db.Pool.Exec(ctx, `update steward_agent_turns set status='tools_running',execution_id=$2,updated_at=$3 where id=$1`, turn.ID, execution.ID, now)
-	if err == nil {
-		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='executing',active_execution_id=$2,progress_message_id=$3,
-		       updated_at=$4,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`, episode.ID, execution.ID, message.ID, now)
+	return s.reconcileLinkedAgentTurnExecution(ctx, episode, message, execution)
+}
+
+func (s *Service) resumeExistingAgentTurnExecution(ctx context.Context, episode domain.StewardAgentEpisode, turn domain.StewardAgentTurn) (domain.StewardConversationMessage, bool, error) {
+	message, execution, found, err := s.ensureAgentTurnExecution(ctx, episode, turn, nil)
+	if err != nil || !found {
+		return message, found, err
+	}
+	message, err = s.reconcileLinkedAgentTurnExecution(ctx, episode, message, execution)
+	return message, true, err
+}
+
+type agentTurnExecutionFactory func() (domain.StewardConversationMessage, domain.StewardConversationExecution, error)
+
+// ensureAgentTurnExecution serializes dispatch and recovery for one durable
+// model-complete turn. The shared row locks keep pause/cancel updates ordered
+// around child creation while remaining compatible with the foreign-key locks
+// taken when the linked conversation execution is inserted.
+func (s *Service) ensureAgentTurnExecution(ctx context.Context, episode domain.StewardAgentEpisode, turn domain.StewardAgentTurn, factory agentTurnExecutionFactory) (domain.StewardConversationMessage, domain.StewardConversationExecution, bool, error) {
+	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return domain.StewardConversationMessage{}, domain.StewardConversationExecution{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1,0))`, "steward-agent-turn-dispatch:"+turn.ID); err != nil {
+		return domain.StewardConversationMessage{}, domain.StewardConversationExecution{}, false, err
+	}
+	var episodeStatus, activeExecutionID string
+	var controlGeneration int64
+	if err = tx.QueryRow(ctx, `select status,control_generation,coalesce(active_execution_id::text,'')
+		from steward_agent_episodes where id=$1 for share`, episode.ID).Scan(&episodeStatus, &controlGeneration, &activeExecutionID); err != nil {
+		return domain.StewardConversationMessage{}, domain.StewardConversationExecution{}, false, err
+	}
+	var turnStatus, turnExecutionID string
+	if err = tx.QueryRow(ctx, `select status,coalesce(execution_id::text,'') from steward_agent_turns
+		where id=$1 and episode_id=$2 for share`, turn.ID, episode.ID).Scan(&turnStatus, &turnExecutionID); err != nil {
+		return domain.StewardConversationMessage{}, domain.StewardConversationExecution{}, false, err
+	}
+
+	executionID, messageID, findErr := findAgentTurnExecution(ctx, tx, turn.ID, turnExecutionID, activeExecutionID)
+	if findErr != nil && !errors.Is(findErr, pgx.ErrNoRows) {
+		return domain.StewardConversationMessage{}, domain.StewardConversationExecution{}, false, findErr
+	}
+	var message domain.StewardConversationMessage
+	var createErr error
+	if executionID == "" {
+		if factory == nil {
+			return message, domain.StewardConversationExecution{}, false, nil
+		}
+		if episodeStatus != agentEpisodeThinking || controlGeneration != episode.ControlGeneration || activeExecutionID != "" || turnStatus != "model_complete" || turnExecutionID != "" {
+			return message, domain.StewardConversationExecution{}, false, errAgentEpisodeClaimLost
+		}
+		var created domain.StewardConversationExecution
+		message, created, createErr = factory()
+		executionID, messageID, findErr = findAgentTurnExecution(ctx, tx, turn.ID, created.ID, activeExecutionID)
+		if findErr != nil {
+			if createErr != nil {
+				return message, created, false, createErr
+			}
+			if errors.Is(findErr, pgx.ErrNoRows) {
+				return message, created, false, fmt.Errorf("agent turn %s dispatch created no linked execution", turn.ID)
+			}
+			return message, created, false, findErr
+		}
+	}
+	if message.ID == "" {
+		message = domain.StewardConversationMessage{ID: messageID, ConversationID: episode.ConversationID}
+	}
+
+	linkableTurn := turnStatus == "model_complete" || turnStatus == "tools_running"
+	linkableEpisode := controlGeneration == episode.ControlGeneration &&
+		(episodeStatus == agentEpisodeThinking || episodeStatus == agentEpisodeExecuting) &&
+		(activeExecutionID == "" || activeExecutionID == executionID) &&
+		(turnExecutionID == "" || turnExecutionID == executionID)
+	if linkableTurn && linkableEpisode {
+		now := time.Now().UTC()
+		tag, updateErr := tx.Exec(ctx, `update steward_agent_turns set status='tools_running',execution_id=$2,updated_at=$3
+			where id=$1 and episode_id=$4 and status in ('model_complete','tools_running')
+			and (execution_id is null or execution_id=$2)`, turn.ID, executionID, now, episode.ID)
+		if updateErr != nil {
+			return message, domain.StewardConversationExecution{}, true, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return message, domain.StewardConversationExecution{}, true, errAgentEpisodeClaimLost
+		}
+		tag, updateErr = tx.Exec(ctx, `update steward_agent_episodes set status='executing',active_execution_id=$2,progress_message_id=$3,
+			updated_at=$4,lease_owner='',lease_expires_at=null,version=version+1
+			where id=$1 and control_generation=$5 and status in ('thinking','executing')
+			and (active_execution_id is null or active_execution_id=$2)`, episode.ID, executionID, messageID, now, controlGeneration)
+		if updateErr != nil {
+			return message, domain.StewardConversationExecution{}, true, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return message, domain.StewardConversationExecution{}, true, errAgentEpisodeClaimLost
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return message, domain.StewardConversationExecution{}, true, err
+	}
+	execution, err := s.getConversationExecution(ctx, executionID)
+	if err != nil {
+		return message, domain.StewardConversationExecution{}, true, err
+	}
+	return message, execution, true, createErr
+}
+
+type agentTurnExecutionQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func findAgentTurnExecution(ctx context.Context, queryer agentTurnExecutionQueryer, turnID, preferredExecutionID, activeExecutionID string) (string, string, error) {
+	var executionID, messageID string
+	err := queryer.QueryRow(ctx, `select id::text,message_id::text from steward_conversation_executions
+		where turn_id=$1 order by
+			case when id=nullif($2,'')::uuid then 0 when id=nullif($3,'')::uuid then 1 else 2 end,
+			created_at desc,id desc limit 1`, turnID, preferredExecutionID, activeExecutionID).Scan(&executionID, &messageID)
+	return executionID, messageID, err
+}
+
+func (s *Service) reconcileLinkedAgentTurnExecution(ctx context.Context, episode domain.StewardAgentEpisode, message domain.StewardConversationMessage, execution domain.StewardConversationExecution) (domain.StewardConversationMessage, error) {
+	// If the child execution reached a terminal state before the episode link
+	// was restored, refresh may have had no state transition to trigger the
+	// normal completion callback. Reconcile it explicitly.
+	if runtimeRunTerminal(execution.Status) {
+		if refreshed, getErr := s.getAgentEpisodeState(ctx, episode.ID); getErr == nil && refreshed.Status == agentEpisodeExecuting && refreshed.ActiveExecutionID == execution.ID {
+			results, resultErr := s.agentConversationExecutionResults(ctx, execution)
+			if resultErr != nil {
+				return message, resultErr
+			}
+			if completeErr := s.completeAgentEpisodeExecution(ctx, execution, results); completeErr != nil {
+				return message, completeErr
+			}
+		}
 	}
 	message.Executions = []domain.StewardConversationExecution{execution}
+	return message, nil
+}
+
+func (s *Service) agentConversationExecutionResults(ctx context.Context, execution domain.StewardConversationExecution) ([]ConversationToolResult, error) {
+	switch {
+	case execution.Kind == conversationExecutionRun && execution.RunID != "":
+		run, err := s.GetAgentRun(ctx, execution.RunID)
+		if err != nil {
+			return nil, err
+		}
+		return s.conversationRunToolResults(ctx, run), nil
+	case execution.Kind == conversationExecutionOrchestration && execution.OrchestrationID != "":
+		orchestration, err := s.GetOrchestration(ctx, execution.OrchestrationID)
+		if err != nil {
+			return nil, err
+		}
+		return s.conversationOrchestrationToolResults(ctx, orchestration), nil
+	default:
+		return nil, fmt.Errorf("agent execution %s has no runtime subject", execution.ID)
+	}
+}
+
+func pendingModelCompleteAgentTurn(episode domain.StewardAgentEpisode) (domain.StewardAgentTurn, bool) {
+	for index := len(episode.Turns) - 1; index >= 0; index-- {
+		turn := episode.Turns[index]
+		if turn.RoundIndex >= episode.CurrentRound && turn.Status == "model_complete" {
+			return turn, true
+		}
+	}
+	return domain.StewardAgentTurn{}, false
+}
+
+func (s *Service) resumePersistedAgentTurn(ctx context.Context, episode domain.StewardAgentEpisode, turn domain.StewardAgentTurn) error {
+	if turn.RoundIndex > episode.CurrentRound {
+		externalCalls := countExternalAgentCalls(turn.ToolCalls)
+		if _, err := s.db.Pool.Exec(ctx, `update steward_agent_episodes set current_round=$2,
+			tool_call_count=tool_call_count+$3,model_failure_count=0,updated_at=$4
+			where id=$1 and current_round<$2`, episode.ID, turn.RoundIndex, externalCalls, time.Now().UTC()); err != nil {
+			return err
+		}
+		episode.CurrentRound = turn.RoundIndex
+		episode.ToolCallCount += externalCalls
+	}
+	conversation, err := s.getConversation(ctx, episode.ConversationID)
+	if err != nil {
+		return err
+	}
+	trigger, err := s.agentEpisodeTriggerMessage(ctx, episode.TriggerMessageID)
+	if err != nil {
+		return err
+	}
+	_, err = s.applyAgentTurnDecision(ctx, conversation, trigger, episode, turn)
+	if err == nil {
+		return nil
+	}
+	_, recoveryErr := s.recordUndispatchedAgentTurnError(ctx, episode, turn, err)
+	if recoveryErr != nil {
+		return errors.Join(err, recoveryErr)
+	}
+	return nil
+}
+
+func (s *Service) agentEpisodeTriggerMessage(ctx context.Context, id string) (domain.StewardConversationMessage, error) {
+	var trigger domain.StewardConversationMessage
+	err := s.db.Pool.QueryRow(ctx, `select id::text,conversation_id::text,role,content,data_level,model,context_summary,false,created_at
+		from steward_conversation_messages where id=$1`, id).Scan(
+		&trigger.ID, &trigger.ConversationID, &trigger.Role, &trigger.Content, &trigger.DataLevel, &trigger.Model,
+		&trigger.ContextSummary, &trigger.PayloadEncrypted, &trigger.CreatedAt)
+	return trigger, err
+}
+
+func (s *Service) recordUndispatchedAgentTurnError(ctx context.Context, episode domain.StewardAgentEpisode, turn domain.StewardAgentTurn, cause error) (domain.StewardConversationMessage, error) {
+	// A partially created child execution takes precedence over synthesizing a
+	// failure result. Re-linking by turn_id prevents duplicate side effects.
+	if message, found, err := s.resumeExistingAgentTurnExecution(ctx, episode, turn); err != nil || found {
+		return message, err
+	}
+	if errors.Is(cause, errAgentEpisodeClaimLost) {
+		return domain.StewardConversationMessage{}, nil
+	}
+	var runnable bool
+	if err := s.db.Pool.QueryRow(ctx, `select exists(select 1 from steward_agent_episodes
+		where id=$1 and status='thinking' and control_generation=$2)`, episode.ID, episode.ControlGeneration).Scan(&runnable); err != nil || !runnable {
+		return domain.StewardConversationMessage{}, err
+	}
+	messageText := "工具未能执行，模型会根据真实错误尝试其他方法。"
+	var message domain.StewardConversationMessage
+	var err error
+	if episode.TriggerKind == "conversation" {
+		message, err = s.insertConversationMessage(ctx, episode.ConversationID, conversationRoleAssistant, messageText,
+			episode.DataLevel, turn.Model, "agent-tool-dispatch-error:"+turn.ID)
+		if err != nil {
+			return message, err
+		}
+	}
+	failure := sanitizeRuntimeError(cause)
+	results := make([]domain.StewardAgentToolResult, 0, len(turn.ToolCalls))
+	for _, call := range turn.ToolCalls {
+		results = append(results, domain.StewardAgentToolResult{
+			ToolCallID: call.ID,
+			ToolName:   call.ToolName,
+			Error:      "工具未执行：" + failure,
+		})
+	}
+	encoded, _ := json.Marshal(results)
+	now := time.Now().UTC()
+	if _, err = s.db.Pool.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,
+		failure_summary=$3,completed_at=$4,updated_at=$4 where id=$1 and status='model_complete'`,
+		turn.ID, string(encoded), failure, now); err != nil {
+		return message, err
+	}
+	_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='thinking',active_execution_id=null,
+		progress_message_id=coalesce(nullif($2,'')::uuid,progress_message_id),last_result_summary=$3,failure_summary=$3,
+		updated_at=$4,lease_owner='',lease_expires_at=$5,version=version+1
+		where id=$1 and status='thinking' and control_generation=$6`,
+		episode.ID, message.ID, failure, now, now.Add(agentTechnicalRetryDelay), episode.ControlGeneration)
 	return message, err
 }
 
 func (s *Service) completeAgentEpisodeExecution(ctx context.Context, execution domain.StewardConversationExecution, raw []ConversationToolResult) error {
-	episode, err := s.GetAgentEpisode(ctx, execution.EpisodeID)
+	episode, err := s.getAgentEpisodeState(ctx, execution.EpisodeID)
 	if err != nil || episode.Status != agentEpisodeExecuting {
 		return err
 	}
-	var turn *domain.StewardAgentTurn
-	for index := range episode.Turns {
-		if episode.Turns[index].ID == execution.TurnID {
-			turn = &episode.Turns[index]
-			break
-		}
+	if episode.ActiveExecutionID != execution.ID {
+		return nil
 	}
-	if turn == nil {
-		return fmt.Errorf("agent turn %s not found", execution.TurnID)
+	turn, err := s.getAgentTurn(ctx, episode.ID, execution.TurnID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("agent turn %s not found", execution.TurnID)
+		}
+		return err
+	}
+	if turn.ExecutionID != "" && turn.ExecutionID != execution.ID {
+		return fmt.Errorf("agent turn %s belongs to execution %s, not %s", turn.ID, turn.ExecutionID, execution.ID)
 	}
 	results := make([]domain.StewardAgentToolResult, 0, len(turn.ToolCalls))
 	for index, call := range turn.ToolCalls {
 		result := domain.StewardAgentToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Evidence: execution.Evidence}
 		if index < len(raw) {
-			result.Output = compactAgentToolOutput(raw[index].Output, execution.Evidence)
-			result.Error = raw[index].Error
+			if raw[index].ToolName != "" && raw[index].ToolName != call.ToolName {
+				result.Error = fmt.Sprintf("tool result mapping mismatch: expected %s, received %s", call.ToolName, raw[index].ToolName)
+			} else {
+				result.Error = raw[index].Error
+				result.Output = compactAgentToolOutput(call.ToolName, result.Error == "", raw[index].Output, execution.Evidence)
+			}
 		}
 		if result.Error == "" && execution.Status != RuntimeRunSucceeded && index >= len(raw) {
 			result.Error = defaultString(execution.FailureSummary, "tool execution failed")
@@ -409,30 +715,57 @@ func (s *Service) completeAgentEpisodeExecution(ctx context.Context, execution d
 	}
 	now := time.Now().UTC()
 	summary := summarizeAgentResults(results)
-	_, err = s.db.Pool.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,call_fingerprint=$3,
-		       result_fingerprint=$4,completed_at=$5,updated_at=$5 where id=$1`, turn.ID, string(resultsJSON), callFingerprint, resultFingerprint, now)
-	if err == nil {
-		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='thinking',active_execution_id=null,no_progress_count=$2,
-		       last_call_fingerprint=$3,last_result_fingerprint=$4,last_result_summary=$5,
-		       updated_at=$6,lease_owner='',lease_expires_at=null,version=version+1
-		where id=$1 and status='executing'`, episode.ID, noProgress, callFingerprint, resultFingerprint, summary, now)
+	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var activeStatus, activeExecutionID string
+	err = tx.QueryRow(ctx, `select status,coalesce(active_execution_id::text,'') from steward_agent_episodes where id=$1 for update`, episode.ID).Scan(&activeStatus, &activeExecutionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
 	}
 	if err != nil {
 		return err
 	}
+	if activeStatus != agentEpisodeExecuting || activeExecutionID != execution.ID {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,call_fingerprint=$3,
+		       result_fingerprint=$4,completed_at=$5,updated_at=$5 where id=$1 and episode_id=$6 and execution_id=$7`,
+		turn.ID, string(resultsJSON), callFingerprint, resultFingerprint, now, episode.ID, execution.ID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return nil
+	}
+	tag, err = tx.Exec(ctx, `update steward_agent_episodes set status='thinking',active_execution_id=null,no_progress_count=$2,
+		       last_call_fingerprint=$3,last_result_fingerprint=$4,last_result_summary=$5,
+		       updated_at=$6,lease_owner='',lease_expires_at=null,version=version+1
+		where id=$1 and status='executing' and active_execution_id=$7`, episode.ID, noProgress, callFingerprint, resultFingerprint, summary, now, execution.ID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return nil
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
 	if !supportsNativeAgentTurns(s.autonomyAdvisor()) {
-		updated, getErr := s.GetAgentEpisode(ctx, episode.ID)
+		updated, getErr := s.getAgentEpisodeState(ctx, episode.ID)
 		if getErr != nil {
 			return getErr
 		}
 		turn.ToolResults = results
-		_, finishErr := s.finishAgentEpisode(ctx, updated, *turn, "已完成："+summary, false)
+		_, finishErr := s.finishAgentEpisode(ctx, updated, turn, "已完成："+summary, false)
 		return finishErr
 	}
 	return nil
 }
 
-func compactAgentToolOutput(output, evidence map[string]any) map[string]any {
+func compactAgentToolOutput(toolName string, succeeded bool, output, evidence map[string]any) map[string]any {
 	if output == nil {
 		return map[string]any{}
 	}
@@ -440,10 +773,166 @@ func compactAgentToolOutput(output, evidence map[string]any) map[string]any {
 	if len(encoded) <= 32768 {
 		return output
 	}
-	return map[string]any{
+	compacted := map[string]any{
 		"truncated": true, "size_bytes": len(encoded), "sha256": agentFingerprint(encoded),
 		"summary": truncateAdvisorText(string(encoded), 6000), "evidence": evidence,
 	}
+	if succeeded && (toolName == "tool.describe" || toolName == "tool.create" || toolName == "tool.update") {
+		if name, ok := output["name"].(string); ok && strings.TrimSpace(name) != "" {
+			compacted["name"] = name
+		}
+	}
+	return compacted
+}
+
+// buildAgentTranscript keeps recent native tool-call/tool-result pairs intact
+// while collapsing arbitrarily old history into one assistant-only summary.
+// This makes very long Episodes bounded without ever emitting orphan tool
+// messages, which OpenAI-compatible providers reject.
+func buildAgentTranscript(turns []domain.StewardAgentTurn) []AgentTurnTranscript {
+	if len(turns) == 0 {
+		return []AgentTurnTranscript{}
+	}
+	recentStart := len(turns) - agentTranscriptRecentTurnLimit
+	if recentStart < 0 {
+		recentStart = 0
+	}
+	transcript := make([]AgentTurnTranscript, 0, len(turns)-recentStart+1)
+	if recentStart > 0 {
+		transcript = append(transcript, AgentTurnTranscript{AssistantContent: summarizeCompletedAgentTurns(turns[:recentStart], agentTranscriptSummaryBudget)})
+	}
+	recent := turns[recentStart:]
+	perTurnBudget := agentTranscriptRecentBudget
+	if len(recent) > 0 {
+		perTurnBudget /= len(recent)
+	}
+	if perTurnBudget < 2000 {
+		perTurnBudget = 2000
+	}
+	for _, turn := range recent {
+		transcript = append(transcript, compactAgentTurnForTranscript(turn, perTurnBudget))
+	}
+	return transcript
+}
+
+func compactAgentTurnForTranscript(turn domain.StewardAgentTurn, budget int) AgentTurnTranscript {
+	itemCount := 2 + len(turn.ToolCalls)*2
+	perItem := budget / agentMaxInt(itemCount, 1)
+	if perItem < 256 {
+		perItem = 256
+	}
+	if perItem > 4000 {
+		perItem = 4000
+	}
+	resultByCall := make(map[string]domain.StewardAgentToolResult, len(turn.ToolResults))
+	for _, result := range turn.ToolResults {
+		resultByCall[result.ToolCallID] = result
+	}
+	calls := make([]domain.StewardAgentToolCall, 0, len(turn.ToolCalls))
+	results := make([]domain.StewardAgentToolResult, 0, len(turn.ToolCalls))
+	for _, call := range turn.ToolCalls {
+		compactedCall := call
+		compactedCall.Arguments = compactAgentTranscriptMap(call.Arguments, perItem)
+		calls = append(calls, compactedCall)
+		result, found := resultByCall[call.ID]
+		if !found {
+			result = domain.StewardAgentToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Error: "历史工具结果未完整落库"}
+		}
+		result.ToolCallID = call.ID
+		result.ToolName = defaultString(result.ToolName, call.ToolName)
+		result.Error = truncateAdvisorText(result.Error, perItem)
+		result.Output = compactAgentTranscriptMap(result.Output, perItem)
+		result.Evidence = compactAgentTranscriptMap(result.Evidence, agentMinInt(perItem, 1000))
+		results = append(results, result)
+	}
+	return AgentTurnTranscript{
+		AssistantContent: truncateAdvisorText(turn.AssistantContent, perItem),
+		ReasoningContent: truncateAdvisorText(turn.ReasoningContent, perItem),
+		ToolCalls:        calls,
+		ToolResults:      results,
+	}
+}
+
+func compactAgentTranscriptMap(value map[string]any, budget int) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	encoded, _ := json.Marshal(value)
+	if len([]rune(string(encoded))) <= budget {
+		return value
+	}
+	summaryBudget := budget - 120
+	if summaryBudget < 80 {
+		summaryBudget = 80
+	}
+	return map[string]any{
+		"compacted_summary": truncateAdvisorText(string(encoded), summaryBudget),
+		"sha256":            agentFingerprint(encoded),
+	}
+}
+
+func summarizeCompletedAgentTurns(turns []domain.StewardAgentTurn, budget int) string {
+	lines := []string{fmt.Sprintf("较早的 %d 个已持久化回合已压缩；以下是可验证摘要：", len(turns))}
+	for _, turn := range turns {
+		toolNames := make([]string, 0, len(turn.ToolCalls))
+		for _, call := range turn.ToolCalls {
+			toolNames = append(toolNames, call.ToolName)
+		}
+		succeeded, failed := 0, 0
+		evidence := []string{}
+		resultFacts := []string{}
+		for _, result := range turn.ToolResults {
+			if strings.TrimSpace(result.Error) == "" {
+				succeeded++
+				if len(removeAgentGovernance(result.Output)) > 0 {
+					// Prefer the semantic formatter over a raw JSON prefix. Large
+					// directory listings and search results commonly sort bulky arrays
+					// before the path/identifier fields in JSON, causing the durable
+					// working fact to be truncated out of long-history summaries.
+					resultFacts = append(resultFacts, result.ToolName+"="+truncateAdvisorText(summarizeAgentToolSuccess(result.ToolName, result.Output), 360))
+				}
+			} else {
+				failed++
+				resultFacts = append(resultFacts, result.ToolName+" error="+truncateAdvisorText(result.Error, 240))
+			}
+			if len(result.Evidence) > 0 {
+				encoded, _ := json.Marshal(result.Evidence)
+				evidence = append(evidence, truncateAdvisorText(string(encoded), 240))
+			}
+		}
+		line := fmt.Sprintf("- 第%d轮 status=%s tools=[%s] success=%d failed=%d",
+			turn.RoundIndex, turn.Status, strings.Join(toolNames, ","), succeeded, failed)
+		if len(evidence) > 0 {
+			line += " evidence=" + strings.Join(evidence, ",")
+		}
+		if len(resultFacts) > 0 {
+			line += " results=" + strings.Join(resultFacts, ";")
+		}
+		if strings.TrimSpace(turn.AssistantContent) != "" {
+			line += " reply=" + truncateAdvisorText(turn.AssistantContent, 300)
+		}
+		candidate := strings.Join(append(lines, line), "\n")
+		if len([]rune(candidate)) > budget {
+			lines = append(lines, "- 其余更早回合省略；原始回合和证据仍保存在 Episode 中。")
+			break
+		}
+		lines = append(lines, line)
+	}
+	return truncateAdvisorText(strings.Join(lines, "\n"), budget)
+}
+
+func agentMinInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func agentMaxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func agentFingerprint(value []byte) string {
@@ -523,11 +1012,65 @@ func summarizeAgentResults(results []domain.StewardAgentToolResult) string {
 		if result.Error != "" {
 			parts = append(parts, result.ToolName+" 失败："+truncateAdvisorText(result.Error, 300))
 		} else {
-			encoded, _ := json.Marshal(result.Output)
-			parts = append(parts, result.ToolName+"："+truncateAdvisorText(string(encoded), 500))
+			parts = append(parts, result.ToolName+"："+summarizeAgentToolSuccess(result.ToolName, result.Output))
 		}
 	}
 	return truncateAdvisorText(strings.Join(parts, "；"), 2000)
+}
+
+func removeAgentGovernance(output map[string]any) map[string]any {
+	clean := cloneStringAnyMap(output)
+	delete(clean, "_governance")
+	return clean
+}
+
+func summarizeAgentToolSuccess(toolName string, output map[string]any) string {
+	clean := removeAgentGovernance(output)
+	stringValue := func(keys ...string) string {
+		for _, key := range keys {
+			if value, ok := clean[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+		return ""
+	}
+	numberValue := func(key string) string {
+		if value, ok := clean[key]; ok && value != nil {
+			return fmt.Sprint(value)
+		}
+		return ""
+	}
+	switch toolName {
+	case "screen.capture":
+		path := stringValue("path", "saved_path", "output_path")
+		dimensions := ""
+		if width, height := numberValue("width"), numberValue("height"); width != "" && height != "" {
+			dimensions = width + "×" + height
+		}
+		return defaultString(strings.TrimSpace(strings.Join([]string{path, dimensions}, " ")), "截图已保存")
+	case "fs.get_known_folders":
+		return "已获取当前登录用户的桌面、文档、下载等已知目录"
+	case "fs.list":
+		path := stringValue("path", "directory")
+		count := numberValue("count")
+		if count == "" {
+			if entries, ok := clean["entries"].([]any); ok {
+				count = fmt.Sprint(len(entries))
+			}
+		}
+		if count != "" {
+			return strings.TrimSpace(path + " 共 " + count + " 项")
+		}
+		return defaultString(path, "目录已列出")
+	case "fs.move", "fs.copy":
+		target := stringValue("destination", "target", "to", "path")
+		return defaultString(target, "文件操作已完成")
+	}
+	encoded, _ := json.Marshal(clean)
+	if len(clean) == 0 {
+		return "已完成"
+	}
+	return truncateAdvisorText(string(encoded), 320)
 }
 
 func (s *Service) RunAgentEpisodeCycle(ctx context.Context, limit int) (int, error) {
@@ -538,17 +1081,19 @@ func (s *Service) RunAgentEpisodeCycle(ctx context.Context, limit int) (int, err
 	if err == nil && (control.Stopped || control.Paused) {
 		return 0, nil
 	}
-	worker := s.agentIDValue() + ":agent-loop"
+	if err := s.repairExecutingAgentEpisodes(ctx, limit); err != nil {
+		return 0, err
+	}
+	// Discover candidates without mutating their claims. The durable claim is
+	// written only after this worker owns the PostgreSQL session advisory lock.
+	// If a slow model call outlives its lease, another service therefore cannot
+	// overwrite lease_owner before noticing that the first worker is still live.
+	worker := s.agentIDValue() + ":agent-loop:" + uuid.NewString()
 	rows, err := s.db.Pool.Query(ctx, `
-		with candidates as (
-			select id from steward_agent_episodes
-			where status='thinking' and (lease_expires_at is null or lease_expires_at<now())
-			order by updated_at for update skip locked limit $1
-		)
-		update steward_agent_episodes episode set lease_owner=$2,lease_expires_at=now()+interval '90 seconds',
-		       updated_at=now(),version=version+1
-		from candidates where episode.id=candidates.id returning episode.id::text
-	`, limit, worker)
+		select id::text from steward_agent_episodes
+		where status='thinking' and (lease_expires_at is null or lease_expires_at<now())
+		order by updated_at limit $1
+	`, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -564,14 +1109,29 @@ func (s *Service) RunAgentEpisodeCycle(ctx context.Context, limit int) (int, err
 	rows.Close()
 	processed := 0
 	for _, id := range ids {
-		if err := s.advanceAgentEpisode(ctx, id); err != nil {
-			var failures int
-			updateErr := s.db.Pool.QueryRow(ctx, `update steward_agent_episodes set failure_summary=$2,model_failure_count=model_failure_count+1,
-				lease_owner='',lease_expires_at=null,updated_at=now() where id=$1 and status='thinking' returning model_failure_count`, id, sanitizeRuntimeError(err)).Scan(&failures)
-			if updateErr == nil && failures >= 5 {
-				if episode, getErr := s.GetAgentEpisode(ctx, id); getErr == nil {
-					_ = s.finishAgentEpisodeWithText(ctx, episode, "模型连续失败，循环 Agent 已停止："+sanitizeRuntimeError(err), agentEpisodeFailed)
-				}
+		claimed := false
+		locked, advanceErr := s.withAgentEpisodeAdvisoryLock(ctx, id, func() error {
+			tag, claimErr := s.db.Pool.Exec(ctx, `update steward_agent_episodes
+				set lease_owner=$2,lease_expires_at=now()+interval '90 seconds',updated_at=now(),version=version+1
+				where id=$1 and status='thinking' and (lease_expires_at is null or lease_expires_at<now())`, id, worker)
+			if claimErr != nil {
+				return claimErr
+			}
+			if tag.RowsAffected() != 1 {
+				return nil
+			}
+			claimed = true
+			return s.advanceAgentEpisode(ctx, id, worker)
+		})
+		if !locked {
+			continue
+		}
+		if !claimed && advanceErr == nil {
+			continue
+		}
+		if advanceErr != nil {
+			if claimed {
+				_ = s.handleAgentEpisodeAdvanceError(ctx, id, advanceErr)
 			}
 			continue
 		}
@@ -580,10 +1140,120 @@ func (s *Service) RunAgentEpisodeCycle(ctx context.Context, limit int) (int, err
 	return processed, nil
 }
 
-func (s *Service) advanceAgentEpisode(ctx context.Context, id string) error {
-	episode, err := s.GetAgentEpisode(ctx, id)
+func (s *Service) withAgentEpisodeAdvisoryLock(ctx context.Context, id string, fn func() error) (bool, error) {
+	conn, err := s.db.Pool.Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Release()
+	lockKey := "steward-agent-episode:" + id
+	var locked bool
+	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock(hashtextextended($1,0))`, lockKey).Scan(&locked); err != nil || !locked {
+		return locked, err
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var ignored bool
+		_ = conn.QueryRow(unlockCtx, `select pg_advisory_unlock(hashtextextended($1,0))`, lockKey).Scan(&ignored)
+	}()
+	return true, fn()
+}
+
+func (s *Service) repairExecutingAgentEpisodes(ctx context.Context, limit int) error {
+	rows, err := s.db.Pool.Query(ctx, `select id::text,active_execution_id::text from steward_agent_episodes
+		where status='executing' and active_execution_id is not null order by updated_at limit $1`, limit)
+	if err != nil {
+		return err
+	}
+	type candidate struct{ episodeID, executionID string }
+	candidates := []candidate{}
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.episodeID, &item.executionID); err != nil {
+			rows.Close()
+			return err
+		}
+		candidates = append(candidates, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range candidates {
+		execution, err := s.getConversationExecution(ctx, item.executionID)
+		if err != nil {
+			return err
+		}
+		if !runtimeRunTerminal(execution.Status) {
+			continue
+		}
+		results, err := s.agentConversationExecutionResults(ctx, execution)
+		if err != nil {
+			return err
+		}
+		if err := s.completeAgentEpisodeExecution(ctx, execution, results); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) handleAgentEpisodeAdvanceError(ctx context.Context, id string, cause error) error {
+	if errors.Is(cause, errAgentEpisodeClaimLost) {
+		return nil
+	}
+	now := time.Now().UTC()
+	var modelErr *agentModelTurnError
+	if !errors.As(cause, &modelErr) {
+		// A persisted model_complete turn can fail while being dispatched (for
+		// example, a temporarily unavailable session path). Keep it runnable and
+		// do not mislabel that infrastructure failure as a provider failure.
+		_, err := s.db.Pool.Exec(ctx, `update steward_agent_episodes set failure_summary=$2,
+			lease_owner='',lease_expires_at=$3,updated_at=$4
+			where id=$1 and status='thinking'`, id, sanitizeRuntimeError(cause), now.Add(agentTechnicalRetryDelay), now)
+		return err
+	}
+
+	if retryAt, open := advisorCircuitRetryAt(cause); open {
+		if !retryAt.After(now) {
+			retryAt = now.Add(time.Second)
+		}
+		// The breaker rejected this turn before a provider request was made. Do
+		// not increment model_failure_count and do not overwrite the original
+		// provider error already stored in failure_summary.
+		_, err := s.db.Pool.Exec(ctx, `update steward_agent_episodes set
+			lease_owner='',lease_expires_at=$2,updated_at=$3
+			where id=$1 and status='thinking'`, id, retryAt, now)
+		return err
+	}
+
+	var failures int
+	err := s.db.Pool.QueryRow(ctx, `update steward_agent_episodes set failure_summary=$2,
+		model_failure_count=model_failure_count+1,lease_owner='',lease_expires_at=$3,updated_at=$4
+		where id=$1 and status='thinking' returning model_failure_count`,
+		id, sanitizeRuntimeError(cause), now.Add(agentTechnicalRetryDelay), now).Scan(&failures)
+	if err != nil || failures < agentModelFailureLimit {
+		return err
+	}
+	episode, getErr := s.getAgentEpisodeState(ctx, id)
+	if getErr != nil {
+		return getErr
+	}
+	return s.finishAgentEpisodeWithText(ctx, episode,
+		"模型连续请求失败，任务已暂停。修复模型连接后可点击继续："+sanitizeRuntimeError(cause), agentEpisodeBlocked)
+}
+
+func (s *Service) advanceAgentEpisode(ctx context.Context, id, claimID string) error {
+	episode, err := s.GetAgentEpisodeForLoop(ctx, id)
 	if err != nil || episode.Status != agentEpisodeThinking {
 		return err
+	}
+	if err := s.verifyAgentEpisodeClaim(ctx, episode.ID, claimID, episode.ControlGeneration); err != nil {
+		return err
+	}
+	if pending, ok := pendingModelCompleteAgentTurn(episode); ok {
+		return s.resumePersistedAgentTurn(ctx, episode, pending)
 	}
 	if episode.DeadlineAt != nil && time.Now().After(*episode.DeadlineAt) {
 		return s.finishAgentEpisodeWithText(ctx, episode, "任务已达到最长运行时间，已停止继续调用工具。", agentEpisodeBlocked)
@@ -609,24 +1279,7 @@ func (s *Service) advanceAgentEpisode(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	transcript := make([]AgentTurnTranscript, 0, len(episode.Turns))
-	for index, turn := range episode.Turns {
-		results := turn.ToolResults
-		reasoning := turn.ReasoningContent
-		if index < len(episode.Turns)-4 && len(results) > 0 {
-			compacted := make([]domain.StewardAgentToolResult, 0, len(results))
-			for _, result := range results {
-				encoded, _ := json.Marshal(result.Output)
-				compacted = append(compacted, domain.StewardAgentToolResult{
-					ToolCallID: result.ToolCallID, ToolName: result.ToolName, Error: truncateAdvisorText(result.Error, 1000), Evidence: result.Evidence,
-					Output: map[string]any{"compacted_summary": truncateAdvisorText(string(encoded), 2000), "sha256": agentFingerprint(encoded)},
-				})
-			}
-			results = compacted
-			reasoning = ""
-		}
-		transcript = append(transcript, AgentTurnTranscript{AssistantContent: truncateAdvisorText(turn.AssistantContent, 4000), ReasoningContent: reasoning, ToolCalls: turn.ToolCalls, ToolResults: results})
-	}
+	transcript := buildAgentTranscript(episode.Turns)
 	notice := ""
 	if episode.NoProgressCount >= episode.NoProgressLimit {
 		notice = "最近多轮调用产生了相同结果。请反思目标，改用其他工具或给出最终结论，不要重复相同调用。"
@@ -635,14 +1288,14 @@ func (s *Service) advanceAgentEpisode(ctx context.Context, id string) error {
 	if catalogErr != nil {
 		return catalogErr
 	}
-	decision, err := nextValidAgentTurn(ctx, advisor, AgentTurnInput{
+	decision, err := nextAgentTurnWithContextRecovery(ctx, advisor, AgentTurnInput{
 		Message: episode.Goal, DataLevel: episode.DataLevel, TriggerKind: episode.TriggerKind,
 		History: history, Transcript: transcript, Context: localContext, Tools: modelTools, ToolCatalog: toolCatalog,
 		Devices: s.conversationAdvisorDevices(ctx), KnownFolders: runtimeKnownFolders(), CurrentTime: time.Now(),
 		Round: episode.CurrentRound + 1, ToolCallCount: episode.ToolCallCount, Deadline: episode.DeadlineAt, NoProgressNotice: notice,
 	})
 	if err != nil {
-		return err
+		return &agentModelTurnError{cause: err}
 	}
 	externalCalls := countExternalAgentCalls(decision.ToolCalls)
 	if episode.MaxToolCalls > 0 && episode.ToolCallCount+externalCalls > episode.MaxToolCalls {
@@ -655,32 +1308,67 @@ func (s *Service) advanceAgentEpisode(ctx context.Context, id string) error {
 		Provider: s.autonomyAdvisor().Status().Provider, Model: s.autonomyAdvisor().Status().Model,
 		ProviderResponseID: decision.ProviderResponseID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.insertAgentTurn(ctx, turn); err != nil {
+	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
 		return err
 	}
-	_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set current_round=$2,tool_call_count=tool_call_count+$3,model_failure_count=0,failure_summary='',updated_at=$4 where id=$1`, episode.ID, turn.RoundIndex, externalCalls, now)
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := insertAgentTurnWithExecer(ctx, tx, turn); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `update steward_agent_episodes set current_round=$2,tool_call_count=tool_call_count+$3,
+		model_failure_count=0,failure_summary='',updated_at=$4 where id=$1 and status='thinking'
+		and lease_owner=$5 and control_generation=$6`, episode.ID, turn.RoundIndex, externalCalls, now, claimID, episode.ControlGeneration)
 	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errAgentEpisodeClaimLost
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
 	episode.CurrentRound = turn.RoundIndex
 	episode.ToolCallCount += externalCalls
-	conversation, err := s.getConversation(ctx, episode.ConversationID)
-	if err != nil {
+	return s.resumePersistedAgentTurn(ctx, episode, turn)
+}
+
+func (s *Service) verifyAgentEpisodeClaim(ctx context.Context, id, claimID string, generation int64) error {
+	var valid bool
+	if err := s.db.Pool.QueryRow(ctx, `select exists(select 1 from steward_agent_episodes
+		where id=$1 and status='thinking' and lease_owner=$2 and control_generation=$3)`,
+		id, claimID, generation).Scan(&valid); err != nil {
 		return err
 	}
-	var trigger domain.StewardConversationMessage
-	if err := s.db.Pool.QueryRow(ctx, `select id::text,conversation_id::text,role,content,data_level,model,context_summary,false,created_at from steward_conversation_messages where id=$1`, episode.TriggerMessageID).Scan(
-		&trigger.ID, &trigger.ConversationID, &trigger.Role, &trigger.Content, &trigger.DataLevel, &trigger.Model, &trigger.ContextSummary, &trigger.PayloadEncrypted, &trigger.CreatedAt); err != nil {
-		return err
+	if !valid {
+		return errAgentEpisodeClaimLost
 	}
-	_, err = s.applyAgentTurnDecision(ctx, conversation, trigger, episode, turn)
-	return err
+	return nil
 }
 
 func (s *Service) finishAgentEpisode(ctx context.Context, episode domain.StewardAgentEpisode, turn domain.StewardAgentTurn, text string, silent bool) (domain.StewardConversationMessage, error) {
 	now := time.Now().UTC()
+	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return domain.StewardConversationMessage{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var currentStatus, activeExecutionID, turnStatus string
+	var controlGeneration int64
+	if err = tx.QueryRow(ctx, `select status,control_generation,coalesce(active_execution_id::text,'')
+		from steward_agent_episodes where id=$1 for update`, episode.ID).Scan(&currentStatus, &controlGeneration, &activeExecutionID); err != nil {
+		return domain.StewardConversationMessage{}, err
+	}
+	if currentStatus != agentEpisodeThinking || controlGeneration != episode.ControlGeneration || activeExecutionID != "" {
+		return domain.StewardConversationMessage{}, nil
+	}
+	if err = tx.QueryRow(ctx, `select status from steward_agent_turns where id=$1 and episode_id=$2 for update`, turn.ID, episode.ID).Scan(&turnStatus); err != nil {
+		return domain.StewardConversationMessage{}, err
+	}
+	if turnStatus != "model_complete" && turnStatus != "tools_complete" {
+		return domain.StewardConversationMessage{}, nil
+	}
 	var message domain.StewardConversationMessage
-	var err error
 	if !silent {
 		message, err = s.insertConversationMessage(ctx, episode.ConversationID, conversationRoleAssistant, text, episode.DataLevel, turn.Model, "agent-final:"+episode.ID)
 		if err != nil {
@@ -691,13 +1379,26 @@ func (s *Service) finishAgentEpisode(ctx context.Context, episode domain.Steward
 	if silent {
 		status = "silent"
 	}
-	_, err = s.db.Pool.Exec(ctx, `update steward_agent_turns set status=$2,completed_at=$3,updated_at=$3 where id=$1`, turn.ID, status, now)
-	if err == nil {
-		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='completed',final_message_id=nullif($2,'')::uuid,
-		       progress_message_id=coalesce(nullif($2,'')::uuid,progress_message_id),active_execution_id=null,
-		       completed_at=$3,updated_at=$3,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`, episode.ID, message.ID, now)
-	}
+	tag, err := tx.Exec(ctx, `update steward_agent_turns set status=$2,completed_at=$3,updated_at=$3
+		where id=$1 and episode_id=$4 and status in ('model_complete','tools_complete')`, turn.ID, status, now, episode.ID)
 	if err != nil {
+		return message, err
+	}
+	if tag.RowsAffected() != 1 {
+		return domain.StewardConversationMessage{}, nil
+	}
+	tag, err = tx.Exec(ctx, `update steward_agent_episodes set status='completed',final_message_id=nullif($2,'')::uuid,
+		progress_message_id=coalesce(nullif($2,'')::uuid,progress_message_id),active_execution_id=null,
+		completed_at=$3,updated_at=$3,lease_owner='',lease_expires_at=null,version=version+1
+		where id=$1 and status='thinking' and control_generation=$4 and active_execution_id is null`,
+		episode.ID, message.ID, now, episode.ControlGeneration)
+	if err != nil {
+		return message, err
+	}
+	if tag.RowsAffected() != 1 {
+		return domain.StewardConversationMessage{}, nil
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return message, err
 	}
 	if memoryErr := s.recordAgentEpisodeMemory(ctx, episode.ID); memoryErr != nil {
@@ -719,7 +1420,7 @@ func (s *Service) finishAgentEpisodeWithText(ctx context.Context, episode domain
 }
 
 func (s *Service) failAgentEpisode(ctx context.Context, id string, cause error) error {
-	episode, err := s.GetAgentEpisode(ctx, id)
+	episode, err := s.getAgentEpisodeState(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -738,39 +1439,48 @@ func (s *Service) failAgentEpisode(ctx context.Context, id string, cause error) 
 }
 
 func (s *Service) recordAgentEpisodeMemory(ctx context.Context, id string) error {
-	episode, err := s.GetAgentEpisode(ctx, id)
+	episode, err := s.GetAgentEpisodeForLoop(ctx, id)
 	if err != nil {
 		return err
 	}
 	confirmed := true
-	details := []string{episode.Goal}
-	for _, turn := range episode.Turns {
-		if strings.TrimSpace(turn.AssistantContent) != "" {
-			details = append(details, turn.AssistantContent)
-		}
-		for _, call := range turn.ToolCalls {
-			details = append(details, call.ToolName)
-		}
-	}
+	details := buildAgentEpisodeMemoryDetails(episode)
 	memory, err := s.CreateMemory(ctx, CreateMemoryInput{
 		Type: "execution_episode", Title: "已完成：" + truncateAdvisorText(episode.Goal, 200),
-		Summary: fmt.Sprintf("循环 Agent 用 %d 轮、%d 次工具调用完成任务：%s", episode.CurrentRound, episode.ToolCallCount, truncateAdvisorText(strings.Join(details, "；"), 1000)),
-		Content: strings.Join(details, "\n"), Scope: "conversation:" + episode.ConversationID, Source: "agent_episode",
+		Summary: fmt.Sprintf("循环 Agent 用 %d 轮、%d 次工具调用完成任务：%s", episode.CurrentRound, episode.ToolCallCount, truncateAdvisorText(strings.ReplaceAll(details, "\n", "；"), 1000)),
+		Content: details, Scope: "conversation:" + episode.ConversationID, Source: "agent_episode",
 		DataLevel: episode.DataLevel, PermissionLevel: PermissionA9, Confidence: 1, UserConfirmed: &confirmed,
 	})
 	if err != nil {
 		return err
 	}
-	for _, turn := range episode.Turns {
-		if turn.ExecutionID != "" {
-			_, _ = s.CreateSourceRef(ctx, CreateSourceRefInput{TargetType: "memory", TargetID: memory.ID, SourceType: "conversation_execution", SourceID: turn.ExecutionID, Summary: fmt.Sprintf("Agent 第 %d 轮", turn.RoundIndex), Confidence: 1})
-		}
-	}
-	return nil
+	return s.forEachAgentEpisodeExecution(ctx, episode.ID, func(item agentExecutionReference) error {
+		_, refErr := s.CreateSourceRef(ctx, CreateSourceRefInput{
+			TargetType: "memory", TargetID: memory.ID, SourceType: "conversation_execution", SourceID: item.ExecutionID,
+			Summary: fmt.Sprintf("Agent 第 %d 轮", item.RoundIndex), Confidence: 1,
+		})
+		return refErr
+	})
 }
 
 func (s *Service) DecideAgentEpisode(ctx context.Context, id string, input DecideAgentEpisodeInput) (domain.StewardAgentEpisode, error) {
-	episode, err := s.GetAgentEpisode(ctx, id)
+	var result domain.StewardAgentEpisode
+	locked, err := s.withAgentEpisodeAdvisoryLock(ctx, id, func() error {
+		var decisionErr error
+		result, decisionErr = s.decideAgentEpisodeLocked(ctx, id, input)
+		return decisionErr
+	})
+	if err != nil {
+		return result, err
+	}
+	if !locked {
+		return result, fmt.Errorf("agent episode is busy; retry the control action")
+	}
+	return result, nil
+}
+
+func (s *Service) decideAgentEpisodeLocked(ctx context.Context, id string, input DecideAgentEpisodeInput) (domain.StewardAgentEpisode, error) {
+	episode, err := s.getAgentEpisodeState(ctx, id)
 	if err != nil {
 		return episode, err
 	}
@@ -778,46 +1488,152 @@ func (s *Service) DecideAgentEpisode(ctx context.Context, id string, input Decid
 	now := time.Now().UTC()
 	switch decision {
 	case "pause":
+		tag, updateErr := s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='paused',control_generation=control_generation+1,
+			updated_at=$2,lease_owner='',lease_expires_at=null,version=version+1
+			where id=$1 and control_generation=$3 and status in ('thinking','executing')`, id, now, episode.ControlGeneration)
+		if updateErr != nil {
+			return episode, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return episode, fmt.Errorf("agent episode cannot pause from %s", episode.Status)
+		}
+		episode.ControlGeneration++
+		episode.Status = agentEpisodePaused
 		if episode.ActiveExecutionID != "" {
-			if execution, getErr := s.getConversationExecution(ctx, episode.ActiveExecutionID); getErr == nil {
-				_, _ = s.cancelConversationExecution(ctx, execution, true)
+			if err = s.controlAndReconcileAgentExecution(ctx, episode, "pause"); err != nil {
+				return episode, err
 			}
 		}
-		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='paused',updated_at=$2,lease_owner='',lease_expires_at=null,version=version+1 where id=$1 and status in ('thinking','executing')`, id, now)
 	case "resume":
-		if episode.Status != agentEpisodePaused && episode.Status != agentEpisodeBlocked {
+		if episode.Status != agentEpisodePaused && episode.Status != agentEpisodeBlocked && episode.Status != agentEpisodeFailed {
 			return episode, fmt.Errorf("agent episode cannot resume from %s", episode.Status)
 		}
+		reconciledSummary := episode.LastResultSummary
 		if episode.ActiveExecutionID != "" {
-			_ = s.abandonActiveAgentTurn(ctx, episode, "execution paused; replan required")
-		}
-		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='thinking',active_execution_id=null,failure_summary='',updated_at=$2,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`, id, now)
-	case "cancel":
-		if episode.ActiveExecutionID != "" {
-			if execution, getErr := s.getConversationExecution(ctx, episode.ActiveExecutionID); getErr == nil {
-				_, _ = s.cancelConversationExecution(ctx, execution, false)
+			outcome, reconcileErr := s.reconcileControlledAgentExecution(ctx, episode, "resume")
+			if reconcileErr != nil {
+				return episode, reconcileErr
 			}
-			_ = s.abandonActiveAgentTurn(ctx, episode, "execution cancelled because the target device changed")
+			reconciledSummary = outcome.Summary
+			if !outcome.Resolved {
+				tag, updateErr := s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='blocked',failure_summary=$2,
+					control_generation=control_generation+1,updated_at=$3,lease_owner='',lease_expires_at=null,version=version+1
+					where id=$1 and control_generation=$4 and status in ('paused','blocked','failed')`, id, outcome.Summary, now, episode.ControlGeneration)
+				if updateErr != nil {
+					return episode, updateErr
+				}
+				if tag.RowsAffected() != 1 {
+					return episode, errAgentEpisodeClaimLost
+				}
+				return s.GetAgentEpisodeOverview(ctx, id, agentEpisodeOverviewTurnLimit)
+			}
 		}
-		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='cancelled',active_execution_id=null,completed_at=$2,updated_at=$2,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`, id, now)
+		settings, settingsErr := s.loadModelSettings(ctx)
+		if settingsErr != nil {
+			return episode, settingsErr
+		}
+		limits := normalizeAgentLoopLimits(settings)
+		maxRounds := episode.MaxRounds
+		if maxRounds > 0 && episode.CurrentRound >= maxRounds {
+			if limits.MaxRounds == 0 {
+				maxRounds = 0
+			} else {
+				maxRounds = episode.CurrentRound + limits.MaxRounds
+			}
+		}
+		maxToolCalls := episode.MaxToolCalls
+		if maxToolCalls > 0 && episode.ToolCallCount >= maxToolCalls {
+			if limits.MaxToolCalls == 0 {
+				maxToolCalls = 0
+			} else {
+				maxToolCalls = episode.ToolCallCount + limits.MaxToolCalls
+			}
+		}
+		var deadline any
+		if episode.DeadlineAt != nil && !episode.DeadlineAt.After(now) {
+			if limits.MaxDurationSeconds > 0 {
+				deadline = now.Add(time.Duration(limits.MaxDurationSeconds) * time.Second)
+			}
+		} else {
+			deadline = episode.DeadlineAt
+		}
+		tag, updateErr := s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='thinking',active_execution_id=null,
+			failure_summary='',model_failure_count=0,no_progress_count=0,max_rounds=$2,max_tool_calls=$3,deadline_at=$4,
+			completed_at=null,final_message_id=null,last_result_summary=$5,control_generation=control_generation+1,
+			updated_at=$6,lease_owner='',lease_expires_at=null,version=version+1
+			where id=$1 and control_generation=$7 and status in ('paused','blocked','failed')`,
+			id, maxRounds, maxToolCalls, deadline, reconciledSummary, now, episode.ControlGeneration)
+		if updateErr != nil {
+			return episode, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return episode, errAgentEpisodeClaimLost
+		}
+	case "cancel":
+		tag, updateErr := s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='cancelled',control_generation=control_generation+1,
+			failure_summary='用户取消了当前任务。',completed_at=$2,updated_at=$2,lease_owner='',lease_expires_at=null,version=version+1
+			where id=$1 and control_generation=$3 and status not in ('completed','cancelled')`, id, now, episode.ControlGeneration)
+		if updateErr != nil {
+			return episode, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return episode, fmt.Errorf("agent episode cannot cancel from %s", episode.Status)
+		}
+		episode.ControlGeneration++
+		episode.Status = agentEpisodeCancelled
+		if episode.ActiveExecutionID != "" {
+			if err = s.controlAndReconcileAgentExecution(ctx, episode, "cancel"); err != nil {
+				return episode, err
+			}
+		}
+		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set active_execution_id=null,updated_at=$2
+			where id=$1 and status='cancelled' and control_generation=$3`, id, now, episode.ControlGeneration)
 	case "switch_device":
 		target, _, targetErr := s.selectConversationExecutionTarget(ctx, episode.Goal, input.TargetDeviceID)
 		if targetErr != nil {
 			return episode, targetErr
 		}
-		if episode.ActiveExecutionID != "" {
-			if execution, getErr := s.getConversationExecution(ctx, episode.ActiveExecutionID); getErr == nil {
-				_, _ = s.cancelConversationExecution(ctx, execution, false)
-			}
+		tag, updateErr := s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='paused',target_device_id=$2,
+			control_generation=control_generation+1,updated_at=$3,lease_owner='',lease_expires_at=null,
+			version=version+1 where id=$1 and control_generation=$4 and status in ('thinking','executing','paused','blocked','failed')`, id, target.ID, now, episode.ControlGeneration)
+		if updateErr != nil {
+			return episode, updateErr
 		}
-		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status='thinking',target_device_id=$2,active_execution_id=null,updated_at=$3,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`, id, target.ID, now)
+		if tag.RowsAffected() != 1 {
+			return episode, fmt.Errorf("agent episode cannot switch device from %s", episode.Status)
+		}
+		episode.ControlGeneration++
+		episode.Status = agentEpisodePaused
+		episode.TargetDeviceID = target.ID
+		resolved := true
+		resultSummary := episode.LastResultSummary
+		if episode.ActiveExecutionID != "" {
+			outcome, controlErr := s.cancelAndReconcileAgentExecution(ctx, episode, false, "switch_device")
+			if controlErr != nil {
+				return episode, controlErr
+			}
+			resolved = outcome.Resolved
+			resultSummary = outcome.Summary
+		}
+		nextStatus := agentEpisodeThinking
+		failure := ""
+		if !resolved {
+			nextStatus = agentEpisodeBlocked
+			failure = "当前设备上的工具已经开始，但真实终态尚未确认。为避免在新设备重复副作用，已阻止自动重做；请先核验原设备状态，再继续或取消。"
+		}
+		tag, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status=$2,active_execution_id=case when $2='thinking' then null else active_execution_id end,
+			failure_summary=$3,last_result_summary=$4,updated_at=$5,version=version+1 where id=$1 and status='paused' and control_generation=$6`,
+			id, nextStatus, failure, resultSummary, now, episode.ControlGeneration)
+		if err == nil && tag.RowsAffected() != 1 {
+			return episode, errAgentEpisodeClaimLost
+		}
 	default:
 		return episode, fmt.Errorf("decision must be pause, resume, cancel, or switch_device")
 	}
 	if err != nil {
 		return episode, err
 	}
-	return s.GetAgentEpisode(ctx, id)
+	return s.GetAgentEpisodeOverview(ctx, id, agentEpisodeOverviewTurnLimit)
 }
 
 func (s *Service) resumeAwaitingAgentEpisode(ctx context.Context, conversationID, userContent string) (domain.StewardAgentEpisode, bool, error) {
@@ -830,40 +1646,290 @@ func (s *Service) resumeAwaitingAgentEpisode(ctx context.Context, conversationID
 		return domain.StewardAgentEpisode{}, false, err
 	}
 	now := time.Now().UTC()
-	episode, getErr := s.GetAgentEpisode(ctx, id)
+	episode, getErr := s.getAgentEpisodeState(ctx, id)
 	if getErr != nil {
 		return domain.StewardAgentEpisode{}, false, getErr
 	}
-	if len(episode.Turns) > 0 {
-		turn := episode.Turns[len(episode.Turns)-1]
+	turn, turnErr := s.getLatestAgentTurn(ctx, id)
+	if turnErr == nil {
 		if turn.Status == "waiting_input" && len(turn.ToolCalls) == 1 {
 			results, _ := json.Marshal([]domain.StewardAgentToolResult{{
 				ToolCallID: turn.ToolCalls[0].ID, ToolName: agentAskUserTool, Output: map[string]any{"user_response": userContent},
 			}})
 			_, _ = s.db.Pool.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,updated_at=$3,completed_at=$3 where id=$1`, turn.ID, string(results), now)
 		}
+	} else if !errors.Is(turnErr, pgx.ErrNoRows) {
+		return domain.StewardAgentEpisode{}, false, turnErr
 	}
 	_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set goal=goal||E'\n\n用户补充：'||$2,status='thinking',updated_at=$3,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`, id, userContent, now)
 	if err != nil {
 		return domain.StewardAgentEpisode{}, false, err
 	}
-	episode, err = s.GetAgentEpisode(ctx, id)
+	episode, err = s.GetAgentEpisodeOverview(ctx, id, agentEpisodeOverviewTurnLimit)
 	return episode, true, err
 }
 
-func (s *Service) abandonActiveAgentTurn(ctx context.Context, episode domain.StewardAgentEpisode, reason string) error {
-	for index := len(episode.Turns) - 1; index >= 0; index-- {
-		turn := episode.Turns[index]
-		if turn.ExecutionID != episode.ActiveExecutionID || turn.Status != "tools_running" {
-			continue
-		}
-		results := make([]domain.StewardAgentToolResult, 0, len(turn.ToolCalls))
-		for _, call := range turn.ToolCalls {
-			results = append(results, domain.StewardAgentToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Error: reason})
-		}
-		encoded, _ := json.Marshal(results)
-		_, err := s.db.Pool.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,completed_at=$3,updated_at=$3 where id=$1`, turn.ID, string(encoded), time.Now().UTC())
+type agentControlCallState string
+
+const (
+	agentControlCallKnown       agentControlCallState = "known"
+	agentControlCallNotExecuted agentControlCallState = "not_executed"
+	agentControlCallUnknown     agentControlCallState = "unknown"
+)
+
+type agentControlCallObservation struct {
+	State       agentControlCallState
+	Idempotency string
+}
+
+type agentControlReconciliation struct {
+	Resolved bool
+	Summary  string
+	Results  []domain.StewardAgentToolResult
+}
+
+func (s *Service) controlAndReconcileAgentExecution(ctx context.Context, episode domain.StewardAgentEpisode, action string) error {
+	pause := action == "pause"
+	outcome, err := s.cancelAndReconcileAgentExecution(ctx, episode, pause, action)
+	if err != nil {
 		return err
 	}
-	return nil
+	now := time.Now().UTC()
+	status := episode.Status
+	failure := ""
+	clearActive := outcome.Resolved
+	if !outcome.Resolved {
+		failure = outcome.Summary
+	}
+	if action == "cancel" {
+		status = agentEpisodeCancelled
+		clearActive = true
+		failure = "用户取消了当前任务。"
+		if !outcome.Resolved && strings.TrimSpace(outcome.Summary) != "" {
+			failure += " " + outcome.Summary
+		}
+	}
+	_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status=$2,
+		active_execution_id=case when $3 then null else active_execution_id end,
+		failure_summary=$4,last_result_summary=$5,updated_at=$6,version=version+1
+		where id=$1 and control_generation=$7 and status=$2`,
+		episode.ID, status, clearActive, failure, outcome.Summary, now, episode.ControlGeneration)
+	return err
+}
+
+func (s *Service) cancelAndReconcileAgentExecution(ctx context.Context, episode domain.StewardAgentEpisode, pause bool, action string) (agentControlReconciliation, error) {
+	execution, err := s.getConversationExecution(ctx, episode.ActiveExecutionID)
+	if err != nil {
+		return agentControlReconciliation{}, err
+	}
+	_, cancelErr := s.cancelConversationExecution(ctx, execution, pause)
+	outcome, err := s.reconcileControlledAgentExecution(ctx, episode, action)
+	if err != nil {
+		return outcome, err
+	}
+	if cancelErr != nil {
+		outcome.Resolved = false
+		outcome.Summary = "无法确认子执行已停止：" + sanitizeRuntimeError(cancelErr) + "。为避免重复副作用，已阻止自动重做。"
+		if err := s.persistAgentControlReconciliation(ctx, episode, execution, outcome); err != nil {
+			return outcome, err
+		}
+	}
+	return outcome, nil
+}
+
+func (s *Service) reconcileControlledAgentExecution(ctx context.Context, episode domain.StewardAgentEpisode, action string) (agentControlReconciliation, error) {
+	execution, err := s.getConversationExecution(ctx, episode.ActiveExecutionID)
+	if err != nil {
+		return agentControlReconciliation{}, err
+	}
+	if execution.TurnID == "" {
+		return agentControlReconciliation{}, fmt.Errorf("agent execution %s has no linked turn", execution.ID)
+	}
+	turn, err := s.getAgentTurn(ctx, episode.ID, execution.TurnID)
+	if err != nil {
+		return agentControlReconciliation{}, fmt.Errorf("agent turn for active execution %s: %w", execution.ID, err)
+	}
+	raw, observations, err := s.inspectAgentControlExecution(ctx, execution)
+	if err != nil {
+		return agentControlReconciliation{}, err
+	}
+	results := agentControlToolResults(turn, execution, raw, observations, action)
+	resolved := true
+	unknownNames := make([]string, 0)
+	nonIdempotentUnknown := make([]string, 0)
+	for index, observation := range observations {
+		if observation.State != agentControlCallUnknown {
+			continue
+		}
+		resolved = false
+		name := "unknown"
+		if index < len(turn.ToolCalls) {
+			name = turn.ToolCalls[index].ToolName
+		}
+		unknownNames = append(unknownNames, name)
+		if observation.Idempotency == RuntimeIdempotencyNonIdempotent {
+			nonIdempotentUnknown = append(nonIdempotentUnknown, name)
+		}
+	}
+	summary := summarizeAgentResults(results)
+	if !resolved {
+		if len(nonIdempotentUnknown) > 0 {
+			summary = fmt.Sprintf("工具 %s 已经开始执行，但回执在控制操作期间中断，真实结果未知。它是非幂等调用；为避免重复副作用，自动重试已被阻止。请先核验外部状态，然后取消该任务或在确认后重新发起明确操作。", strings.Join(nonIdempotentUnknown, "、"))
+		} else {
+			summary = fmt.Sprintf("工具 %s 已经开始执行，但真实终态尚未落库。为避免重复执行，自动重试已被阻止；请等待子执行结束后再次继续。", strings.Join(unknownNames, "、"))
+		}
+	}
+	outcome := agentControlReconciliation{Resolved: resolved, Summary: summary, Results: results}
+	if err := s.persistAgentControlReconciliation(ctx, episode, execution, outcome); err != nil {
+		return outcome, err
+	}
+	return outcome, nil
+}
+
+func agentTurnForExecution(episode domain.StewardAgentEpisode, executionID string) (domain.StewardAgentTurn, bool) {
+	for index := len(episode.Turns) - 1; index >= 0; index-- {
+		if episode.Turns[index].ExecutionID == executionID {
+			return episode.Turns[index], true
+		}
+	}
+	return domain.StewardAgentTurn{}, false
+}
+
+func (s *Service) inspectAgentControlExecution(ctx context.Context, execution domain.StewardConversationExecution) ([]ConversationToolResult, []agentControlCallObservation, error) {
+	switch {
+	case execution.Kind == conversationExecutionRun && execution.RunID != "":
+		run, err := s.GetAgentRun(ctx, execution.RunID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return s.conversationRunToolResults(ctx, run), agentControlRunObservations(run), nil
+	case execution.Kind == conversationExecutionOrchestration && execution.OrchestrationID != "":
+		orchestration, err := s.GetOrchestration(ctx, execution.OrchestrationID)
+		if err != nil {
+			return nil, nil, err
+		}
+		observations := make([]agentControlCallObservation, 0, len(orchestration.Nodes))
+		for _, node := range orchestration.Nodes {
+			idempotency := RuntimeIdempotencyNonIdempotent
+			if len(node.Steps) > 0 {
+				if tool, ok := s.runtimeTools.get(node.Steps[0].ToolName); ok {
+					idempotency = normalizeRuntimeToolSpec(tool.Spec()).IdempotencyMode
+				}
+			}
+			switch {
+			case node.RuntimeRunID != "":
+				run, runErr := s.GetAgentRun(ctx, node.RuntimeRunID)
+				if runErr != nil {
+					return nil, nil, runErr
+				}
+				states := agentControlRunObservations(run)
+				if len(states) > 0 {
+					observations = append(observations, states[0])
+				} else {
+					observations = append(observations, agentControlCallObservation{State: agentControlCallNotExecuted, Idempotency: idempotency})
+				}
+			case node.RemoteDispatch != nil:
+				state := agentControlCallUnknown
+				if node.RemoteDispatch.Status == RuntimeRunSucceeded {
+					state = agentControlCallKnown
+				} else if node.RemoteDispatch.RemoteRunID == "" && node.RemoteDispatch.HeartbeatAt == nil && node.RemoteDispatch.Status == "pending" {
+					state = agentControlCallNotExecuted
+				}
+				observations = append(observations, agentControlCallObservation{State: state, Idempotency: idempotency})
+			default:
+				observations = append(observations, agentControlCallObservation{State: agentControlCallNotExecuted, Idempotency: idempotency})
+			}
+		}
+		return s.conversationOrchestrationToolResults(ctx, orchestration), observations, nil
+	default:
+		return nil, nil, fmt.Errorf("agent execution %s has no runtime subject", execution.ID)
+	}
+}
+
+func agentControlRunObservations(run domain.StewardAgentRun) []agentControlCallObservation {
+	observations := make([]agentControlCallObservation, 0, len(run.Steps))
+	terminal := runtimeRunTerminal(run.Status)
+	for _, step := range run.Steps {
+		idempotency := defaultString(step.ToolIdempotency, RuntimeIdempotencyNonIdempotent)
+		if len(step.Invocations) == 0 {
+			state := agentControlCallNotExecuted
+			if !terminal && step.Status != RuntimeStepPending && step.Status != RuntimeStepCancelled {
+				state = agentControlCallUnknown
+			}
+			observations = append(observations, agentControlCallObservation{State: state, Idempotency: idempotency})
+			continue
+		}
+		invocation := step.Invocations[len(step.Invocations)-1]
+		state := agentControlCallKnown
+		explicitlyNotExecuted := strings.Contains(strings.ToLower(invocation.ErrorSummary), "before execution") ||
+			strings.Contains(strings.ToLower(invocation.ErrorSummary), "before tool execution")
+		if explicitlyNotExecuted {
+			state = agentControlCallNotExecuted
+		} else if invocation.Status == RuntimeStepSucceeded && invocation.FinishedAt != nil {
+			// The successful invocation receipt is the authoritative exactly-once
+			// boundary even if the parent run has not yet persisted its own final
+			// status.
+			state = agentControlCallKnown
+		} else if !terminal || invocation.Status == RuntimeStepRunning || invocation.FinishedAt == nil {
+			state = agentControlCallUnknown
+		} else if idempotency == RuntimeIdempotencyNonIdempotent && invocation.Status != RuntimeStepSucceeded {
+			// A failed/cancelled non-idempotent invocation can have changed the
+			// outside world before its receipt was persisted. Never infer safety
+			// merely from the terminal error status.
+			state = agentControlCallUnknown
+		}
+		observations = append(observations, agentControlCallObservation{State: state, Idempotency: idempotency})
+	}
+	return observations
+}
+
+func agentControlToolResults(turn domain.StewardAgentTurn, execution domain.StewardConversationExecution, raw []ConversationToolResult, observations []agentControlCallObservation, action string) []domain.StewardAgentToolResult {
+	results := make([]domain.StewardAgentToolResult, 0, len(turn.ToolCalls))
+	for index, call := range turn.ToolCalls {
+		result := domain.StewardAgentToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Evidence: execution.Evidence}
+		observation := agentControlCallObservation{State: agentControlCallUnknown, Idempotency: RuntimeIdempotencyNonIdempotent}
+		if index < len(observations) {
+			observation = observations[index]
+		}
+		switch observation.State {
+		case agentControlCallNotExecuted:
+			result.Error = fmt.Sprintf("工具已确认未执行（控制操作：%s）；模型可以基于这一真实结果重新规划。", action)
+		case agentControlCallUnknown:
+			result.Error = fmt.Sprintf("工具已经开始执行，但回执未能确认；自动重复调用已阻止（幂等语义：%s）。", observation.Idempotency)
+		default:
+			if index < len(raw) {
+				if raw[index].ToolName != "" && raw[index].ToolName != call.ToolName {
+					result.Error = fmt.Sprintf("tool result mapping mismatch: expected %s, received %s", call.ToolName, raw[index].ToolName)
+				} else {
+					result.Error = raw[index].Error
+					result.Output = compactAgentToolOutput(call.ToolName, result.Error == "", raw[index].Output, execution.Evidence)
+				}
+			} else {
+				result.Error = defaultString(execution.FailureSummary, "tool result is unavailable")
+			}
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+func (s *Service) persistAgentControlReconciliation(ctx context.Context, episode domain.StewardAgentEpisode, execution domain.StewardConversationExecution, outcome agentControlReconciliation) error {
+	if execution.TurnID == "" {
+		return fmt.Errorf("agent execution %s has no linked turn", execution.ID)
+	}
+	turn, err := s.getAgentTurn(ctx, episode.ID, execution.TurnID)
+	if err != nil {
+		return fmt.Errorf("agent turn for active execution %s: %w", execution.ID, err)
+	}
+	encoded, _ := json.Marshal(outcome.Results)
+	now := time.Now().UTC()
+	failure := ""
+	if !outcome.Resolved {
+		failure = outcome.Summary
+	}
+	_, err = s.db.Pool.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,
+		failure_summary=$3,call_fingerprint=$4,result_fingerprint=$5,completed_at=$6,updated_at=$6
+		where id=$1 and execution_id=$7`, turn.ID, string(encoded), failure,
+		agentToolCallProgressFingerprint(turn.ToolCalls, false), agentToolResultProgressFingerprint(outcome.Results), now, execution.ID)
+	return err
 }

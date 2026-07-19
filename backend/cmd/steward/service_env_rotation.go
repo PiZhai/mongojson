@@ -169,12 +169,24 @@ func parsePreviousEncryptionKeyEntries(value string, label string) ([]previousEn
 }
 
 func prependPreviousEncryptionKey(entries []previousEncryptionKeyEntry, current previousEncryptionKeyEntry) []previousEncryptionKeyEntry {
-	out := []previousEncryptionKeyEntry{current}
-	for _, entry := range entries {
-		if strings.TrimSpace(entry.ID) == "" || entry.ID == current.ID {
-			continue
+	out := make([]previousEncryptionKeyEntry, 0, len(entries)+1)
+	seen := make(map[string]struct{}, len(entries)+1)
+	appendUnique := func(entry previousEncryptionKeyEntry) {
+		entry.ID = strings.TrimSpace(entry.ID)
+		entry.Key = strings.TrimSpace(entry.Key)
+		if entry.ID == "" || entry.Key == "" {
+			return
 		}
+		fingerprint := entry.ID + "\x00" + entry.Key
+		if _, ok := seen[fingerprint]; ok {
+			return
+		}
+		seen[fingerprint] = struct{}{}
 		out = append(out, entry)
+	}
+	appendUnique(current)
+	for _, entry := range entries {
+		appendUnique(entry)
 	}
 	return out
 }
