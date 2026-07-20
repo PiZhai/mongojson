@@ -196,4 +196,25 @@ Describe 'Windows production installer transaction contracts' {
     )){$verifier.Contains($contract)|Should Be $true}
     $verifier.IndexOf('$managementToken=$null')|Should BeGreaterThan $verifier.IndexOf('companion.real_activity_ingestion')
   }
+
+  It 'installs, reapplies, and verifies resilient Windows service recovery policies' {
+    $installer=Read-Script 'install-steward-production.ps1'
+    $updater=Read-Script 'update-steward-production.ps1'
+    $verifier=Read-Script 'test-steward-production.ps1'
+    foreach($script in @($installer,$updater)){
+      foreach($contract in @(
+        'Set-StewardServiceRecoveryPolicy',
+        "'restart/15000/restart/30000/restart/60000'",
+        "'restart/5000/restart/15000/restart/30000'",
+        'failureflag $Name 1',
+        'reset= 86400'
+      )){$script.Contains($contract)|Should Be $true}
+    }
+    foreach($contract in @(
+      'main.delayed_auto_start',
+      'main.failure_recovery',
+      'broker.failure_recovery',
+      'Get-ServiceRecoveryProfile'
+    )){$verifier.Contains($contract)|Should Be $true}
+  }
 }

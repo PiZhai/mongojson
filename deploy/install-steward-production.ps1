@@ -204,6 +204,15 @@ function Remove-ServiceAndWait([string]$Name) {
   for($i=0;$i -lt 50 -and (Get-Service -Name $Name -ErrorAction SilentlyContinue);$i++){Start-Sleep -Milliseconds 200}
   if(Get-Service -Name $Name -ErrorAction SilentlyContinue){throw "Windows service is still pending deletion: $Name"}
 }
+function Set-StewardServiceRecoveryPolicy([string]$Name,[bool]$DelayedAutoStart,[string]$Actions) {
+  $startMode=if($DelayedAutoStart){'delayed-auto'}else{'auto'}
+  $output=& sc.exe config $Name start= $startMode 2>&1|Out-String
+  if($LASTEXITCODE -ne 0){throw "failed to configure $Name start mode: $($output.Trim())"}
+  $output=& sc.exe failure $Name reset= 86400 actions= $Actions 2>&1|Out-String
+  if($LASTEXITCODE -ne 0){throw "failed to configure $Name recovery actions: $($output.Trim())"}
+  $output=& sc.exe failureflag $Name 1 2>&1|Out-String
+  if($LASTEXITCODE -ne 0){throw "failed to enable $Name recovery after non-crash failures: $($output.Trim())"}
+}
 function Get-PathSnapshot([string]$Path,[string]$SnapshotRoot,[string]$Name) {
   $exists=Test-Path -LiteralPath $Path
   $snapshot=[ordered]@{path=$Path;exists=$exists;is_directory=$false;sddl='';copy=''}
@@ -648,6 +657,8 @@ try {
   }finally{foreach($entry in $mainPrevious.GetEnumerator()){[Environment]::SetEnvironmentVariable($entry.Key,$entry.Value,'Process')}}
   if($mainExitCode -ne 0){$createdMain=$null -ne (Get-Service $ServiceName -ErrorAction SilentlyContinue);throw "main service installation failed: $(ConvertTo-RedactedText $mainOutput $sensitiveValues.ToArray())"}
   $createdMain=$true
+  Set-StewardServiceRecoveryPolicy $ServiceName $true 'restart/15000/restart/30000/restart/60000'
+  Set-StewardServiceRecoveryPolicy $BrokerServiceName $false 'restart/5000/restart/15000/restart/30000'
   Protect-MainInstallTree $InstallDir $ServiceName
   Grant-RestrictedCapabilityHostReadExecute (Join-Path $InstallDir 'steward-system-tool-host.exe')
 

@@ -361,7 +361,8 @@ func TestServiceInstallWindowsProductionIsolationPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	commands := strings.Join(payload.Service.Commands, "\n")
-	if !strings.Contains(commands, "service account localservice") || !strings.Contains(commands, "restricted per-service SID") {
+	if !strings.Contains(commands, "service account localservice") || !strings.Contains(commands, "restricted per-service SID") ||
+		!strings.Contains(commands, "start= delayed-auto") || !strings.Contains(commands, "SCM failure recovery policy") {
 		t.Fatalf("production identity plan is incomplete: %s", commands)
 	}
 	if _, leaked := payload.Service.Environment["DATABASE_URL"]; leaked {

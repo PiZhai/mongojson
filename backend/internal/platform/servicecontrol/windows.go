@@ -101,13 +101,17 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 		}
 	}
 	args := serviceRunArgs(options)
+	serviceStartMode := "auto"
+	if options.WindowsHardened && options.WindowsServiceAccount == "localservice" {
+		serviceStartMode = "delayed-auto"
+	}
 	result := Result{
 		Platform:    runtime.GOOS,
 		Name:        options.Name,
 		Scope:       options.Scope,
 		Environment: redactedEnvironment(serviceEnv),
 		Commands: []string{
-			commandString("sc.exe", "create", options.Name, "binPath=", commandString(options.BinaryPath, args...), "start=", "auto", "DisplayName=", options.DisplayName),
+			commandString("sc.exe", "create", options.Name, "binPath=", commandString(options.BinaryPath, args...), "start=", serviceStartMode, "DisplayName=", options.DisplayName),
 			"registry Environment=" + fmt.Sprintf("%q", redactedEnvList(serviceEnv)),
 		},
 	}
@@ -116,7 +120,8 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 		result.Commands = append(result.Commands,
 			"configure protected DACL/owner on service install and data paths",
 			"configure service account "+options.WindowsServiceAccount,
-			"configure "+options.WindowsServiceSIDType+" per-service SID")
+			"configure "+options.WindowsServiceSIDType+" per-service SID",
+			"configure delayed start and SCM failure recovery policy")
 	}
 	if options.DryRun {
 		result.Message = "dry run: Windows service would be created"
@@ -138,6 +143,12 @@ func installPlatform(ctx context.Context, input InstallOptions) (Result, error) 
 		return Result{}, fmt.Errorf("create Windows service: %w", err)
 	}
 	defer service.Close()
+	if options.WindowsHardened {
+		if err := configureHardenedWindowsServiceRecovery(service, options); err != nil {
+			rollbackErr := service.Delete()
+			return Result{}, errors.Join(err, rollbackErr)
+		}
+	}
 	if err := setWindowsServiceEnv(options.Name, serviceEnv); err != nil {
 		rollbackErr := service.Delete()
 		if rollbackErr != nil {
@@ -166,8 +177,38 @@ func windowsServiceConfig(options InstallOptions) mgr.Config {
 	}
 	return mgr.Config{
 		DisplayName: options.DisplayName, Description: options.Description,
-		StartType: mgr.StartAutomatic, ServiceStartName: serviceStartName, SidType: sidType,
+		StartType: mgr.StartAutomatic, DelayedAutoStart: options.WindowsHardened && options.WindowsServiceAccount == "localservice",
+		ServiceStartName: serviceStartName, SidType: sidType,
 	}
+}
+
+const hardenedWindowsServiceRecoveryResetSeconds = 24 * 60 * 60
+
+func hardenedWindowsServiceRecoveryActions(options InstallOptions) []mgr.RecoveryAction {
+	delays := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+	if options.WindowsServiceAccount == "localservice" {
+		delays = []time.Duration{15 * time.Second, 30 * time.Second, 60 * time.Second}
+	}
+	return []mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: delays[0]},
+		{Type: mgr.ServiceRestart, Delay: delays[1]},
+		{Type: mgr.ServiceRestart, Delay: delays[2]},
+	}
+}
+
+type windowsServiceRecoveryConfigurer interface {
+	SetRecoveryActions([]mgr.RecoveryAction, uint32) error
+	SetRecoveryActionsOnNonCrashFailures(bool) error
+}
+
+func configureHardenedWindowsServiceRecovery(service windowsServiceRecoveryConfigurer, options InstallOptions) error {
+	if err := service.SetRecoveryActions(hardenedWindowsServiceRecoveryActions(options), hardenedWindowsServiceRecoveryResetSeconds); err != nil {
+		return fmt.Errorf("configure Windows service recovery actions: %w", err)
+	}
+	if err := service.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+		return fmt.Errorf("configure Windows service non-crash recovery: %w", err)
+	}
+	return nil
 }
 
 // stageHardenedWindowsService places the executable and secrets outside

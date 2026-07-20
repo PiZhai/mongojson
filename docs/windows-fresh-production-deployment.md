@@ -599,7 +599,7 @@ PowerShell、CLI 或自动化调用 `/api/...` 时必须使用 `$managementHeade
 
 ### 7.4 配置数据库晚启动恢复
 
-Docker Desktop 可能在登录后才启动 PostgreSQL，而 `MongojsonSteward` 是开机服务。为主服务设置延迟自动启动和持续失败恢复：
+Docker Desktop 可能在登录后才启动 PostgreSQL，而 `MongojsonSteward` 是开机服务。正式安装器和更新器会自动设置并由生产验收脚本检查以下策略；这些命令也可用于人工审计或修复旧安装：
 
 ```powershell
 & sc.exe config MongojsonSteward start= delayed-auto

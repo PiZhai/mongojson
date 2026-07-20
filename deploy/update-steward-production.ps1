@@ -83,6 +83,15 @@ function Assert-ServiceOwnership([object]$Service,[string]$ExpectedExecutable,[s
   if(-not $actual.Equals($ExpectedExecutable,[StringComparison]::OrdinalIgnoreCase)){throw "refusing update: $Name ImagePath is outside the owned installation: $actual"}
   Assert-NoReparseAncestors $actual "$Name ImagePath"
 }
+function Set-StewardServiceRecoveryPolicy([string]$Name,[bool]$DelayedAutoStart,[string]$Actions) {
+  $startMode=if($DelayedAutoStart){'delayed-auto'}else{'auto'}
+  $output=& sc.exe config $Name start= $startMode 2>&1|Out-String
+  if($LASTEXITCODE -ne 0){throw "failed to configure $Name start mode: $($output.Trim())"}
+  $output=& sc.exe failure $Name reset= 86400 actions= $Actions 2>&1|Out-String
+  if($LASTEXITCODE -ne 0){throw "failed to configure $Name recovery actions: $($output.Trim())"}
+  $output=& sc.exe failureflag $Name 1 2>&1|Out-String
+  if($LASTEXITCODE -ne 0){throw "failed to enable $Name recovery after non-crash failures: $($output.Trim())"}
+}
 function Read-InstallationMarker([string]$Path) {
   if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){throw "installation marker is missing: $Path"}
   Assert-NoReparseAncestors $Path 'installation marker'
@@ -527,6 +536,8 @@ try{
   $refreshRaw=& $brokerBinary refresh-system-policy --policy $BrokerPolicyPath --system-tool-host (Join-Path $InstallDir 'steward-system-tool-host.exe') 2>&1|Out-String
   if($LASTEXITCODE -ne 0){throw "Broker System Tool policy refresh failed: $(ConvertTo-RedactedText $refreshRaw $sensitiveValues.ToArray())"}
   $policyBackup=($refreshRaw|ConvertFrom-Json).backup
+  Set-StewardServiceRecoveryPolicy $ServiceName $true 'restart/15000/restart/30000/restart/60000'
+  Set-StewardServiceRecoveryPolicy $BrokerServiceName $false 'restart/5000/restart/15000/restart/30000'
   Start-Service $BrokerServiceName -ErrorAction Stop
   Start-Service $ServiceName -ErrorAction Stop
 

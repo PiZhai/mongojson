@@ -30,6 +30,21 @@ function Add-Check([string]$Name, [bool]$OK, [string]$Detail) {
   $checks.Add([pscustomobject]@{ name=$Name; ok=$OK; detail=$Detail })
   if (-not $OK) { $script:verificationFailed = $true }
 }
+function Get-ServiceRecoveryProfile([string]$Name,[int[]]$ExpectedDelays) {
+  $output=& sc.exe qfailure $Name 2>&1|Out-String
+  $exitCode=$LASTEXITCODE
+  $flagOutput=& sc.exe qfailureflag $Name 2>&1|Out-String
+  $flagExitCode=$LASTEXITCODE
+  $matchesExpected=$exitCode -eq 0 -and $output -match '(?m)\b86400\b' -and ([regex]::Matches($output,'(?i)\bRESTART\b').Count -eq $ExpectedDelays.Count)
+  $cursor=-1
+  foreach($delay in $ExpectedDelays){
+    $position=$output.IndexOf([string]$delay,$cursor+1,[StringComparison]::Ordinal)
+    $matchesExpected=$matchesExpected -and $position -gt $cursor
+    $cursor=$position
+  }
+  $matchesExpected=$matchesExpected -and $flagExitCode -eq 0 -and $flagOutput -match '(?i)\bTRUE\b'
+  return [pscustomobject]@{ok=$matchesExpected;detail=(($output.Trim()+'; '+$flagOutput.Trim()) -replace '\r?\n',' | ')}
+}
 function ConvertTo-SIDValue([object]$Identity) {
   if($null -eq $Identity){return ''}
   if($Identity -is [Security.Principal.SecurityIdentifier]){return $Identity.Value}
@@ -371,10 +386,17 @@ Add-Check "main.service" ($null -ne $main -and $main.State -eq "Running") $(if($
 Add-Check "main.account" ($null -ne $main -and $main.StartName -eq "NT AUTHORITY\LocalService") $(if($main){"account=$($main.StartName)"}else{"missing"})
 $sidOutput = (& sc.exe qsidtype $ServiceName 2>&1 | Out-String)
 Add-Check "main.restricted_sid" ($LASTEXITCODE -eq 0 -and $sidOutput -match "RESTRICTED") $sidOutput.Trim()
+$mainDelayedAutoStart=0
+try{$mainDelayedAutoStart=[int](Get-ItemPropertyValue -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName" -Name DelayedAutostart -ErrorAction Stop)}catch{}
+Add-Check 'main.delayed_auto_start' ($mainDelayedAutoStart -eq 1) "DelayedAutostart=$mainDelayedAutoStart"
+$mainRecovery=Get-ServiceRecoveryProfile $ServiceName @(15000,30000,60000)
+Add-Check 'main.failure_recovery' $mainRecovery.ok $mainRecovery.detail
 
 $broker = Get-CimInstance Win32_Service -Filter "Name='$BrokerServiceName'" -ErrorAction SilentlyContinue
 Add-Check "broker.service" ($null -ne $broker -and $broker.State -eq "Running") $(if($broker){"state=$($broker.State)"}else{"missing"})
 Add-Check "broker.account" ($null -ne $broker -and $broker.StartName -eq "LocalSystem") $(if($broker){"account=$($broker.StartName)"}else{"missing"})
+$brokerRecovery=Get-ServiceRecoveryProfile $BrokerServiceName @(5000,15000,30000)
+Add-Check 'broker.failure_recovery' $brokerRecovery.ok $brokerRecovery.detail
 
 try{
   $trustPath=Join-Path $InstallDir 'release-trust.json';Assert-ReleaseTrustProtection $trustPath
