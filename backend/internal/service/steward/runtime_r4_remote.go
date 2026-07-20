@@ -48,18 +48,19 @@ type RemoteExecutionDispatchEnvelope struct {
 }
 
 type RemoteExecutionStatusPayload struct {
-	Version        string         `json:"version"`
-	DispatchID     string         `json:"dispatch_id"`
-	OriginDeviceID string         `json:"origin_device_id"`
-	TargetDeviceID string         `json:"target_device_id"`
-	PlanHash       string         `json:"plan_hash"`
-	Status         string         `json:"status"`
-	RemoteRunID    string         `json:"remote_run_id"`
-	HeartbeatAt    time.Time      `json:"heartbeat_at"`
-	LeaseExpiresAt time.Time      `json:"lease_expires_at"`
-	Result         map[string]any `json:"result,omitempty"`
-	FailureSummary string         `json:"failure_summary,omitempty"`
-	CompletedAt    *time.Time     `json:"completed_at,omitempty"`
+	Version           string         `json:"version"`
+	DispatchID        string         `json:"dispatch_id"`
+	OriginDeviceID    string         `json:"origin_device_id"`
+	TargetDeviceID    string         `json:"target_device_id"`
+	PlanHash          string         `json:"plan_hash"`
+	ControlGeneration int64          `json:"control_generation,omitempty"`
+	Status            string         `json:"status"`
+	RemoteRunID       string         `json:"remote_run_id"`
+	HeartbeatAt       time.Time      `json:"heartbeat_at"`
+	LeaseExpiresAt    time.Time      `json:"lease_expires_at"`
+	Result            map[string]any `json:"result,omitempty"`
+	FailureSummary    string         `json:"failure_summary,omitempty"`
+	CompletedAt       *time.Time     `json:"completed_at,omitempty"`
 }
 
 type RemoteExecutionStatusEnvelope struct {
@@ -244,7 +245,7 @@ func (s *Service) dispatchRemoteOrchestrationNodeTx(ctx context.Context, tx pgx.
 		insert into steward_remote_dispatches (
 			id, orchestration_id, node_id, target_device_id, status, plan_hash, payload,
 			signature, available_at, created_at, updated_at
-		) values ($1,$2,$3,$4,'pending',$5,$6::jsonb,$7,$8,$8,$8)
+		) values ($1,$2,$3,$4,'pending',$5,$6::jsonb,$7,now(),$8,$8)
 		on conflict (node_id) do nothing
 	`, dispatchID, orchestrationID, node.ID, device.ID, payload.PlanHash, string(encodedPayload), signature, now); err != nil {
 		return err
@@ -395,22 +396,24 @@ func (s *Service) RunRemoteExecutionCycle(ctx context.Context, limit int) (int, 
 
 func (s *Service) reconcileRemoteInbox(ctx context.Context, limit int) (int, error) {
 	rows, err := s.db.Pool.Query(ctx, `
-		select dispatch_id::text, coalesce(local_run_id::text,''), execution_kind,
+		select dispatch_id::text,coalesce(local_run_id::text,''),execution_kind,status,
 		       broker_delegation, cancel_requested from steward_remote_inbox
-		where status in ('accepted','running') order by updated_at limit $1
+		where status in ('accepted','running')
+		  and (execution_kind<>'broker' or status='accepted' or lease_expires_at<now())
+		order by updated_at limit $1
 	`, limit)
 	if err != nil {
 		return 0, err
 	}
 	type item struct {
-		dispatchID, runID, kind string
-		delegation              []byte
-		cancelRequested         bool
+		dispatchID, runID, kind, status string
+		delegation                      []byte
+		cancelRequested                 bool
 	}
 	items := []item{}
 	for rows.Next() {
 		var value item
-		if err := rows.Scan(&value.dispatchID, &value.runID, &value.kind, &value.delegation, &value.cancelRequested); err != nil {
+		if err := rows.Scan(&value.dispatchID, &value.runID, &value.kind, &value.status, &value.delegation, &value.cancelRequested); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -445,9 +448,10 @@ func (s *Service) reconcileRemoteInbox(ctx context.Context, limit int) (int, err
 		if _, err := s.db.Pool.Exec(ctx, `
 			update steward_remote_inbox set status=$2, heartbeat_at=$3, lease_expires_at=$4,
 			       result_payload=$5::jsonb, result_signature=$6, last_error=$7,
-			       updated_at=$3, completed_at=$8 where dispatch_id=$1
+			       updated_at=$3, completed_at=$8
+			where dispatch_id=$1 and status=$9 and cancel_requested=$10
 		`, value.dispatchID, status, now, leaseExpires, string(encodedResult), resultSignature,
-			run.FailureSummary, completed); err != nil {
+			run.FailureSummary, completed, value.status, value.cancelRequested); err != nil {
 			return 0, err
 		}
 	}
@@ -460,7 +464,7 @@ func (s *Service) reconcileRemoteBrokerInbox(ctx context.Context, dispatchID str
 		_, err := s.db.Pool.Exec(ctx, `
 			update steward_remote_inbox set status='cancelled', heartbeat_at=$2,
 			       lease_expires_at=$2, updated_at=$2, completed_at=$2,
-			       last_error='cancelled before or during delegated Broker execution'
+			       result_signature='',last_error='cancelled before or during delegated Broker execution'
 			where dispatch_id=$1 and status in ('accepted','running')
 		`, dispatchID, now)
 		return err
@@ -485,18 +489,54 @@ func (s *Service) reconcileRemoteBrokerInbox(ctx context.Context, dispatchID str
 		`, dispatchID, now, now.Add(s.remoteExecutionLease), sanitizeRuntimeError(err))
 		return nil
 	}
-	if _, err := s.db.Pool.Exec(ctx, `
-		update steward_remote_inbox set status='running', heartbeat_at=$2,
-		       lease_expires_at=$3, updated_at=$2 where dispatch_id=$1 and status='accepted'
-	`, dispatchID, now, now.Add(s.remoteExecutionLease)); err != nil {
+	// Claim the high-privilege delegation with a durable lease before invoking
+	// the Broker. Multiple daemon instances may have read the accepted inbox row,
+	// but only one may consume the Broker's single-use delegation token. The
+	// result_signature column is private target-side state until completion and
+	// acts as the claim token without exposing it in the signed status payload.
+	claimID, claimed, err := s.claimRemoteBrokerInbox(ctx, dispatchID, now)
+	if err != nil {
 		return err
+	}
+	if !claimed {
+		return nil
 	}
 	execCtx, cancel := context.WithCancel(ctx)
 	s.remoteBrokerCancelMu.Lock()
 	s.remoteBrokerCancels[dispatchID] = cancel
 	s.remoteBrokerCancelMu.Unlock()
+	heartbeatDone := make(chan struct{})
+	heartbeatStopped := make(chan struct{})
+	go func() {
+		defer close(heartbeatStopped)
+		interval := s.remoteExecutionLease / 3
+		if interval < time.Second {
+			interval = time.Second
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-execCtx.Done():
+				return
+			case tickedAt := <-ticker.C:
+				tag, heartbeatErr := s.db.Pool.Exec(execCtx, `update steward_remote_inbox
+					set heartbeat_at=$3,lease_expires_at=$4,updated_at=$3
+					where dispatch_id=$1 and status='running' and result_signature=$2 and cancel_requested=false`,
+					dispatchID, claimID, tickedAt.UTC(), tickedAt.UTC().Add(s.remoteExecutionLease))
+				if heartbeatErr != nil || tag.RowsAffected() != 1 {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 	response, executeErr := federation.ExecuteDelegation(execCtx, delegation, originStatus)
 	executionContextErr := execCtx.Err()
+	close(heartbeatDone)
+	<-heartbeatStopped
 	cancel()
 	s.remoteBrokerCancelMu.Lock()
 	delete(s.remoteBrokerCancels, dispatchID)
@@ -528,12 +568,42 @@ func (s *Service) reconcileRemoteBrokerInbox(ctx context.Context, dispatchID str
 		"credential_refs": delegation.Claims.CredentialRefs,
 	}
 	encodedResult, _ := json.Marshal(result)
-	_, err = s.db.Pool.Exec(ctx, `
+	tag, err := s.db.Pool.Exec(ctx, `
 		update steward_remote_inbox set status=$2, heartbeat_at=$3, lease_expires_at=$3,
-		       result_payload=$4::jsonb, last_error=$5, updated_at=$3, completed_at=$3
-		where dispatch_id=$1
-	`, dispatchID, status, completed, string(encodedResult), failure)
+		       result_payload=$4::jsonb,result_signature='',last_error=$5,updated_at=$3,completed_at=$3
+		where dispatch_id=$1 and status='running' and cancel_requested=$6 and result_signature=$7
+	`, dispatchID, status, completed, string(encodedResult), failure, requested, claimID)
+	if err == nil && tag.RowsAffected() == 0 {
+		// Cancellation may have arrived after the post-execution read. It owns
+		// the terminal decision and must not be replaced by a late Broker result.
+		_, err = s.db.Pool.Exec(ctx, `update steward_remote_inbox set status='cancelled',heartbeat_at=$2,
+			lease_expires_at=$2,result_signature='',last_error='delegated Broker execution cancelled',updated_at=$2,completed_at=$2
+			where dispatch_id=$1 and status in ('accepted','running') and cancel_requested=true`, dispatchID, completed)
+	}
 	return err
+}
+
+func (s *Service) claimRemoteBrokerInbox(ctx context.Context, dispatchID string, now time.Time) (string, bool, error) {
+	s.remoteBrokerCancelMu.Lock()
+	_, activeInProcess := s.remoteBrokerCancels[dispatchID]
+	s.remoteBrokerCancelMu.Unlock()
+	if activeInProcess {
+		return "", false, nil
+	}
+	claimID := "broker-claim:" + uuid.NewString()
+	tag, err := s.db.Pool.Exec(ctx, `
+		update steward_remote_inbox set status='running',heartbeat_at=$2,
+		       lease_expires_at=$3,result_signature=$4,updated_at=$2
+		where dispatch_id=$1 and cancel_requested=false
+		  and (status='accepted' or (status='running' and lease_expires_at<$2))
+	`, dispatchID, now, now.Add(s.remoteExecutionLease), claimID)
+	if err != nil {
+		return "", false, err
+	}
+	if tag.RowsAffected() != 1 {
+		return "", false, nil
+	}
+	return claimID, true, nil
 }
 
 func remoteStatusForRuntime(status string) string {
@@ -600,14 +670,14 @@ func (s *Service) GetRemoteExecutionStatus(ctx context.Context, dispatchID, auth
 		return RemoteExecutionStatusEnvelope{}, err
 	}
 	var payload RemoteExecutionStatusPayload
-	var result []byte
+	var result, encodedDispatch []byte
 	err := s.db.Pool.QueryRow(ctx, `
 		select dispatch_id::text, origin_device_id, plan_hash, status, coalesce(local_run_id::text,''),
-		       heartbeat_at, lease_expires_at, result_payload, last_error, completed_at
+		       heartbeat_at, lease_expires_at, result_payload, last_error, completed_at,payload
 		from steward_remote_inbox where dispatch_id=$1
 	`, dispatchID).Scan(&payload.DispatchID, &payload.OriginDeviceID, &payload.PlanHash, &payload.Status,
 		&payload.RemoteRunID, &payload.HeartbeatAt, &payload.LeaseExpiresAt, &result,
-		&payload.FailureSummary, &payload.CompletedAt)
+		&payload.FailureSummary, &payload.CompletedAt, &encodedDispatch)
 	if err != nil {
 		return RemoteExecutionStatusEnvelope{}, err
 	}
@@ -616,6 +686,11 @@ func (s *Service) GetRemoteExecutionStatus(ctx context.Context, dispatchID, auth
 	}
 	payload.Version = remoteExecutionProtocolVersion
 	payload.TargetDeviceID = s.agentIDValue()
+	var dispatch RemoteExecutionDispatchPayload
+	if err := json.Unmarshal(encodedDispatch, &dispatch); err != nil {
+		return RemoteExecutionStatusEnvelope{}, fmt.Errorf("decode persisted remote dispatch: %w", err)
+	}
+	payload.ControlGeneration = dispatch.ControlGeneration
 	_ = json.Unmarshal(result, &payload.Result)
 	if payload.Result == nil {
 		payload.Result = map[string]any{}
@@ -649,6 +724,10 @@ func (s *Service) CancelRemoteExecution(ctx context.Context, dispatchID, authent
 	if originDeviceID != strings.TrimSpace(authenticatedDeviceID) {
 		return RemoteExecutionStatusEnvelope{}, fmt.Errorf("remote dispatch is not owned by the authenticated device")
 	}
+	if !runtimeRunTerminalStatus(status) {
+		_, _ = s.db.Pool.Exec(ctx, `update steward_remote_inbox set cancel_requested=true,updated_at=now()
+			where dispatch_id=$1 and status in ('accepted','running')`, dispatchID)
+	}
 	s.remoteBrokerCancelMu.Lock()
 	brokerCancel := s.remoteBrokerCancels[dispatchID]
 	s.remoteBrokerCancelMu.Unlock()
@@ -660,7 +739,6 @@ func (s *Service) CancelRemoteExecution(ctx context.Context, dispatchID, authent
 			return RemoteExecutionStatusEnvelope{}, err
 		}
 	}
-	_, _ = s.db.Pool.Exec(ctx, `update steward_remote_inbox set cancel_requested=true, updated_at=now() where dispatch_id=$1`, dispatchID)
 	_, err := s.reconcileRemoteInbox(ctx, 20)
 	if err != nil {
 		return RemoteExecutionStatusEnvelope{}, err
@@ -806,6 +884,17 @@ func (s *Service) recordRemoteDispatchError(ctx context.Context, dispatchID stri
 	`, dispatchID, sanitizeRuntimeError(cause))
 }
 
+func remoteStatusPollDelay(previousStatus, nextStatus string, lease time.Duration) time.Duration {
+	// A dispatch acceptance is only an acknowledgement that the target durably
+	// stored the work. Keep the first result poll immediately eligible so a
+	// target that finishes before the origin's next cycle is observed without
+	// depending on application/VM clock alignment or a fixed sleep window.
+	if previousStatus == "sent" && nextStatus == "accepted" {
+		return 0
+	}
+	return lease / 3
+}
+
 func (s *Service) acceptRemoteStatus(ctx context.Context, item struct {
 	id, target, status, signature, apiBase, publicKey string
 	brokerPublicKey, brokerKeyID                      string
@@ -819,18 +908,27 @@ func (s *Service) acceptRemoteStatus(ctx context.Context, item struct {
 	if err := verifyRemotePayload(item.publicKey, envelope.Signature, payload); err != nil {
 		return err
 	}
+	var dispatch RemoteExecutionDispatchPayload
+	if err := json.Unmarshal(item.payload, &dispatch); err != nil {
+		return fmt.Errorf("decode signed remote dispatch: %w", err)
+	}
+	if payload.ControlGeneration != dispatch.ControlGeneration {
+		return fmt.Errorf("remote status belongs to stale control generation")
+	}
 	var expectedPlanHash string
-	if err := s.db.Pool.QueryRow(ctx, `select plan_hash from steward_remote_dispatches where id=$1`, item.id).Scan(&expectedPlanHash); err != nil {
+	var currentGeneration int64
+	if err := s.db.Pool.QueryRow(ctx, `select remote.plan_hash,parent.control_generation
+		from steward_remote_dispatches remote join steward_orchestrations parent on parent.id=remote.orchestration_id
+		where remote.id=$1`, item.id).Scan(&expectedPlanHash, &currentGeneration); err != nil {
 		return err
 	}
 	if payload.PlanHash != expectedPlanHash || payload.OriginDeviceID != s.agentIDValue() {
 		return fmt.Errorf("remote status does not match dispatch plan")
 	}
+	if dispatch.ControlGeneration != currentGeneration && !(item.cancelRequested && payload.Status == "cancelled") {
+		return fmt.Errorf("remote status was fenced by a newer orchestration control generation")
+	}
 	if runtimeRunTerminalStatus(payload.Status) {
-		var dispatch RemoteExecutionDispatchPayload
-		if err := json.Unmarshal(item.payload, &dispatch); err != nil {
-			return err
-		}
 		if dispatch.BrokerDelegation != nil && (payload.Status == "succeeded" || payload.Status == "failed") {
 			if item.brokerPublicKey == "" || item.brokerKeyID != dispatch.BrokerDelegation.Claims.TargetBrokerKeyID {
 				return fmt.Errorf("target Broker identity is not pinned for delegated result verification")
@@ -867,17 +965,27 @@ func (s *Service) acceptRemoteStatus(ctx context.Context, item struct {
 	// response committed after the outbox row was read. In particular, an old
 	// running response must never overwrite cancellation or a newer terminal
 	// receipt, and heartbeats are monotonic even while status stays "running".
-	_, err := s.db.Pool.Exec(ctx, `
+	tag, err := s.db.Pool.Exec(ctx, `
 		update steward_remote_dispatches set status=$2, remote_run_id=$3, heartbeat_at=$4,
 		       lease_expires_at=$5, result_payload=$6::jsonb, result_signature=$7,
-		       last_error=$8, attempt=attempt+1, available_at=$9, updated_at=now(), completed_at=$10,
+		       last_error=$8, attempt=attempt+1,
+		       available_at=now()+make_interval(secs => $9), updated_at=now(), completed_at=$10,
 		       cancel_requested=case when $10::timestamptz is not null then false else cancel_requested end
 		where id=$1 and status=$11 and cancel_requested=$12
 		  and (heartbeat_at is null or heartbeat_at <= $4)
+		  and ($13 or exists(select 1 from steward_orchestrations parent
+		      where parent.id=steward_remote_dispatches.orchestration_id and parent.control_generation=$14))
 	`, item.id, payload.Status, payload.RemoteRunID, payload.HeartbeatAt, payload.LeaseExpiresAt,
 		string(encodedResult), resultSignature, payload.FailureSummary,
-		time.Now().UTC().Add(s.remoteExecutionLease/3), completed, item.status, item.cancelRequested)
-	return err
+		remoteStatusPollDelay(item.status, payload.Status, s.remoteExecutionLease).Seconds(), completed, item.status, item.cancelRequested,
+		item.cancelRequested && payload.Status == "cancelled", dispatch.ControlGeneration)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("remote status response lost its state or control-generation fence")
+	}
+	return nil
 }
 
 func defaultTime(value *time.Time, fallback time.Time) time.Time {

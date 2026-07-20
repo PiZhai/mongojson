@@ -234,7 +234,7 @@ func (s *Service) ClaimAgentMessage(ctx context.Context, agentID, workerID strin
 		join steward_runtime_execution_control control on control.id='global'
 		where message.agent_id=$1 and message.status='pending' and message.available_at <= $2
 		  and parent.status in ('queued','running','compensating') and node.status in ('dispatched','running')
-		  and run.status in ('draft','queued','running','verifying') and control.paused=false
+		  and run.status in ('draft','queued','running','verifying') and run.cancel_requested=false and control.paused=false
 		order by message.available_at, message.created_at
 		for update of message skip locked limit 1
 	`, agentID, now).Scan(&message.ID, &message.AgentID, &message.OrchestrationID,
@@ -358,8 +358,15 @@ func (s *Service) recoverWorkerRunBetweenSteps(ctx context.Context, runID string
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var status string
-	if err := tx.QueryRow(ctx, `select status from steward_agent_runs where id=$1 for update`, runID).Scan(&status); err != nil {
+	var cancelRequested bool
+	if err := tx.QueryRow(ctx, `select status,cancel_requested from steward_agent_runs where id=$1 for update`, runID).Scan(&status, &cancelRequested); err != nil {
 		return err
+	}
+	if cancelRequested {
+		if err := finishAgentRunCancelledTx(ctx, tx, runID, "cancellation observed during Agent worker recovery", time.Now().UTC()); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	if status != RuntimeRunRunning && status != RuntimeRunVerifying {
 		return tx.Commit(ctx)
@@ -394,13 +401,14 @@ func (s *Service) claimDelegatedRunForWorker(ctx context.Context, message domain
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var status, leaseOwner string
+	var cancelRequested bool
 	var leaseExpires time.Time
 	err = tx.QueryRow(ctx, `
-		select run.status, message.lease_owner, message.lease_expires_at
+		select run.status,run.cancel_requested,message.lease_owner,message.lease_expires_at
 		from steward_agent_runs run
 		join steward_agent_messages message on message.runtime_run_id=run.id
 		where run.id=$1 and message.id=$2 for update of run, message
-	`, message.RuntimeRunID, message.ID).Scan(&status, &leaseOwner, &leaseExpires)
+	`, message.RuntimeRunID, message.ID).Scan(&status, &cancelRequested, &leaseOwner, &leaseExpires)
 	if err != nil {
 		return err
 	}
@@ -408,6 +416,12 @@ func (s *Service) claimDelegatedRunForWorker(ctx context.Context, message domain
 		return fmt.Errorf("Agent message lease is not active")
 	}
 	if runtimeRunTerminal(status) {
+		return tx.Commit(ctx)
+	}
+	if cancelRequested {
+		if err := finishAgentRunCancelledTx(ctx, tx, message.RuntimeRunID, "cancellation observed before delegated worker claim", time.Now().UTC()); err != nil {
+			return err
+		}
 		return tx.Commit(ctx)
 	}
 	if status != RuntimeRunDraft && status != RuntimeRunQueued {

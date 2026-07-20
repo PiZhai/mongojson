@@ -923,12 +923,18 @@ func (s *Service) startConversationExecution(ctx context.Context, item domain.St
 			return item, fmt.Errorf("paused multi-Agent execution must be replanned before continuing")
 		}
 	}
-	_, err := s.db.Pool.Exec(ctx, `
+	tag, err := s.db.Pool.Exec(ctx, `
 		update steward_conversation_executions set status='queued', confirmed_at=coalesce(confirmed_at,$2),
-		       requires_confirmation=false, updated_at=$2 where id=$1
-	`, item.ID, now)
+		       requires_confirmation=false, updated_at=$2
+		where id=$1 and status=$3
+	`, item.ID, now, item.Status)
 	if err != nil {
 		return item, err
+	}
+	if tag.RowsAffected() != 1 {
+		// A concurrent pause/cancel or terminal projection owns the row now. The
+		// caller must observe that newer state instead of reviving it to queued.
+		return s.getConversationExecution(ctx, item.ID)
 	}
 	item.Status, item.RequiresConfirmation, item.ConfirmedAt, item.UpdatedAt = conversationExecutionQueued, false, &now, now
 	return item, nil
@@ -1002,7 +1008,8 @@ func (s *Service) cancelConversationExecution(ctx context.Context, item domain.S
 
 func (s *Service) failConversationExecution(ctx context.Context, id string, cause error) error {
 	now := time.Now().UTC()
-	_, err := s.db.Pool.Exec(ctx, `update steward_conversation_executions set status='failed', failure_summary=$2, updated_at=$3, completed_at=$3 where id=$1`, id, sanitizeRuntimeError(cause), now)
+	_, err := s.db.Pool.Exec(ctx, `update steward_conversation_executions set status='failed', failure_summary=$2, updated_at=$3, completed_at=$3
+		where id=$1 and status in ('needs_input','awaiting_confirmation','queued','running')`, id, sanitizeRuntimeError(cause), now)
 	return err
 }
 

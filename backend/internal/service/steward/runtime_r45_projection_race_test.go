@@ -56,6 +56,26 @@ func TestConversationExecutionCancelDoesNotOverwriteTerminalChild(t *testing.T) 
 	}
 }
 
+func TestConversationExecutionFailureDoesNotOverwritePause(t *testing.T) {
+	service, db, ctx := newConversationProjectionRaceService(t)
+	item := seedTerminalRunConversationExecution(t, ctx, service, db)
+	if _, err := db.Pool.Exec(ctx, `update steward_conversation_executions
+		set status='paused',completed_at=null where id=$1`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.failConversationExecution(ctx, item.ID, context.DeadlineExceeded); err != nil {
+		t.Fatal(err)
+	}
+	var status, failure string
+	if err := db.Pool.QueryRow(ctx, `select status,failure_summary from steward_conversation_executions where id=$1`, item.ID).
+		Scan(&status, &failure); err != nil {
+		t.Fatal(err)
+	}
+	if status != conversationExecutionPaused || failure != "" {
+		t.Fatalf("late failure overwrote pause: status=%s failure=%q", status, failure)
+	}
+}
+
 func newConversationProjectionRaceService(t *testing.T) (*Service, *database.DB, context.Context) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))

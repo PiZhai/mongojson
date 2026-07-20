@@ -46,6 +46,38 @@ func TestDelegationRejectionDoesNotOverwriteTerminalRun(t *testing.T) {
 	assertRuntimeV2EventCount(t, ctx, service.db, run.ID, "run.delegation_rejected", 0)
 }
 
+func TestDelegationRejectionDoesNotOverwriteCancellation(t *testing.T) {
+	ctx, service := newDelegationRacePostgresService(t)
+	run, err := service.CreateAgentRun(ctx, CreateAgentRunInput{
+		Goal: "cancellation wins delegation rejection",
+		Steps: []CreateAgentRunStepInput{{
+			Key: "echo", ToolName: "runtime.echo", Arguments: map[string]any{"value": "cancel"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := service.db.Pool.Exec(ctx, `update steward_agent_runs
+		set status=$2,cancel_requested=true,updated_at=$3 where id=$1`, run.ID, RuntimeRunRunning, now); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := service.db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.blockInvalidDelegatedRunTx(ctx, tx, run.ID, errors.New("late delegation rejection"), now.Add(time.Second)); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeV2RunTerminal(t, ctx, service.db, run.ID, RuntimeRunCancelled)
+	assertRuntimeV2EventCount(t, ctx, service.db, run.ID, "run.delegation_rejected", 0)
+	assertRuntimeV2EventCount(t, ctx, service.db, run.ID, "run.cancelled", 1)
+}
+
 func TestStaleAgentMessageNACKDoesNotBlockCompletedRun(t *testing.T) {
 	ctx, service := newDelegationRacePostgresService(t)
 	suffix := strings.ToLower(strings.ReplaceAll(uuid.NewString(), "-", ""))[:12]

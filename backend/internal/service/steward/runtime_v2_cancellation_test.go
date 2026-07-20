@@ -71,6 +71,41 @@ func TestRuntimeV2RecoveryConvergesQueuedCancelRequest(t *testing.T) {
 	assertRuntimeV2EventCount(t, ctx, service.db, run.ID, "run.cancelled", 1)
 }
 
+func TestRuntimeV2CancelRequestFencesNextStepClaim(t *testing.T) {
+	ctx, service := newRuntimeV2PostgresService(t)
+	run := createRuntimeV2CancelRaceRun(t, ctx, service, "cancel fences claim")
+	stepID := firstRuntimeV2StepID(t, ctx, service.db, run.ID)
+	now := time.Now().UTC()
+	if _, err := service.db.Pool.Exec(ctx, `update steward_agent_runs
+		set status=$2,cancel_requested=true,started_at=$3,updated_at=$3 where id=$1`, run.ID, RuntimeRunRunning, now); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := service.GetAgentRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Steps) != 1 || loaded.Steps[0].ID != stepID {
+		t.Fatalf("unexpected run steps: %+v", loaded.Steps)
+	}
+	claimed, invocation, err := service.claimAgentRunStep(ctx, loaded.Steps[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed || invocation.ID != "" {
+		t.Fatalf("cancel-requested run admitted invocation: claimed=%v invocation=%s", claimed, invocation.ID)
+	}
+	assertRuntimeV2RunTerminal(t, ctx, service.db, run.ID, RuntimeRunCancelled)
+	assertRuntimeV2EventCount(t, ctx, service.db, run.ID, "step.running", 0)
+	assertRuntimeV2EventCount(t, ctx, service.db, run.ID, "run.cancelled", 1)
+	var invocations int
+	if err := service.db.Pool.QueryRow(ctx, `select count(*) from steward_tool_invocations where run_id=$1`, run.ID).Scan(&invocations); err != nil {
+		t.Fatal(err)
+	}
+	if invocations != 0 {
+		t.Fatalf("cancel-requested run created %d invocations", invocations)
+	}
+}
+
 func newRuntimeV2PostgresService(t *testing.T) (context.Context, *Service) {
 	t.Helper()
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))

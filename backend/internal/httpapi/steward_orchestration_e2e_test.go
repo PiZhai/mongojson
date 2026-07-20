@@ -389,7 +389,8 @@ func TestStewardR44BrokerDelegationAndVerifiedCredentialBoundResult(t *testing.T
 	if completed.Status != steward.OrchestrationSucceeded || completed.Nodes[0].RemoteDispatch == nil ||
 		completed.Nodes[0].RemoteDispatch.Status != "succeeded" || completed.Nodes[0].RemoteDispatch.ResultSignature == "" ||
 		completed.Evidence.ArtifactCount != 1 || completed.Evidence.RedactedCount != 1 {
-		t.Fatalf("R4.4 result did not pass device and Broker receipt verification: %+v", completed)
+		t.Fatalf("R4.4 result did not pass device and Broker receipt verification: orchestration=%+v remote_dispatch=%+v",
+			completed, completed.Nodes[0].RemoteDispatch)
 	}
 }
 

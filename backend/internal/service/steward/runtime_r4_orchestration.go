@@ -1948,6 +1948,19 @@ func (s *Service) verifyRuntimeOrchestrationDelegationTx(ctx context.Context, tx
 
 func (s *Service) blockInvalidDelegatedRunTx(ctx context.Context, tx pgx.Tx, runID string, cause error, now time.Time) error {
 	message := "R4.0 delegation rejected: " + cause.Error()
+	var currentStatus string
+	var cancelRequested bool
+	if err := tx.QueryRow(ctx, `select status,cancel_requested from steward_agent_runs where id=$1 for update`, runID).Scan(&currentStatus, &cancelRequested); errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if runtimeRunTerminal(currentStatus) {
+		return nil
+	}
+	if cancelRequested {
+		return finishAgentRunCancelledTx(ctx, tx, runID, "cancellation won before delegation rejection was committed", now)
+	}
 	var transitioned int
 	// The Runtime run is the ownership boundary for a delegation rejection.
 	// Fence this write against a concurrent success/cancel/failure first. The
@@ -1959,6 +1972,7 @@ func (s *Service) blockInvalidDelegatedRunTx(ctx context.Context, tx pgx.Tx, run
 		set status=$2, failure_summary=$3, cancel_requested=false,
 		    updated_at=$4, completed_at=$4
 		where id=$1 and status in ('draft','planning','awaiting_approval','queued','running','verifying','compensating')
+		  and cancel_requested=false
 		returning 1
 	`, runID, RuntimeRunBlocked, message, now).Scan(&transitioned)
 	if errors.Is(err, pgx.ErrNoRows) {
