@@ -594,6 +594,8 @@ export type StewardCollectorConfig = {
   enabled: boolean;
   scope_summary: string;
   settings: Record<string, unknown>;
+  execution_target: 'main' | 'companion' | 'system' | 'auto' | string;
+  user_overridden: boolean;
   last_run_at?: string | null;
   last_error?: string | null;
   created_at: string;
@@ -1657,6 +1659,7 @@ export type StewardNotificationAction = {
 export type StewardNotificationDelivery = {
   id: string;
   notification_id: string;
+  schedule_revision?: number;
   endpoint_id?: string | null;
   channel: string;
   status: string;
@@ -1670,6 +1673,7 @@ export type StewardNotificationDelivery = {
 
 export type StewardNotification = {
   id: string;
+  schedule_revision?: number;
   source_type: string;
   source_id?: string;
   title: string;
@@ -1678,6 +1682,8 @@ export type StewardNotification = {
   priority: 'low' | 'normal' | 'high' | 'urgent';
   status: string;
   scheduled_at: string;
+  allowed_window_start?: string | null;
+  allowed_window_end?: string | null;
   expires_at?: string | null;
   actions: StewardNotificationAction[];
   deliveries: StewardNotificationDelivery[];
@@ -1695,5 +1701,352 @@ export type StewardNotificationEndpoint = {
   secret_set: boolean;
   last_success_at?: string | null;
   last_error?: string;
+  updated_at: string;
+};
+
+export type StewardActivitySourceStatus = {
+  device_id: string;
+  collector_name: string;
+  source_key: string;
+  execution_target: string;
+  status: string;
+  cursor: Record<string, unknown>;
+  capabilities: Record<string, unknown>;
+  last_poll_at?: string | null;
+  last_source_event_at?: string | null;
+  last_ingested_at?: string | null;
+  backlog_count: number;
+  max_expected_lag_seconds: number;
+  last_error?: string;
+  fresh: boolean;
+};
+
+export type StewardActivityPipelineStatus = {
+  enabled: boolean;
+  mode: string;
+  sources: StewardActivitySourceStatus[];
+  pending_batches: number;
+  processing_batches: number;
+  waiting_model: number;
+  failed_batches: number;
+  last_batch_at?: string | null;
+  updated_at: string;
+};
+
+export type StewardIntelligenceSettings = {
+  enabled: boolean;
+  mode: 'batch' | 'legacy';
+  capture_profile: 'metadata' | 'hybrid' | 'deep';
+  timezone: string;
+  activity_sample_seconds: number;
+  sessionize_interval_seconds: number;
+  batch_interval_seconds: number;
+  boundary_grace_seconds: number;
+  daily_report_fallback_local: string;
+  weekly_report_day: number;
+  weekly_report_local: string;
+  monthly_report_local: string;
+  recent_profile_days: number;
+  stable_min_evidence_days: number;
+  profile_bootstrap_days: number;
+  report_catchup_days: number;
+  background_max_rounds: number;
+  background_max_tool_calls: number;
+  background_max_duration_seconds: number;
+  background_no_progress_limit: number;
+  quiet_start_local: string;
+  quiet_end_local: string;
+  reminder_daily_soft_budget: number;
+  reminder_category_soft_budget: number;
+  reminder_cooldown_seconds: number;
+  raw_metadata_retention_days: number;
+  unreferenced_media_retention_days: number;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardBackgroundQueueStatus = {
+  pending: number;
+  processing: number;
+  waiting_model: number;
+  failed: number;
+  last_success_at?: string | null;
+};
+
+export type StewardNotificationQueueStatus = {
+  queued: number;
+  sending: number;
+  retrying: number;
+  failed: number;
+  accepted: number;
+  last_sent_at?: string | null;
+};
+
+export type StewardHealthIssue = {
+  code: string;
+  message: string;
+  action: string;
+};
+
+export type StewardRatioMetric = {
+  available: boolean;
+  value?: number;
+  numerator: number;
+  denominator: number;
+  reason?: string;
+};
+
+export type StewardReportCoverageMetrics = {
+  available: boolean;
+  report_count: number;
+  average?: number;
+  reason?: string;
+};
+
+export type StewardModelUsageMetrics = {
+  available: boolean;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  cost?: number | null;
+  currency?: string;
+  reason: string;
+};
+
+export type StewardBackgroundMetrics = {
+  window_start: string;
+  window_end: string;
+  observations_1h: number;
+  sessions_1h: number;
+  session_compression_ratio: StewardRatioMetric;
+  batch_status_counts: Record<string, number>;
+  model_episodes_1h: {
+    completed: number;
+    failed: number;
+  };
+  report_coverage: StewardReportCoverageMetrics;
+  reminder_feedback_1h: {
+    total: number;
+    by_action: Record<string, number>;
+  };
+  model_usage: StewardModelUsageMetrics;
+};
+
+export type StewardBackgroundStatus = {
+  state: 'healthy' | 'degraded' | 'unhealthy' | 'disabled';
+  enabled: boolean;
+  mode: string;
+  checked_at: string;
+  agent: StewardAgentStatus;
+  loops: StewardBackgroundLoopStatus[];
+  pipeline: StewardActivityPipelineStatus;
+  intelligence_queue: StewardBackgroundQueueStatus;
+  notifications: StewardNotificationQueueStatus;
+  model: StewardAutonomyAdvisorStatus;
+  latest_outcome?: {
+    kind: string;
+    status: string;
+    summary?: string;
+    at: string;
+  } | null;
+  latest_report_at?: string | null;
+  profile_updated_at?: string | null;
+  issues: string[];
+  issue_details?: StewardHealthIssue[];
+  metrics?: StewardBackgroundMetrics;
+  next_consolidation_at?: string | null;
+  next_daily_report_at?: string | null;
+};
+
+export type StewardActivityBatch = {
+  id: string;
+  device_id: string;
+  window_start: string;
+  window_end: string;
+  trigger_kind: string;
+  revision: number;
+  status: string;
+  due_at: string;
+  episode_id?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardIntelligenceJob = {
+  id: string;
+  kind: string;
+  period_key: string;
+  period_start: string;
+  period_end: string;
+  status: string;
+  input: Record<string, unknown>;
+  checkpoint: Record<string, unknown>;
+  attempts: number;
+  max_attempts: number;
+  due_at: string;
+  next_attempt_at: string;
+  lease_owner?: string;
+  lease_expires_at?: string | null;
+  control_generation: number;
+  episode_id?: string | null;
+  report_id?: string | null;
+  failure_summary?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+};
+
+export type StewardReportRegenerationResult = {
+  source_report_id: string;
+  source_revision: number;
+  job: StewardIntelligenceJob;
+  created: boolean;
+};
+
+export type StewardProfileEvidence = {
+  id: string;
+  fact_id: string;
+  source_type: string;
+  source_id: string;
+  summary?: string;
+  evidence_day: string;
+  content_hash?: string;
+  created_at: string;
+};
+
+export type StewardProfileFact = {
+  id: string;
+  key: string;
+  value: Record<string, unknown>;
+  summary: string;
+  horizon: 'recent' | 'stable' | 'explicit';
+  status: string;
+  version: number;
+  confidence: number;
+  evidence_count: number;
+  evidence_days: number;
+  user_confirmed: boolean;
+  conflict_group: string;
+  supersedes_fact_id?: string | null;
+  created_by: string;
+  provider?: string;
+  model?: string;
+  valid_from: string;
+  valid_to?: string | null;
+  evidence?: StewardProfileEvidence[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardProfileSnapshot = {
+  id: string;
+  horizon: 'recent' | 'stable' | 'explicit' | 'merged';
+  revision: number;
+  window_start?: string | null;
+  window_end: string;
+  facts: StewardProfileFact[];
+  profile: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+};
+
+export type StewardProfileView = {
+  recent?: StewardProfileSnapshot | null;
+  stable?: StewardProfileSnapshot | null;
+  explicit?: StewardProfileSnapshot | null;
+  merged?: StewardProfileSnapshot | null;
+};
+
+export type StewardReportEvidence = {
+  id: string;
+  report_id: string;
+  source_type: string;
+  source_id: string;
+  summary?: string;
+  content_hash?: string;
+  created_at: string;
+};
+
+export type StewardReport = {
+  id: string;
+  cadence: 'daily' | 'weekly' | 'monthly';
+  period_key: string;
+  period_start: string;
+  period_end: string;
+  revision: number;
+  status: string;
+  title: string;
+  summary: string;
+  body: string;
+  metrics: Record<string, unknown>;
+  silent: boolean;
+  evidence_count: number;
+  supersedes_id?: string | null;
+  provider?: string;
+  model?: string;
+  error_summary?: string;
+  evidence?: StewardReportEvidence[];
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+};
+
+export type StewardReminderFeedback = {
+  id: string;
+  notification_id: string;
+  schedule_revision: number;
+  policy_id?: string | null;
+  action: string;
+  device_id: string;
+  channel: string;
+  category: string;
+  timezone: string;
+  activity_context: string;
+  response_seconds?: number | null;
+  snooze_seconds?: number | null;
+  new_scheduled_at?: string | null;
+  idempotency_key: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type StewardReceptivityWindow = {
+  id: string;
+  profile_scope: string;
+  category: string;
+  weekday: number;
+  time_slot: number;
+  activity_context: string;
+  device_id: string;
+  channel: string;
+  sample_count: number;
+  opened_count: number;
+  acted_count: number;
+  acknowledged_count: number;
+  snoozed_count: number;
+  dismissed_count: number;
+  ignored_count: number;
+  cancelled_count: number;
+  auto_resolved_count: number;
+  mean_response_seconds: number;
+  confidence: number;
+  score: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StewardReminderPolicy = {
+  id: string;
+  profile_scope: string;
+  category: string;
+  version: number;
+  status: string;
+  policy: Record<string, unknown>;
+  rationale: string;
+  evidence_manifest: string[];
+  source_episode_id?: string | null;
+  supersedes_id?: string | null;
+  created_at: string;
   updated_at: string;
 };

@@ -516,8 +516,6 @@ if($managementToken.Length -lt 32){
     $accessToken=$null
   }catch{Add-Check 'main.management_access_token_file' $false $_.Exception.Message}
 }
-$managementToken=$null
-
 $systemHost=Join-Path $InstallDir 'steward-system-tool-host.exe';$brokerCLI=Join-Path $InstallDir 'steward-broker.exe'
 Add-Check 'broker.system_tool_host' (Test-Path $systemHost) $systemHost
 if((Test-Path $systemHost) -and (Test-Path $policy)){
@@ -558,6 +556,11 @@ if($RequireCompanion){
   $taskOK=$null -ne $task -and $task.Principal.RunLevel -eq 'Limited' -and $task.State -eq 'Running'
   Add-Check 'companion.task' $taskOK $(if($task){"state=$($task.State); run_level=$($task.Principal.RunLevel)"}else{'missing'})
   $expectedCompanion=if($task -and $task.Actions.Count -gt 0){[Environment]::ExpandEnvironmentVariables([string]$task.Actions[0].Execute)}else{''}
+  $taskArguments=if($task -and $task.Actions.Count -gt 0){[string]$task.Actions[0].Arguments}else{''}
+  $expectedCompanionAPIBase=([string]$DetailedReadyURL -replace '/system/readiness/?$','').TrimEnd('/')
+  $taskAPIConfigured=-not [string]::IsNullOrWhiteSpace($expectedCompanionAPIBase) -and $taskArguments.Contains('--api') -and $taskArguments.Contains($expectedCompanionAPIBase)
+  $taskAuthRequired=$taskArguments -match '(?:^|\s)--require-management-token=(?:true|True)(?:\s|$)'
+  Add-Check 'companion.production_arguments' ($taskAPIConfigured -and $taskAuthRequired) "api_base=$expectedCompanionAPIBase; management_auth_required=$taskAuthRequired"
   $companionProcesses=@(Get-CimInstance Win32_Process -Filter "Name='steward-companion.exe'" -ErrorAction SilentlyContinue|Where-Object{
     $path=[string]$_.ExecutablePath
     -not [string]::IsNullOrWhiteSpace($path) -and -not [string]::IsNullOrWhiteSpace($expectedCompanion) -and
@@ -566,13 +569,57 @@ if($RequireCompanion){
   $interactiveProcesses=@($companionProcesses|Where-Object{[int]$_.SessionId -gt 0})
   Add-Check 'companion.interactive_process' ($interactiveProcesses.Count -gt 0) $(if($interactiveProcesses.Count){"pid=$($interactiveProcesses[0].ProcessId); session_id=$($interactiveProcesses[0].SessionId); executable=$expectedCompanion"}else{"no matching Companion process in an interactive session; expected=$expectedCompanion"})
 
-  $pipeReady=$false
-  try{
-    $statusResponse=Invoke-CompanionPipeRequest 'GET' '/status' ([byte[]]::new(0)) @{}
-    $status=if($statusResponse.Body){$statusResponse.Body|ConvertFrom-Json}else{$null}
-    $pipeReady=$statusResponse.StatusCode -eq 200 -and $status.status -eq 'ready'
-    Add-Check 'companion.named_pipe' $pipeReady $(if($pipeReady){"\\.\pipe\$CompanionPipeName returned status=ready"}else{"\\.\pipe\$CompanionPipeName returned HTTP $($statusResponse.StatusCode): $($statusResponse.Body)"})
-  }catch{Add-Check 'companion.named_pipe' $false $_.Exception.Message}
+  $pipeReady=$false;$status=$null;$statusResponse=$null;$statusError='';$statusDeadline=(Get-Date).AddSeconds($StartupTimeoutSeconds)
+  do{
+    try{
+      $statusResponse=Invoke-CompanionPipeRequest 'GET' '/status' ([byte[]]::new(0)) @{}
+      $status=if($statusResponse.Body){$statusResponse.Body|ConvertFrom-Json}else{$null}
+      $pipeReady=$statusResponse.StatusCode -eq 200 -and $status.status -eq 'ready'
+      if($pipeReady){$statusError='';break}
+      $statusError="HTTP $($statusResponse.StatusCode): $($statusResponse.Body)"
+    }catch{$statusError=$_.Exception.Message}
+    Start-Sleep -Milliseconds 500
+  }while((Get-Date)-lt $statusDeadline)
+  Add-Check 'companion.named_pipe' $pipeReady $(if($pipeReady){"\\.\pipe\$CompanionPipeName returned status=ready"}else{"\\.\pipe\$CompanionPipeName did not become ready within ${StartupTimeoutSeconds}s: $statusError"})
+  if($null -ne $status){
+    $authHealthy=$status.management_auth.required -eq $true -and $status.management_auth.configured -eq $true -and $status.management_auth.healthy -eq $true
+    Add-Check 'companion.management_auth' $authHealthy "required=$($status.management_auth.required); configured=$($status.management_auth.configured); healthy=$($status.management_auth.healthy); error=$($status.management_auth.last_error)"
+    $controlHealthy=$status.control.healthy -eq $true -and [string]::IsNullOrWhiteSpace([string]$status.control.last_error)
+    Add-Check 'companion.control_health' $controlHealthy "healthy=$($status.control.healthy); last_success_at=$($status.control.last_success_at); error=$($status.control.last_error)"
+    $deliveryHealthy=$status.flush_healthy -eq $true -and $status.capture_healthy -eq $true
+    Add-Check 'companion.capture_flush_health' $deliveryHealthy "capture_healthy=$($status.capture_healthy); flush_enabled=$($status.flush_enabled); flush_healthy=$($status.flush_healthy); pending=$($status.pending); flush_error=$($status.flush.last_error); capture_error=$($status.activity_capture.last_error)"
+  }else{
+    Add-Check 'companion.management_auth' $false 'Companion status payload is unavailable'
+    Add-Check 'companion.control_health' $false 'Companion status payload is unavailable'
+    Add-Check 'companion.capture_flush_health' $false 'Companion status payload is unavailable'
+  }
+
+  # A healthy process and an empty outbox are not sufficient proof that the
+  # interactive collector works. Wait for a sample captured after this probe
+  # to be authenticated, flushed, and reflected by the main service's durable
+  # collection-source projection.
+  $activityIngestionOK=$false;$activityIngestionError='';$activitySource=$null
+  $activityProbeStartedAt=[DateTimeOffset]::UtcNow.AddSeconds(-2)
+  $activityDeadline=(Get-Date).AddSeconds($StartupTimeoutSeconds)
+  do{
+    if($managementToken.Length -lt 32){$activityIngestionError='protected management token is unavailable';break}
+    try{
+      $backgroundURL=$healthURI.GetLeftPart([UriPartial]::Authority) + '/api/steward/background/status'
+      $background=Invoke-RestMethod -Uri $backgroundURL -Headers @{Authorization="Bearer $managementToken"} -TimeoutSec 5
+      $activitySource=@($background.status.pipeline.sources|Where-Object{
+        [string]$_.collector_name -eq 'companion:windows-activity' -and $_.last_ingested_at
+      }|Sort-Object{[DateTimeOffset]::Parse([string]$_.last_ingested_at,[Globalization.CultureInfo]::InvariantCulture)} -Descending|Select-Object -First 1)
+      if($activitySource.Count -gt 0){
+        $lastIngested=[DateTimeOffset]::Parse([string]$activitySource[0].last_ingested_at,[Globalization.CultureInfo]::InvariantCulture)
+        if($lastIngested -ge $activityProbeStartedAt -and $activitySource[0].status -eq 'healthy' -and $activitySource[0].ingestion_fresh -eq $true){
+          $activitySource=$activitySource[0];$activityIngestionOK=$true;$activityIngestionError='';break
+        }
+        $activityIngestionError="latest Companion ingestion is not newer than the verification probe or is unhealthy: last_ingested_at=$lastIngested status=$($activitySource[0].status) ingestion_fresh=$($activitySource[0].ingestion_fresh)"
+      }else{$activityIngestionError='main service has no persisted companion:windows-activity source state'}
+    }catch{$activityIngestionError=$_.Exception.Message}
+    Start-Sleep -Milliseconds 500
+  }while((Get-Date)-lt $activityDeadline)
+  Add-Check 'companion.real_activity_ingestion' $activityIngestionOK $(if($activityIngestionOK){"session=$($activitySource.interactive_session_id); event_type=$($activitySource.event_type); last_ingested_at=$($activitySource.last_ingested_at); backlog=$($activitySource.backlog_count)"}else{"no post-probe activity sample reached durable storage within ${StartupTimeoutSeconds}s: $activityIngestionError"})
 
   if($pipeReady -and $mainSecrets.ContainsKey('STEWARD_LOCAL_ENCRYPTION_KEY')){
     try{
@@ -587,6 +634,8 @@ if($RequireCompanion){
 }else{
   Add-Check 'companion.task' $true $(if($task){"optional; state=$($task.State); run_level=$($task.Principal.RunLevel)"}else{'optional; not installed'})
 }
+
+$managementToken=$null
 
 $result = [ordered]@{ ok=(-not $script:verificationFailed); checked_at=(Get-Date).ToUniversalTime().ToString("o"); checks=@($checks) }
 $result | ConvertTo-Json -Depth 8

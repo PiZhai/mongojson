@@ -11,13 +11,17 @@ param(
   [string]$ServiceName='MongojsonSteward',
   [string]$BrokerServiceName='MongojsonStewardBroker',
   [string]$CompanionTaskName='MongojsonStewardCompanion',
+  [string]$HTTPAddress='127.0.0.1:18080',
+  [string]$PeerHTTPAddress='127.0.0.1:18081',
   [string]$ResumeFromBackup='',
   [switch]$AllowUnsignedPackage,
   [switch]$AllowDirtyPackage,
   [string]$TrustedSignerThumbprint='',
   [switch]$SkipCertificateRevocationCheck,
   [string]$ReleaseStagingRoot=(Join-Path $env:ProgramData 'MongojsonStewardReleaseStaging'),
-  [switch]$InstallCompanion,
+  # Preserve the interactive-session capture path during production
+  # migration unless the operator explicitly requests a headless install.
+  [switch]$InstallCompanion = $true,
   [switch]$Verify,
   [string]$LegacyHealthURL='http://127.0.0.1:18080/healthz',
   [int]$RollbackHealthTimeoutSeconds=60
@@ -440,7 +444,7 @@ try{
   Wait-ServiceAbsent $ServiceName
   Stop-InstalledCompanion $CompanionTaskName $CompanionInstallDir
   Remove-DirectoryWithRetry $InstallDir
-  $installArgs=@{SourceDir=$source;DatabaseURL=$DatabaseURL;InstallDir=$InstallDir;DataDir=$DataDir;BrokerInstallDir=$BrokerInstallDir;BrokerDataDir=$BrokerDataDir;ServiceName=$ServiceName;BrokerServiceName=$BrokerServiceName;CompanionTaskName=$CompanionTaskName;InstallCompanion=$InstallCompanion;Start=$true;Verify=$Verify;AllowUnsignedPackage=$AllowUnsignedPackage;AllowDirtyPackage=$AllowDirtyPackage;SkipCertificateRevocationCheck=$SkipCertificateRevocationCheck;ReleaseStagingRoot=$ReleaseStagingRoot}
+  $installArgs=@{SourceDir=$source;DatabaseURL=$DatabaseURL;InstallDir=$InstallDir;DataDir=$DataDir;BrokerInstallDir=$BrokerInstallDir;BrokerDataDir=$BrokerDataDir;ServiceName=$ServiceName;BrokerServiceName=$BrokerServiceName;CompanionTaskName=$CompanionTaskName;HTTPAddress=$HTTPAddress;PeerHTTPAddress=$PeerHTTPAddress;InstallCompanion=$InstallCompanion;Start=$true;Verify=$Verify;AllowUnsignedPackage=$AllowUnsignedPackage;AllowDirtyPackage=$AllowDirtyPackage;SkipCertificateRevocationCheck=$SkipCertificateRevocationCheck;ReleaseStagingRoot=$ReleaseStagingRoot}
   if($trustedSigner){$installArgs.TrustedSignerThumbprint=$trustedSigner}
   if($envMap['STEWARD_AGENT_ID']){$installArgs.AgentID=$envMap['STEWARD_AGENT_ID']}
   if($envMap['STEWARD_SYNC_SECRET']){$installArgs.SyncSecret=$envMap['STEWARD_SYNC_SECRET']}

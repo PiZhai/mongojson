@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,7 +53,7 @@ func normalizeCollectorSettings(name string, input map[string]any) (map[string]a
 			if name == "screenpipe-bridge" {
 				endpoint = "http://127.0.0.1:3030"
 			} else {
-				endpoint = "http://127.0.0.1:5600"
+				endpoint = "http://127.0.0.1:6100"
 			}
 		}
 		if err := validateLocalAdapterEndpoint(endpoint); err != nil {
@@ -86,6 +87,10 @@ func normalizeCollectorSettings(name string, input map[string]any) (map[string]a
 // polled by the slower five-minute collection loop. Every source is still
 // governed by its collector switch and the data-policy gate in CreateObservation.
 func (s *Service) RunRealtimeCollectors(ctx context.Context) error {
+	allowed, err := s.collectionCycleAllowed(ctx)
+	if err != nil || !allowed {
+		return err
+	}
 	collector, err := s.getCollector(ctx, "windows-activity")
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -104,6 +109,10 @@ func (s *Service) RunRealtimeCollectors(ctx context.Context) error {
 }
 
 func (s *Service) RunEnabledCollectors(ctx context.Context) error {
+	allowed, err := s.collectionCycleAllowed(ctx)
+	if err != nil || !allowed {
+		return err
+	}
 	collectors, err := s.ListCollectors(ctx)
 	if err != nil {
 		return err
@@ -127,9 +136,12 @@ func (s *Service) RunEnabledCollectors(ctx context.Context) error {
 			continue
 		}
 		if updateErr := s.recordCollectorRun(ctx, collector.Name, runErr); updateErr != nil {
-			runErr = updateErr
+			// Losing the durable status update is a platform failure even for an
+			// optional source, so it must still fail the collection cycle.
+			errorsFound = append(errorsFound, collector.Name+": "+updateErr.Error())
+			continue
 		}
-		if runErr != nil {
+		if collectorFailureBlocksLoop(collector.Name, runErr) {
 			errorsFound = append(errorsFound, collector.Name+": "+runErr.Error())
 		}
 	}
@@ -137,6 +149,24 @@ func (s *Service) RunEnabledCollectors(ctx context.Context) error {
 		return fmt.Errorf("collector run completed with errors: %s", strings.Join(errorsFound, "; "))
 	}
 	return nil
+}
+
+func (s *Service) collectionCycleAllowed(ctx context.Context) (bool, error) {
+	settings, err := s.GetIntelligenceSettings(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read intelligence collection settings: %w", err)
+	}
+	if !settings.Enabled {
+		return false, nil
+	}
+	var paused bool
+	if err := s.db.Pool.QueryRow(ctx, `select paused from steward_runtime_execution_control where id='global'`).Scan(&paused); err != nil {
+		return false, fmt.Errorf("read global collection control: %w", err)
+	}
+	return !paused, nil
 }
 
 func (s *Service) collectSystemStatus(ctx context.Context) error {
@@ -162,7 +192,10 @@ func (s *Service) collectWatchedDirectories(ctx context.Context, settings map[st
 		return err
 	}
 	if len(paths) == 0 {
-		return fmt.Errorf("no watched directories configured")
+		// Old installations could have this collector enabled before paths
+		// were configured. Treat that state as inactive instead of emitting the
+		// same error every collection interval; current defaults keep it off.
+		return nil
 	}
 	depth := collectorInt(settings["max_depth"], 1)
 	startedAt := time.Now().UTC()
@@ -225,6 +258,20 @@ func (s *Service) collectWatchedDirectories(ctx context.Context, settings map[st
 		Payload: map[string]any{"changed_count": changedCount, "deleted_count": deletedCount},
 	})
 	return err
+}
+
+func collectorFailureBlocksLoop(name string, runErr error) bool {
+	if runErr == nil {
+		return false
+	}
+	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+		return true
+	}
+	// ActivityWatch is an optional enhancement over the native Windows
+	// collector. Its collector and source-state rows retain last_error/status
+	// for observability, but an absent or incompatible sidecar must not keep
+	// the entire background collection loop in an error state.
+	return name != "activitywatch-bridge"
 }
 
 type directoryMetadata struct {

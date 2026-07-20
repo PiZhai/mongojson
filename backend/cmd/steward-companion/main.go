@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -42,9 +43,16 @@ func main() {
 	pipe := fs.String("pipe", envOrDefault("STEWARD_COMPANION_PIPE", `\\.\pipe\MongojsonStewardCompanion`), "authenticated companion named pipe")
 	serviceName := fs.String("service-name", "MongojsonSteward", "Windows service name allowed to connect to the companion pipe")
 	privateEnvironmentFile := fs.String("private-environment-file", "", "Protected JSON file containing the local encryption key")
+	managementAccessTokenFile := fs.String("management-access-token-file", envOrDefault("STEWARD_MANAGEMENT_ACCESS_TOKEN_FILE", defaultManagementAccessTokenFile()), "protected file containing the local management API bearer token")
+	requireManagementToken := fs.Bool("require-management-token", boolEnvOrDefault("STEWARD_COMPANION_REQUIRE_MANAGEMENT_TOKEN", true), "fail closed unless a management API bearer token is available; set false only for explicit unauthenticated development")
 	apiBase := fs.String("api", envOrDefault("STEWARD_API_BASE", "http://127.0.0.1:18080/api"), "local steward API base")
 	dbPath := fs.String("db", filepath.Join(dataDir, "MongojsonSteward", "companion.db"), "encrypted row buffer SQLite path")
 	flushInterval := fs.Duration("flush-interval", 10*time.Second, "buffer flush interval")
+	controlInterval := fs.Duration("control-interval", 15*time.Second, "main-service capture control refresh interval")
+	captureInterval := fs.Duration("capture-interval", durationEnvOrDefault("STEWARD_COMPANION_CAPTURE_INTERVAL", stewardcompanion.DefaultCaptureInterval), "interactive Windows activity sample interval")
+	afkThreshold := fs.Duration("afk-threshold", durationEnvOrDefault("STEWARD_COMPANION_AFK_THRESHOLD", stewardcompanion.DefaultAFKThreshold), "idle duration before the session is considered AFK")
+	segmentDuration := fs.Duration("capture-segment-duration", durationEnvOrDefault("STEWARD_COMPANION_CAPTURE_SEGMENT_DURATION", stewardcompanion.DefaultSegmentDuration), "maximum duration of one revisioned activity segment")
+	captureEnabled := fs.Bool("capture", boolEnvOrDefault("STEWARD_COMPANION_CAPTURE_ENABLED", true), "capture foreground and AFK activity in the logged-in session")
 	_ = fs.Parse(os.Args[1:])
 	if strings.TrimSpace(*privateEnvironmentFile) != "" {
 		if err := servicecontrol.LoadPrivateEnvironmentFile(*privateEnvironmentFile); err != nil {
@@ -58,6 +66,14 @@ func main() {
 	}
 	if strings.TrimSpace(*pipe) == "" {
 		log.Fatal("companion named pipe is required")
+	}
+	managementToken, err := readSingleLineSecret(*managementAccessTokenFile, *requireManagementToken)
+	if err != nil {
+		log.Fatal(err)
+	}
+	managementClient, err := stewardcompanion.NewManagementHTTPClient(managementToken, 20*time.Second)
+	if err != nil {
+		log.Fatal(err)
 	}
 	key, err := companionKey()
 	if err != nil {
@@ -75,6 +91,103 @@ func main() {
 		log.Fatal(err)
 	}
 	defer buffer.Close()
+	var captureLoop *stewardcompanion.CaptureLoop
+	var flushEnabled atomic.Bool
+	flushEnabled.Store(!*requireManagementToken)
+	runtimeHealth := newCompanionRuntimeHealth(*requireManagementToken, managementToken != "")
+	if *captureEnabled {
+		captureLoop = stewardcompanion.NewCaptureLoop(
+			stewardcompanion.NewNativeActivitySampler(),
+			buffer,
+			stewardcompanion.CaptureOptions{Interval: *captureInterval, AFKThreshold: *afkThreshold, SegmentDuration: *segmentDuration, Logger: log.Default()},
+		)
+		if *requireManagementToken {
+			// Production starts fail-closed. It can be enabled only by a live
+			// authenticated control refresh or the encrypted snapshot from the last
+			// refresh authenticated by this exact endpoint and credential.
+			captureLoop.ApplyControl(false, stewardcompanion.CaptureOptions{
+				Interval: *captureInterval, AFKThreshold: *afkThreshold, SegmentDuration: *segmentDuration,
+			})
+		}
+	}
+	controlCacheBinding := ""
+	if managementToken != "" {
+		controlCacheBinding, err = stewardcompanion.CaptureControlCacheBinding(*apiBase, managementToken)
+		if err != nil {
+			log.Fatalf("prepare authenticated capture-control cache: %v", err)
+		}
+	}
+	applyControl := func(control stewardcompanion.CaptureControl) {
+		flushEnabled.Store(control.FlushEnabled)
+		if captureLoop != nil {
+			captureLoop.ApplyControl(control.CaptureEnabled, stewardcompanion.CaptureOptions{
+				Interval: control.Interval, AFKThreshold: *afkThreshold, SegmentDuration: *segmentDuration,
+				Timezone: control.Timezone,
+			})
+		}
+	}
+	if controlCacheBinding != "" {
+		cached, cacheErr := buffer.LoadAuthenticatedCaptureControl(ctx, controlCacheBinding)
+		switch {
+		case cacheErr == nil:
+			applyControl(cached.Control)
+			log.Printf("using authenticated capture-control cache from %s while refreshing the main service", cached.AuthenticatedAt.Format(time.RFC3339))
+		case !errors.Is(cacheErr, stewardcompanion.ErrNoCachedCaptureControl):
+			log.Printf("authenticated capture-control cache is unavailable: %v", cacheErr)
+		}
+	}
+	lastControlError := ""
+	refreshControl := func() {
+		controlCtx, controlCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer controlCancel()
+		control, controlErr := stewardcompanion.FetchCaptureControl(controlCtx, *apiBase, managementClient)
+		runtimeHealth.recordControl(controlErr)
+		if controlErr != nil {
+			message := controlErr.Error()
+			if message != lastControlError {
+				log.Printf("companion control refresh failed; retaining last state: %v", controlErr)
+				lastControlError = message
+			}
+			if *requireManagementToken && isCompanionAuthenticationError(message) {
+				flushEnabled.Store(false)
+				if captureLoop != nil {
+					captureLoop.ApplyControl(false, stewardcompanion.CaptureOptions{
+						Interval: *captureInterval, AFKThreshold: *afkThreshold, SegmentDuration: *segmentDuration,
+					})
+				}
+			}
+			return
+		}
+		if lastControlError != "" {
+			log.Printf("companion control refresh recovered")
+			lastControlError = ""
+		}
+		if cacheErr := cacheAuthenticatedCaptureControl(controlCtx, buffer, controlCacheBinding, managementToken != "", control, time.Now().UTC()); cacheErr != nil {
+			runtimeHealth.recordControl(cacheErr)
+			log.Printf("companion received live control but could not persist its authenticated cache: %v", cacheErr)
+		}
+		applyControl(control)
+	}
+	refreshControl()
+	if captureLoop != nil {
+		go captureLoop.Run(ctx)
+	}
+	go func() {
+		interval := *controlInterval
+		if interval <= 0 {
+			interval = 15 * time.Second
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refreshControl()
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
@@ -83,10 +196,12 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "ready", "pending": count, "capacity": stewardcompanion.DefaultMaxPending,
-			"allowed_data_levels": buffer.AllowedDataLevels(),
-		})
+		captureStatus := stewardcompanion.CaptureStatus{Enabled: false}
+		if captureLoop != nil {
+			captureStatus = captureLoop.Status()
+		}
+		status := runtimeHealth.statusPayload(flushEnabled.Load(), captureStatus, count, stewardcompanion.DefaultMaxPending, buffer.AllowedDataLevels(), *apiBase)
+		writeJSON(w, http.StatusOK, status)
 	})
 	mux.HandleFunc("POST /observations", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 44<<20)
@@ -101,6 +216,35 @@ func main() {
 			if errors.Is(err, steward.ErrCredentialDataBlocked) {
 				status = http.StatusForbidden
 			} else if errors.Is(err, stewardcompanion.ErrBufferFull) {
+				status = http.StatusInsufficientStorage
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "status": "buffered"})
+	})
+	mux.HandleFunc("POST /notification-feedback", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		var input stewardcompanion.NotificationFeedbackEnvelope
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, "invalid notification feedback JSON", http.StatusBadRequest)
+			return
+		}
+		input.CallbackToken = strings.TrimSpace(input.CallbackToken)
+		input.Action = strings.ToLower(strings.TrimSpace(input.Action))
+		if input.CallbackToken == "" || input.Action == "" {
+			http.Error(w, "callback_token and action are required", http.StatusBadRequest)
+			return
+		}
+		if input.OccurredAt.IsZero() {
+			input.OccurredAt = time.Now().UTC()
+		} else {
+			input.OccurredAt = input.OccurredAt.UTC()
+		}
+		id, err := buffer.EnqueueEnvelope(r.Context(), stewardcompanion.EnvelopeNotificationFeedback, input.EventKey(), 1, input)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, stewardcompanion.ErrBufferFull) {
 				status = http.StatusInsufficientStorage
 			}
 			http.Error(w, err.Error(), status)
@@ -216,7 +360,11 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				result, err := buffer.Flush(ctx, *apiBase, nil, 200)
+				if !flushEnabled.Load() {
+					continue
+				}
+				result, err := buffer.Flush(ctx, *apiBase, managementClient, 200)
+				runtimeHealth.recordFlush(result, err)
 				if err != nil {
 					log.Printf("companion flush failed: %v", err)
 				} else if result.Submitted > 0 || result.Failed > 0 {
@@ -232,6 +380,58 @@ func main() {
 	if loopbackServer != nil {
 		_ = loopbackServer.Shutdown(shutdownCtx)
 	}
+}
+
+func cacheAuthenticatedCaptureControl(ctx context.Context, buffer *stewardcompanion.Buffer, binding string, authenticated bool, control stewardcompanion.CaptureControl, now time.Time) error {
+	if !authenticated {
+		return nil
+	}
+	if buffer == nil {
+		return fmt.Errorf("companion buffer is required for authenticated capture-control caching")
+	}
+	return buffer.SaveAuthenticatedCaptureControl(ctx, binding, control, now)
+}
+
+func defaultManagementAccessTokenFile() string {
+	executable, err := os.Executable()
+	if err != nil || strings.TrimSpace(executable) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(executable), "management-access-token.txt")
+}
+
+func readSingleLineSecret(path string, required bool) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		if required {
+			return "", fmt.Errorf("management access token file is required")
+		}
+		return "", nil
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if required {
+			return "", fmt.Errorf("management access token file does not exist: %s", path)
+		}
+		// Explicit unauthenticated development can deliberately run without the
+		// local management bearer token.
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read management access token file: %w", err)
+	}
+	value := strings.TrimSpace(string(raw))
+	if value == "" {
+		return "", fmt.Errorf("management access token file is empty: %s", path)
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return "", fmt.Errorf("management access token file must contain one line: %s", path)
+	}
+	return value, nil
+}
+
+func readOptionalSingleLineSecret(path string) (string, error) {
+	return readSingleLineSecret(path, false)
 }
 
 func configureCompanionLogging() *os.File {
@@ -305,6 +505,30 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func durationEnvOrDefault(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func boolEnvOrDefault(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func companionDataLevels() []string {

@@ -8,9 +8,10 @@ param(
   [string]$DataDir="C:\ProgramData\MongojsonSteward",
   [string]$BrokerDataDir="C:\ProgramData\MongoJSON\StewardBroker",
   [string]$BrokerPolicyPath="C:\ProgramData\MongoJSON\StewardBroker\policy.json",
-  [string]$HealthURL="http://127.0.0.1:18080/healthz",
-  [string]$ReadyURL="http://127.0.0.1:18080/readyz",
-  [string]$AgentURL="http://127.0.0.1:18080/api/steward/agent",
+  [string]$HealthURL="",
+  [string]$ReadyURL="",
+  [string]$AgentURL="",
+  [string]$CompanionAPIBase="",
   [string]$CompanionTaskName="MongojsonStewardCompanion",
   [string]$CompanionInstallDir=(Join-Path $env:LOCALAPPDATA "MongojsonSteward"),
   [string]$CompanionLocalEncryptionKey="",
@@ -36,6 +37,18 @@ function Get-CanonicalPath([string]$Path,[string]$Name,[bool]$MustExist=$false) 
   try{$full=[IO.Path]::GetFullPath($Path);if($full.Length -gt [IO.Path]::GetPathRoot($full).Length){$full=$full.TrimEnd('\')}}catch{throw "$Name is not a valid absolute path"}
   if($MustExist -and -not(Test-Path -LiteralPath $full)){throw "$Name does not exist: $full"}
   return $full
+}
+function Normalize-CompanionAPIBase([string]$Value) {
+  if([string]::IsNullOrWhiteSpace($Value)){throw 'CompanionAPIBase must not be empty'}
+  try{$uri=[Uri]$Value.Trim()}catch{throw "CompanionAPIBase must be an absolute HTTP URL: $Value"}
+  if(-not $uri.IsAbsoluteUri -or @('http','https') -notcontains $uri.Scheme){throw "CompanionAPIBase must be an absolute HTTP URL: $Value"}
+  if(-not [string]::IsNullOrEmpty($uri.UserInfo) -or -not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment)){throw 'CompanionAPIBase must not contain credentials, a query, or a fragment'}
+  $loopback=$uri.Host.Equals('localhost',[StringComparison]::OrdinalIgnoreCase)
+  $address=$null
+  if(-not $loopback -and [Net.IPAddress]::TryParse($uri.Host,[ref]$address)){$loopback=[Net.IPAddress]::IsLoopback($address)}
+  if(-not $loopback){throw "CompanionAPIBase must target loopback: $Value"}
+  if(-not $uri.AbsolutePath.TrimEnd('/').Equals('/api',[StringComparison]::OrdinalIgnoreCase)){throw "CompanionAPIBase must end with /api: $Value"}
+  return $uri.GetLeftPart([UriPartial]::Authority)+'/api'
 }
 function Assert-SafeSystemName([string]$Value,[string]$Name) {if($Value -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'){throw "$Name contains unsupported characters"}}
 function Assert-DedicatedChildPath([string]$Path,[string]$Root,[string]$Name) {
@@ -420,6 +433,25 @@ if($null -ne $existingCompanionTask){
   if(-not $taskExecutable.Equals((Join-Path $CompanionInstallDir 'steward-companion.exe'),[StringComparison]::OrdinalIgnoreCase)){throw 'Session Companion task executable is outside CompanionInstallDir'}
 }
 $manageCompanion=$InstallCompanion -or $null -ne $existingCompanionTask
+$taskAPIBase=''
+if($null -ne $existingCompanionTask -and @($existingCompanionTask.Actions).Count -gt 0){
+  $taskArguments=[string](@($existingCompanionTask.Actions)[0].Arguments)
+  $taskAPIMatch=[regex]::Match($taskArguments,'(?:^|\s)--api\s+(?:"(?<quoted>[^"]+)"|(?<plain>\S+))',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  if($taskAPIMatch.Success){$taskAPIBase=if($taskAPIMatch.Groups['quoted'].Success){$taskAPIMatch.Groups['quoted'].Value}else{$taskAPIMatch.Groups['plain'].Value}}
+}
+if([string]::IsNullOrWhiteSpace($CompanionAPIBase)){
+  if(-not [string]::IsNullOrWhiteSpace([string]$installationMarker.companion_api_base)){$CompanionAPIBase=[string]$installationMarker.companion_api_base}
+  elseif(-not [string]::IsNullOrWhiteSpace($taskAPIBase)){$CompanionAPIBase=$taskAPIBase}
+  elseif(-not [string]::IsNullOrWhiteSpace($AgentURL)){$CompanionAPIBase=([Uri]$AgentURL).GetLeftPart([UriPartial]::Authority)+'/api'}
+  elseif(-not [string]::IsNullOrWhiteSpace($HealthURL)){$CompanionAPIBase=([Uri]$HealthURL).GetLeftPart([UriPartial]::Authority)+'/api'}
+  else{$CompanionAPIBase='http://127.0.0.1:18080/api'}
+}
+$CompanionAPIBase=Normalize-CompanionAPIBase $CompanionAPIBase
+$managementBase=([Uri]$CompanionAPIBase).GetLeftPart([UriPartial]::Authority)
+if([string]::IsNullOrWhiteSpace($HealthURL)){$HealthURL="$managementBase/healthz"}
+if([string]::IsNullOrWhiteSpace($ReadyURL)){$ReadyURL="$managementBase/readyz"}
+if([string]::IsNullOrWhiteSpace($AgentURL)){$AgentURL="$CompanionAPIBase/steward/agent"}
+$DetailedReadyURL="$CompanionAPIBase/system/readiness"
 if($manageCompanion -and [string]::IsNullOrWhiteSpace($CompanionLocalEncryptionKey)){
   $companionSecrets=Join-Path $CompanionInstallDir 'companion-secrets.json'
   if(Test-Path -LiteralPath $companionSecrets -PathType Leaf){$CompanionLocalEncryptionKey=[string](Get-Content -LiteralPath $companionSecrets -Raw|ConvertFrom-Json).STEWARD_LOCAL_ENCRYPTION_KEY}
@@ -498,16 +530,17 @@ try{
   Start-Service $BrokerServiceName -ErrorAction Stop
   Start-Service $ServiceName -ErrorAction Stop
 
+  $managementAccessPath=Write-CurrentUserManagementToken $ManagementAccessTokenFile $serviceCredentials.management_token
   if($manageCompanion){
-    $companionRaw=& (Join-Path $InstallDir 'install-steward-companion.ps1') -SourceDir $InstallDir -InstallDir $CompanionInstallDir -TaskName $CompanionTaskName -LocalEncryptionKey $CompanionLocalEncryptionKey -ServiceName $ServiceName -Start -KeepRollbackData -RollbackRoot (Split-Path -Parent $CompanionInstallDir) | Out-String
+    $companionRaw=& (Join-Path $InstallDir 'install-steward-companion.ps1') -SourceDir $InstallDir -InstallDir $CompanionInstallDir -TaskName $CompanionTaskName -LocalEncryptionKey $CompanionLocalEncryptionKey -ManagementAccessTokenFile $managementAccessPath -APIBase $CompanionAPIBase -ServiceName $ServiceName -Start -KeepRollbackData -RollbackRoot (Split-Path -Parent $CompanionInstallDir) | Out-String
     if($LASTEXITCODE -ne 0){throw "Session Companion update failed: $companionRaw"}
     $companionState=$companionRaw|ConvertFrom-Json
   }
-  $managementAccessPath=Write-CurrentUserManagementToken $ManagementAccessTokenFile $serviceCredentials.management_token
   $newMarker=[ordered]@{
     schema='mongojson.steward.windows-installation/v2';install_id=if([string]$installationMarker.install_id){[string]$installationMarker.install_id}else{[guid]::NewGuid().ToString('D')}
     service_name=$ServiceName;broker_service_name=$BrokerServiceName;companion_task_name=$CompanionTaskName
     install_dir=$InstallDir;data_dir=$DataDir;broker_install_dir=$BrokerInstallDir;broker_data_dir=$BrokerDataDir;broker_policy_path=$BrokerPolicyPath
+    http_address=([Uri]$CompanionAPIBase).Authority;companion_api_base=$CompanionAPIBase;detailed_ready_url=$DetailedReadyURL
     installed_at=if([string]$installationMarker.installed_at){[string]$installationMarker.installed_at}else{[DateTimeOffset]::UtcNow.ToString('o')};updated_at=[DateTimeOffset]::UtcNow.ToString('o')
     release_version=[string]$releaseManifest.version;release_commit=[string]$releaseManifest.commit;release_built_at=[string]$releaseManifest.built_at
   }
@@ -521,6 +554,7 @@ try{
     -HealthURL $HealthURL `
     -ReadyURL $ReadyURL `
     -AgentURL $AgentURL `
+    -DetailedReadyURL $DetailedReadyURL `
     -InstallDir $InstallDir `
     -MainDataDir $DataDir `
     -BrokerDataDir $BrokerDataDir `

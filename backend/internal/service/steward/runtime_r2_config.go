@@ -197,6 +197,7 @@ func (s *Service) registerRuntimeR2Tools() {
 	s.runtimeTools.registerIfAbsent(newRuntimeWebFetchTool(s))
 	s.runtimeTools.registerIfAbsent(newRuntimeCreateTaskTool(s))
 	s.runtimeTools.registerIfAbsent(newRuntimeSaveMemoryTool(s))
+	s.registerIntelligenceTools()
 	for _, action := range []string{"notify.send", "notify.schedule", "notify.list", "notify.cancel", "notify.snooze", "notify.acknowledge", "notify.endpoint_test"} {
 		s.runtimeTools.registerIfAbsent(newRuntimeNotificationTool(s, action))
 	}

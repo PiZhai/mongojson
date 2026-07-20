@@ -31,8 +31,10 @@ func (t runtimeNotificationTool) Spec() domain.StewardToolSpec {
 			"title": map[string]any{"type": "string"}, "body": map[string]any{"type": "string"},
 			"category": map[string]any{"type": "string"}, "priority": map[string]any{"type": "string", "enum": []string{"low", "normal", "high", "urgent"}},
 			"scheduled_at": map[string]any{"type": "string"}, "expires_at": map[string]any{"type": "string"},
-			"dedupe_key": map[string]any{"type": "string"},
-			"channels":   map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"system", "linux_desktop", "ntfy", "email"}}},
+			"allowed_window_start": map[string]any{"type": "string"}, "allowed_window_end": map[string]any{"type": "string"},
+			"dedupe_key":       map[string]any{"type": "string"},
+			"channels":         map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"system", "linux_desktop", "ntfy", "email"}}},
+			"decision_context": map[string]any{"type": "object", "description": "Why this timing/channel was chosen from current reminder policy, activity and receptivity evidence."},
 		}
 	case "notify.list":
 		description = "List durable notifications and their actual channel delivery states."
@@ -59,16 +61,16 @@ func (t runtimeNotificationTool) Spec() domain.StewardToolSpec {
 		Name: t.action, Version: "5.2.0", Description: description,
 		InputSchema:     map[string]any{"type": "object", "required": required, "additionalProperties": false, "properties": properties},
 		OutputSchema:    map[string]any{"type": "object"},
-		PermissionLevel: PermissionA3, RiskLevel: "low", SideEffect: sideEffect,
-		ApprovalMode: RuntimeApprovalAlways, IdempotencyMode: RuntimeIdempotencyKeyed,
+		PermissionLevel: PermissionA0, RiskLevel: "low", SideEffect: sideEffect,
+		ApprovalMode: RuntimeApprovalNever, IdempotencyMode: RuntimeIdempotencyKeyed,
 		Deterministic: true, SupportsCancel: true, DefaultTimeoutSec: 30,
 	}
 }
 
 func (t runtimeNotificationTool) Validate(input map[string]any) error {
 	allowed := map[string][]string{
-		"notify.send":     {"title", "body", "category", "priority", "scheduled_at", "expires_at", "dedupe_key", "channels"},
-		"notify.schedule": {"title", "body", "category", "priority", "scheduled_at", "expires_at", "dedupe_key", "channels"},
+		"notify.send":     {"title", "body", "category", "priority", "scheduled_at", "expires_at", "allowed_window_start", "allowed_window_end", "dedupe_key", "channels", "decision_context"},
+		"notify.schedule": {"title", "body", "category", "priority", "scheduled_at", "expires_at", "allowed_window_start", "allowed_window_end", "dedupe_key", "channels", "decision_context"},
 		"notify.list":     {"status", "limit"}, "notify.cancel": {"notification_id"},
 		"notify.snooze": {"notification_id", "seconds"}, "notify.acknowledge": {"notification_id"},
 		"notify.endpoint_test": {"endpoint_id"},
@@ -83,7 +85,7 @@ func (t runtimeNotificationTool) Validate(input map[string]any) error {
 		if _, err := runtimeRequiredString(input, "body"); err != nil {
 			return err
 		}
-		for _, field := range []string{"scheduled_at", "expires_at"} {
+		for _, field := range []string{"scheduled_at", "expires_at", "allowed_window_start", "allowed_window_end"} {
 			if value, _ := runtimeOptionalString(input, field); value != "" {
 				if _, err := time.Parse(time.RFC3339, value); err != nil {
 					return fmt.Errorf("%s must be RFC3339: %w", field, err)
@@ -92,6 +94,11 @@ func (t runtimeNotificationTool) Validate(input map[string]any) error {
 		}
 		if _, err := runtimeStringSlice(input, "channels"); err != nil {
 			return err
+		}
+		if value, exists := input["decision_context"]; exists && value != nil {
+			if _, ok := value.(map[string]any); !ok {
+				return fmt.Errorf("decision_context must be an object")
+			}
 		}
 		return nil
 	}
@@ -119,7 +126,24 @@ func (t runtimeNotificationTool) Execute(ctx context.Context, input map[string]a
 		priority, _ := runtimeOptionalString(input, "priority")
 		dedupeKey, _ := runtimeOptionalString(input, "dedupe_key")
 		channels, _ := runtimeStringSlice(input, "channels")
-		var scheduledAt, expiresAt *time.Time
+		decisionContext, _ := input["decision_context"].(map[string]any)
+		batchEffectKey, err := t.service.activityBatchToolIdempotencyKey(ctx)
+		if err != nil {
+			return RuntimeToolResult{}, err
+		}
+		if batchEffectKey != "" {
+			copiedContext := make(map[string]any, len(decisionContext)+2)
+			for key, value := range decisionContext {
+				copiedContext[key] = value
+			}
+			if requested := strings.TrimSpace(dedupeKey); requested != "" && requested != batchEffectKey {
+				copiedContext["requested_dedupe_key"] = requested
+			}
+			copiedContext["activity_batch_effect_key"] = batchEffectKey
+			decisionContext = copiedContext
+			dedupeKey = batchEffectKey
+		}
+		var scheduledAt, expiresAt, allowedWindowStart, allowedWindowEnd *time.Time
 		if value, _ := runtimeOptionalString(input, "scheduled_at"); value != "" {
 			parsed, _ := time.Parse(time.RFC3339, value)
 			scheduledAt = &parsed
@@ -128,10 +152,20 @@ func (t runtimeNotificationTool) Execute(ctx context.Context, input map[string]a
 			parsed, _ := time.Parse(time.RFC3339, value)
 			expiresAt = &parsed
 		}
+		if value, _ := runtimeOptionalString(input, "allowed_window_start"); value != "" {
+			parsed, _ := time.Parse(time.RFC3339, value)
+			allowedWindowStart = &parsed
+		}
+		if value, _ := runtimeOptionalString(input, "allowed_window_end"); value != "" {
+			parsed, _ := time.Parse(time.RFC3339, value)
+			allowedWindowEnd = &parsed
+		}
 		item, err := t.service.CreateNotification(ctx, CreateNotificationInput{
 			SourceType: "agent", Title: title, Body: body, Category: category, Priority: priority,
-			ScheduledAt: scheduledAt, ExpiresAt: expiresAt, DedupeKey: dedupeKey, Channels: channels,
-			Actions: []domain.StewardNotificationAction{{ID: "acknowledge", Label: "知道了", Kind: "acknowledge"}, {ID: "snooze", Label: "稍后提醒", Kind: "snooze", Value: "1800"}},
+			ScheduledAt: scheduledAt, AllowedWindowStart: allowedWindowStart, AllowedWindowEnd: allowedWindowEnd,
+			ExpiresAt: expiresAt, DedupeKey: dedupeKey, Channels: channels,
+			DecisionContext: decisionContext,
+			Actions:         []domain.StewardNotificationAction{{ID: "acknowledge", Label: "知道了", Kind: "acknowledge"}, {ID: "snooze", Label: "稍后提醒", Kind: "snooze", Value: "1800"}},
 		})
 		if err != nil {
 			return RuntimeToolResult{}, err

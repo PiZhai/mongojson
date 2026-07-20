@@ -14,37 +14,40 @@ import (
 )
 
 const (
-	DefaultHeartbeatInterval          = time.Minute
-	DefaultCollectionInterval         = 5 * time.Minute
-	DefaultActivitySampleInterval     = 15 * time.Second
-	DefaultProactiveInterval          = 5 * time.Minute
-	DefaultProactiveToolsmithInterval = 30 * time.Minute
-	DefaultModelDispatchInterval      = time.Minute
-	DefaultRuntimeInterval            = time.Second
-	DefaultRuntimeWatchdogInterval    = 2 * time.Second
-	DefaultNotificationInterval       = 5 * time.Second
-	DefaultRuntimeReadinessGrace      = 30 * time.Second
-	maxRuntimeV2StepTimeout           = time.Hour
-	criticalLoopFailureThreshold      = 3
+	DefaultHeartbeatInterval              = time.Minute
+	DefaultCollectionInterval             = 5 * time.Minute
+	DefaultActivitySampleInterval         = 15 * time.Second
+	DefaultContinuousIntelligenceInterval = time.Minute
+	DefaultProactiveInterval              = 5 * time.Minute
+	DefaultProactiveToolsmithInterval     = 30 * time.Minute
+	DefaultModelDispatchInterval          = time.Minute
+	DefaultRuntimeInterval                = time.Second
+	DefaultRuntimeWatchdogInterval        = 2 * time.Second
+	DefaultNotificationInterval           = 5 * time.Second
+	DefaultRuntimeReadinessGrace          = 30 * time.Second
+	maxRuntimeV2StepTimeout               = time.Hour
+	criticalLoopFailureThreshold          = 3
 )
 
 type DaemonOptions struct {
-	HeartbeatInterval          time.Duration
-	CollectionInterval         time.Duration
-	ActivitySampleInterval     time.Duration
-	ProactiveInterval          time.Duration
-	ProactiveToolsmithInterval time.Duration
-	SyncInterval               time.Duration
-	AutonomyInterval           time.Duration
-	AutonomyLimit              int
-	ModelDispatchInterval      time.Duration
-	ModelDispatchLimit         int
-	RuntimeInterval            time.Duration
-	RuntimeLimit               int
-	RuntimeWatchdogInterval    time.Duration
-	RuntimeWatchdogLimit       int
-	NotificationInterval       time.Duration
-	NotificationLimit          int
+	HeartbeatInterval              time.Duration
+	CollectionInterval             time.Duration
+	ActivitySampleInterval         time.Duration
+	ContinuousIntelligenceInterval time.Duration
+	ContinuousIntelligenceLimit    int
+	ProactiveInterval              time.Duration
+	ProactiveToolsmithInterval     time.Duration
+	SyncInterval                   time.Duration
+	AutonomyInterval               time.Duration
+	AutonomyLimit                  int
+	ModelDispatchInterval          time.Duration
+	ModelDispatchLimit             int
+	RuntimeInterval                time.Duration
+	RuntimeLimit                   int
+	RuntimeWatchdogInterval        time.Duration
+	RuntimeWatchdogLimit           int
+	NotificationInterval           time.Duration
+	NotificationLimit              int
 }
 
 type Daemon struct {
@@ -66,22 +69,24 @@ func NewDaemon(service *Service, options DaemonOptions) *Daemon {
 
 func DaemonOptionsFromEnv() DaemonOptions {
 	return normalizeDaemonOptions(DaemonOptions{
-		HeartbeatInterval:          durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
-		CollectionInterval:         durationEnv("STEWARD_COLLECTION_INTERVAL", DefaultCollectionInterval),
-		ActivitySampleInterval:     durationEnv("STEWARD_ACTIVITY_SAMPLE_INTERVAL", DefaultActivitySampleInterval),
-		ProactiveInterval:          durationEnv("STEWARD_PROACTIVE_INTERVAL", DefaultProactiveInterval),
-		ProactiveToolsmithInterval: durationEnv("STEWARD_PROACTIVE_TOOLSMITH_INTERVAL", DefaultProactiveToolsmithInterval),
-		SyncInterval:               durationEnv("STEWARD_SYNC_INTERVAL", 0),
-		AutonomyInterval:           durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
-		AutonomyLimit:              intEnv("STEWARD_AUTONOMY_LIMIT", 12),
-		ModelDispatchInterval:      durationEnv("STEWARD_MODEL_DISPATCH_INTERVAL", DefaultModelDispatchInterval),
-		ModelDispatchLimit:         intEnv("STEWARD_MODEL_DISPATCH_LIMIT", 20),
-		RuntimeInterval:            durationEnv("STEWARD_RUNTIME_INTERVAL", DefaultRuntimeInterval),
-		RuntimeLimit:               intEnv("STEWARD_RUNTIME_LIMIT", 10),
-		RuntimeWatchdogInterval:    durationEnv("STEWARD_RUNTIME_WATCHDOG_INTERVAL", DefaultRuntimeWatchdogInterval),
-		RuntimeWatchdogLimit:       intEnv("STEWARD_RUNTIME_WATCHDOG_LIMIT", 20),
-		NotificationInterval:       durationEnv("STEWARD_NOTIFICATION_INTERVAL", DefaultNotificationInterval),
-		NotificationLimit:          intEnv("STEWARD_NOTIFICATION_LIMIT", 40),
+		HeartbeatInterval:              durationEnv("STEWARD_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),
+		CollectionInterval:             durationEnv("STEWARD_COLLECTION_INTERVAL", DefaultCollectionInterval),
+		ActivitySampleInterval:         durationEnv("STEWARD_ACTIVITY_SAMPLE_INTERVAL", DefaultActivitySampleInterval),
+		ContinuousIntelligenceInterval: durationEnv("STEWARD_INTELLIGENCE_INTERVAL", DefaultContinuousIntelligenceInterval),
+		ContinuousIntelligenceLimit:    intEnv("STEWARD_INTELLIGENCE_LIMIT", 4),
+		ProactiveInterval:              durationEnv("STEWARD_PROACTIVE_INTERVAL", DefaultProactiveInterval),
+		ProactiveToolsmithInterval:     durationEnv("STEWARD_PROACTIVE_TOOLSMITH_INTERVAL", DefaultProactiveToolsmithInterval),
+		SyncInterval:                   durationEnv("STEWARD_SYNC_INTERVAL", 0),
+		AutonomyInterval:               durationEnv("STEWARD_AUTONOMY_INTERVAL", 0),
+		AutonomyLimit:                  intEnv("STEWARD_AUTONOMY_LIMIT", 12),
+		ModelDispatchInterval:          durationEnv("STEWARD_MODEL_DISPATCH_INTERVAL", DefaultModelDispatchInterval),
+		ModelDispatchLimit:             intEnv("STEWARD_MODEL_DISPATCH_LIMIT", 20),
+		RuntimeInterval:                durationEnv("STEWARD_RUNTIME_INTERVAL", DefaultRuntimeInterval),
+		RuntimeLimit:                   intEnv("STEWARD_RUNTIME_LIMIT", 10),
+		RuntimeWatchdogInterval:        durationEnv("STEWARD_RUNTIME_WATCHDOG_INTERVAL", DefaultRuntimeWatchdogInterval),
+		RuntimeWatchdogLimit:           intEnv("STEWARD_RUNTIME_WATCHDOG_LIMIT", 20),
+		NotificationInterval:           durationEnv("STEWARD_NOTIFICATION_INTERVAL", DefaultNotificationInterval),
+		NotificationLimit:              intEnv("STEWARD_NOTIFICATION_LIMIT", 40),
 	})
 }
 
@@ -111,6 +116,7 @@ func (d *Daemon) Start(parent context.Context) {
 		{name: "heartbeat", interval: d.options.HeartbeatInterval},
 		{name: "collection", interval: d.options.CollectionInterval},
 		{name: "activity-sample", interval: d.options.ActivitySampleInterval},
+		{name: "continuous-intelligence", interval: d.options.ContinuousIntelligenceInterval},
 		{name: "proactive", interval: d.options.ProactiveInterval},
 		{name: "proactive-toolsmith", interval: d.options.ProactiveToolsmithInterval},
 		{name: "sync", interval: d.options.SyncInterval},
@@ -148,9 +154,22 @@ func (d *Daemon) Start(parent context.Context) {
 		}
 		return d.service.RunRealtimeCollectors(ctx)
 	}) || started
+	started = d.startLoop(ctx, "continuous-intelligence", d.options.ContinuousIntelligenceInterval, func(ctx context.Context) error {
+		enabled, err := d.service.BackgroundWorkEnabled(ctx)
+		if err != nil || !enabled {
+			return err
+		}
+		workerID := defaultString(strings.TrimSpace(d.service.runtimeWorkerID), d.service.agentIDValue()) + ":continuous"
+		_, err = d.service.RunContinuousIntelligenceCycle(ctx, time.Now().UTC(), workerID, d.options.ContinuousIntelligenceLimit)
+		return err
+	}) || started
 	started = d.startLoop(ctx, "proactive", d.options.ProactiveInterval, func(ctx context.Context) error {
 		enabled, err := d.service.BackgroundWorkEnabled(ctx)
 		if err != nil || !enabled {
+			return err
+		}
+		batchEnabled, err := d.service.intelligenceBatchEnabled(ctx)
+		if err != nil || batchEnabled {
 			return err
 		}
 		_, err = d.service.RunProactiveCycle(ctx, RunProactiveInput{})
@@ -192,6 +211,10 @@ func (d *Daemon) Start(parent context.Context) {
 		}
 		if !enabled {
 			return nil
+		}
+		batchEnabled, err := d.service.intelligenceBatchEnabled(ctx)
+		if err != nil || batchEnabled {
+			return err
 		}
 		_, err = d.service.RunModelDispatches(ctx, d.options.ModelDispatchLimit)
 		return err
@@ -542,6 +565,15 @@ func normalizeDaemonOptions(input DaemonOptions) DaemonOptions {
 	}
 	if out.ActivitySampleInterval == 0 {
 		out.ActivitySampleInterval = DefaultActivitySampleInterval
+	}
+	if out.ContinuousIntelligenceInterval < 0 {
+		out.ContinuousIntelligenceInterval = 0
+	}
+	if out.ContinuousIntelligenceInterval == 0 {
+		out.ContinuousIntelligenceInterval = DefaultContinuousIntelligenceInterval
+	}
+	if out.ContinuousIntelligenceLimit <= 0 || out.ContinuousIntelligenceLimit > 32 {
+		out.ContinuousIntelligenceLimit = 4
 	}
 	if out.ProactiveInterval < 0 {
 		out.ProactiveInterval = 0

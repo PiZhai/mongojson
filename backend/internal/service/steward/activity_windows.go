@@ -5,6 +5,7 @@ package steward
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -25,6 +26,14 @@ var (
 )
 
 func (s *Service) collectForegroundActivity(ctx context.Context, settings map[string]any) error {
+	// Production runs the main service as LocalService in Session 0. Sampling
+	// user32 there can never describe the signed-in user's desktop; the logged-in
+	// Session Companion owns this collector. Keep this path only as an
+	// interactive-development fallback.
+	var sessionID uint32
+	if err := windows.ProcessIdToSessionId(uint32(os.Getpid()), &sessionID); err == nil && sessionID == 0 {
+		return nil
+	}
 	handle, _, _ := activityGetForegroundWindow.Call()
 	if handle == 0 {
 		return nil

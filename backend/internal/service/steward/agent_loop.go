@@ -102,15 +102,70 @@ func nextValidAgentTurn(ctx context.Context, advisor AgentTurnAdvisor, input Age
 }
 
 func (s *Service) startAgentEpisode(ctx context.Context, conversation domain.StewardConversation, trigger domain.StewardConversationMessage, goal, level, triggerKind string, decision AgentTurnDecision) (domain.StewardConversationMessage, domain.StewardAgentEpisode, error) {
+	return s.startAgentEpisodeWithOptions(ctx, conversation, trigger, goal, level, triggerKind, decision, agentEpisodeStartOptions{})
+}
+
+type agentEpisodeStartOptions struct {
+	Background     bool
+	ContextRefType string
+	ContextRefID   string
+	IdempotencyKey string
+}
+
+func (s *Service) startBackgroundAgentEpisode(ctx context.Context, conversation domain.StewardConversation, trigger domain.StewardConversationMessage, goal, level, triggerKind string, decision AgentTurnDecision, contextRefType, contextRefID, idempotencyKey string) (domain.StewardConversationMessage, domain.StewardAgentEpisode, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return domain.StewardConversationMessage{}, domain.StewardAgentEpisode{}, fmt.Errorf("background Agent Episode idempotency key is required")
+	}
+	if existingID, lookupErr := s.backgroundEpisodeByKey(ctx, idempotencyKey); lookupErr == nil {
+		existing, getErr := s.GetAgentEpisodeOverview(ctx, existingID, agentEpisodeOverviewTurnLimit)
+		return domain.StewardConversationMessage{}, existing, getErr
+	} else if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		return domain.StewardConversationMessage{}, domain.StewardAgentEpisode{}, lookupErr
+	}
+	message, episode, err := s.startAgentEpisodeWithOptions(ctx, conversation, trigger, goal, level, triggerKind, decision, agentEpisodeStartOptions{
+		Background: true, ContextRefType: contextRefType, ContextRefID: contextRefID, IdempotencyKey: idempotencyKey,
+	})
+	if err != nil && isAgentEpisodeIdempotencyConflict(err) {
+		if existingID, lookupErr := s.backgroundEpisodeByKey(ctx, idempotencyKey); lookupErr == nil {
+			existing, getErr := s.GetAgentEpisodeOverview(ctx, existingID, agentEpisodeOverviewTurnLimit)
+			return domain.StewardConversationMessage{}, existing, getErr
+		}
+	}
+	return message, episode, err
+}
+
+func isAgentEpisodeIdempotencyConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func (s *Service) startAgentEpisodeWithOptions(ctx context.Context, conversation domain.StewardConversation, trigger domain.StewardConversationMessage, goal, level, triggerKind string, decision AgentTurnDecision, options agentEpisodeStartOptions) (domain.StewardConversationMessage, domain.StewardAgentEpisode, error) {
 	values, err := s.loadModelSettings(ctx)
 	if err != nil {
 		return domain.StewardConversationMessage{}, domain.StewardAgentEpisode{}, err
 	}
 	limits := normalizeAgentLoopLimits(values)
+	visibility := "conversation"
+	resultSink := ""
+	if options.Background {
+		settings, settingsErr := s.GetIntelligenceSettings(ctx)
+		if settingsErr != nil {
+			return domain.StewardConversationMessage{}, domain.StewardAgentEpisode{}, settingsErr
+		}
+		limits = agentLoopLimits{MaxRounds: settings.BackgroundMaxRounds, MaxToolCalls: settings.BackgroundMaxToolCalls,
+			MaxDurationSeconds: settings.BackgroundMaxDurationSeconds, NoProgressLimit: settings.BackgroundNoProgressLimit}
+		if limits.NoProgressLimit <= 0 {
+			limits.NoProgressLimit = 3
+		}
+		visibility, resultSink = "background", "database"
+	}
 	now := time.Now().UTC()
 	episode := domain.StewardAgentEpisode{
 		ID: uuid.NewString(), ConversationID: conversation.ID, TriggerMessageID: trigger.ID,
 		TriggerKind: defaultString(triggerKind, "conversation"), Goal: goal, DataLevel: level,
+		Visibility: visibility, ContextRefType: strings.TrimSpace(options.ContextRefType), ContextRefID: strings.TrimSpace(options.ContextRefID),
+		ResultSink: resultSink, IdempotencyKey: strings.TrimSpace(options.IdempotencyKey),
 		Status: agentEpisodeThinking, CurrentRound: 1, ToolCallCount: countExternalAgentCalls(decision.ToolCalls),
 		MaxRounds: limits.MaxRounds, MaxToolCalls: limits.MaxToolCalls, MaxDurationSeconds: limits.MaxDurationSeconds,
 		NoProgressLimit: limits.NoProgressLimit, CreatedAt: now, UpdatedAt: now,
@@ -169,11 +224,12 @@ func countExternalAgentCalls(calls []domain.StewardAgentToolCall) int {
 func (s *Service) insertAgentEpisode(ctx context.Context, item domain.StewardAgentEpisode) error {
 	_, err := s.db.Pool.Exec(ctx, `
 		insert into steward_agent_episodes (
-			id,conversation_id,trigger_message_id,trigger_kind,goal,data_level,status,current_round,tool_call_count,
+			id,conversation_id,trigger_message_id,trigger_kind,visibility,context_ref_type,context_ref_id,result_sink,idempotency_key,goal,data_level,status,current_round,tool_call_count,
 			max_rounds,max_tool_calls,max_duration_seconds,no_progress_limit,no_progress_count,target_device_id,
 			control_generation,created_at,updated_at,deadline_at,hydrated_tool_names,catalog_generation,current_tool_versions
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22::jsonb)
-	`, item.ID, item.ConversationID, item.TriggerMessageID, item.TriggerKind, item.Goal, item.DataLevel, item.Status,
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26,$27::jsonb)
+	`, item.ID, item.ConversationID, item.TriggerMessageID, item.TriggerKind, defaultString(item.Visibility, "conversation"), item.ContextRefType, item.ContextRefID,
+		item.ResultSink, item.IdempotencyKey, item.Goal, item.DataLevel, item.Status,
 		item.CurrentRound, item.ToolCallCount, item.MaxRounds, item.MaxToolCalls, item.MaxDurationSeconds,
 		item.NoProgressLimit, item.NoProgressCount, item.TargetDeviceID, item.ControlGeneration,
 		item.CreatedAt, item.UpdatedAt, item.DeadlineAt, encodeAgentJSON(item.HydratedToolNames, "[]"), item.CatalogGeneration, encodeAgentJSON(item.CurrentToolVersions, "{}"))
@@ -211,7 +267,7 @@ func insertAgentTurnWithExecer(ctx context.Context, execer agentTurnExecer, item
 func (s *Service) GetAgentEpisode(ctx context.Context, id string) (domain.StewardAgentEpisode, error) {
 	row := s.db.Pool.QueryRow(ctx, `
 		select id::text,conversation_id::text,trigger_message_id::text,coalesce(progress_message_id::text,''),
-		       coalesce(final_message_id::text,''),trigger_kind,goal,data_level,status,current_round,tool_call_count,
+		       coalesce(final_message_id::text,''),trigger_kind,visibility,context_ref_type,context_ref_id,result_sink,idempotency_key,goal,data_level,status,current_round,tool_call_count,
 		       max_rounds,max_tool_calls,max_duration_seconds,no_progress_limit,no_progress_count,model_failure_count,target_device_id,
 		       coalesce(active_execution_id::text,''),control_generation,failure_summary,last_result_summary,
 		       hydrated_tool_names,catalog_generation,current_tool_versions,created_at,updated_at,deadline_at,completed_at
@@ -220,7 +276,8 @@ func (s *Service) GetAgentEpisode(ctx context.Context, id string) (domain.Stewar
 	var item domain.StewardAgentEpisode
 	var hydrated, versions []byte
 	if err := row.Scan(&item.ID, &item.ConversationID, &item.TriggerMessageID, &item.ProgressMessageID,
-		&item.FinalMessageID, &item.TriggerKind, &item.Goal, &item.DataLevel, &item.Status, &item.CurrentRound,
+		&item.FinalMessageID, &item.TriggerKind, &item.Visibility, &item.ContextRefType, &item.ContextRefID, &item.ResultSink, &item.IdempotencyKey,
+		&item.Goal, &item.DataLevel, &item.Status, &item.CurrentRound,
 		&item.ToolCallCount, &item.MaxRounds, &item.MaxToolCalls, &item.MaxDurationSeconds, &item.NoProgressLimit,
 		&item.NoProgressCount, &item.ModelFailureCount, &item.TargetDeviceID, &item.ActiveExecutionID, &item.ControlGeneration,
 		&item.FailureSummary, &item.LastResultSummary, &hydrated, &item.CatalogGeneration, &versions, &item.CreatedAt, &item.UpdatedAt, &item.DeadlineAt,
@@ -348,6 +405,7 @@ func (s *Service) rejectAgentControlBatch(ctx context.Context, episode domain.St
 		return domain.StewardConversationMessage{}, err
 	}
 	message, err := s.insertConversationMessage(ctx, episode.ConversationID, conversationRoleAssistant, "模型正在修正无效的控制工具组合。", episode.DataLevel, turn.Model, "agent-protocol-retry:"+episode.ID)
+	s.hideBackgroundConversationMessage(ctx, episode.TriggerKind, message.ID)
 	if err != nil {
 		return message, err
 	}
@@ -386,7 +444,11 @@ func (s *Service) dispatchAgentTurn(ctx context.Context, conversation domain.Ste
 	plan := RuntimePlanDraft{Summary: episode.Goal, Steps: steps, Planner: "agent-loop", PlannerVersion: "4.9.0", ReasoningContent: turn.ReasoningContent}
 	idempotencyKey := fmt.Sprintf("agent:%s:%d:batch", episode.ID, turn.RoundIndex)
 	if len(turn.ToolCalls) == 1 {
-		idempotencyKey = fmt.Sprintf("agent:%s:%d:%s", episode.ID, turn.RoundIndex, turn.ToolCalls[0].ID)
+		if episode.ContextRefType == "activity_batch" && strings.TrimSpace(episode.ContextRefID) != "" {
+			idempotencyKey = fmt.Sprintf("batch:%s:tool:%s", episode.ContextRefID, turn.ToolCalls[0].ID)
+		} else {
+			idempotencyKey = fmt.Sprintf("agent:%s:%d:%s", episode.ID, turn.RoundIndex, turn.ToolCalls[0].ID)
+		}
 	}
 	message, execution, found, err := s.ensureAgentTurnExecution(ctx, episode, turn, func() (domain.StewardConversationMessage, domain.StewardConversationExecution, error) {
 		return s.createConversationExecutionFromPlanLinked(ctx, conversation, trigger, episode.Goal, episode.DataLevel, target, plan, agentExecutionLink{
@@ -399,6 +461,7 @@ func (s *Service) dispatchAgentTurn(ctx context.Context, conversation domain.Ste
 	if !found {
 		return message, fmt.Errorf("agent turn %s dispatch did not create a linked execution", turn.ID)
 	}
+	s.hideBackgroundConversationMessage(ctx, episode.TriggerKind, message.ID)
 	if strings.TrimSpace(turn.AssistantContent) != "" {
 		_, _ = s.db.Pool.Exec(ctx, `update steward_conversation_messages set content=$2 where id=$1`, message.ID, truncateAdvisorText(turn.AssistantContent, 8000))
 		message.Content = truncateAdvisorText(turn.AssistantContent, 8000)
@@ -1131,7 +1194,7 @@ func (s *Service) RunAgentEpisodeCycle(ctx context.Context, limit int) (int, err
 		}
 		if advanceErr != nil {
 			if claimed {
-				_ = s.handleAgentEpisodeAdvanceError(ctx, id, advanceErr)
+				_ = s.handleAgentEpisodeAdvanceError(ctx, id, worker, advanceErr)
 			}
 			continue
 		}
@@ -1199,7 +1262,7 @@ func (s *Service) repairExecutingAgentEpisodes(ctx context.Context, limit int) e
 	return nil
 }
 
-func (s *Service) handleAgentEpisodeAdvanceError(ctx context.Context, id string, cause error) error {
+func (s *Service) handleAgentEpisodeAdvanceError(ctx context.Context, id, claimID string, cause error) error {
 	if errors.Is(cause, errAgentEpisodeClaimLost) {
 		return nil
 	}
@@ -1211,7 +1274,7 @@ func (s *Service) handleAgentEpisodeAdvanceError(ctx context.Context, id string,
 		// do not mislabel that infrastructure failure as a provider failure.
 		_, err := s.db.Pool.Exec(ctx, `update steward_agent_episodes set failure_summary=$2,
 			lease_owner='',lease_expires_at=$3,updated_at=$4
-			where id=$1 and status='thinking'`, id, sanitizeRuntimeError(cause), now.Add(agentTechnicalRetryDelay), now)
+			where id=$1 and status='thinking' and lease_owner=$5`, id, sanitizeRuntimeError(cause), now.Add(agentTechnicalRetryDelay), now, claimID)
 		return err
 	}
 
@@ -1224,24 +1287,44 @@ func (s *Service) handleAgentEpisodeAdvanceError(ctx context.Context, id string,
 		// provider error already stored in failure_summary.
 		_, err := s.db.Pool.Exec(ctx, `update steward_agent_episodes set
 			lease_owner='',lease_expires_at=$2,updated_at=$3
-			where id=$1 and status='thinking'`, id, retryAt, now)
+			where id=$1 and status='thinking' and lease_owner=$4`, id, retryAt, now, claimID)
 		return err
 	}
 
 	var failures int
+	var generation int64
 	err := s.db.Pool.QueryRow(ctx, `update steward_agent_episodes set failure_summary=$2,
 		model_failure_count=model_failure_count+1,lease_owner='',lease_expires_at=$3,updated_at=$4
-		where id=$1 and status='thinking' returning model_failure_count`,
-		id, sanitizeRuntimeError(cause), now.Add(agentTechnicalRetryDelay), now).Scan(&failures)
+		where id=$1 and status='thinking' and lease_owner=$5 returning model_failure_count,control_generation`,
+		id, sanitizeRuntimeError(cause), now.Add(agentTechnicalRetryDelay), now, claimID).Scan(&failures, &generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
 	if err != nil || failures < agentModelFailureLimit {
 		return err
 	}
-	episode, getErr := s.getAgentEpisodeState(ctx, id)
-	if getErr != nil {
-		return getErr
+	// The failed claim has just been released. Re-enter the same advisory-lock
+	// domain used by model turns and user controls before committing the terminal
+	// message; otherwise a fresh worker could start a new model turn between the
+	// counter update and this finalization.
+	locked, lockErr := s.withAgentEpisodeAdvisoryLock(ctx, id, func() error {
+		episode, getErr := s.getAgentEpisodeState(ctx, id)
+		if getErr != nil {
+			return getErr
+		}
+		if episode.ControlGeneration != generation || episode.Status != agentEpisodeThinking {
+			return nil
+		}
+		return s.finishAgentEpisodeWithText(ctx, episode,
+			"模型连续请求失败，任务已暂停。修复模型连接后可点击继续："+sanitizeRuntimeError(cause), agentEpisodeBlocked)
+	})
+	if lockErr != nil {
+		return lockErr
 	}
-	return s.finishAgentEpisodeWithText(ctx, episode,
-		"模型连续请求失败，任务已暂停。修复模型连接后可点击继续："+sanitizeRuntimeError(cause), agentEpisodeBlocked)
+	if !locked {
+		return nil
+	}
+	return nil
 }
 
 func (s *Service) advanceAgentEpisode(ctx context.Context, id, claimID string) error {
@@ -1279,6 +1362,7 @@ func (s *Service) advanceAgentEpisode(ctx context.Context, id, claimID string) e
 	if err != nil {
 		return err
 	}
+	localContext = append(localContext, s.liveAgentContext(ctx)...)
 	transcript := buildAgentTranscript(episode.Turns)
 	notice := ""
 	if episode.NoProgressCount >= episode.NoProgressLimit {
@@ -1347,6 +1431,9 @@ func (s *Service) verifyAgentEpisodeClaim(ctx context.Context, id, claimID strin
 }
 
 func (s *Service) finishAgentEpisode(ctx context.Context, episode domain.StewardAgentEpisode, turn domain.StewardAgentTurn, text string, silent bool) (domain.StewardConversationMessage, error) {
+	if backgroundAgentTrigger(episode.TriggerKind) {
+		silent = true
+	}
 	now := time.Now().UTC()
 	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -1409,39 +1496,80 @@ func (s *Service) finishAgentEpisode(ctx context.Context, episode domain.Steward
 }
 
 func (s *Service) finishAgentEpisodeWithText(ctx context.Context, episode domain.StewardAgentEpisode, text, status string) error {
-	message, err := s.insertConversationMessage(ctx, episode.ConversationID, conversationRoleAssistant, text, episode.DataLevel, s.autonomyAdvisor().Status().Model, "agent-terminal:"+episode.ID)
+	now := time.Now().UTC()
+	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status=$2,final_message_id=$3,progress_message_id=$3,
-		failure_summary=$4,completed_at=$5,updated_at=$5,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`, episode.ID, status, message.ID, text, now)
-	return err
+	defer func() { _ = tx.Rollback(ctx) }()
+	var currentStatus, activeExecutionID string
+	var controlGeneration int64
+	if err = tx.QueryRow(ctx, `select status,control_generation,coalesce(active_execution_id::text,'')
+		from steward_agent_episodes where id=$1 for update`, episode.ID).Scan(&currentStatus, &controlGeneration, &activeExecutionID); err != nil {
+		return err
+	}
+	if currentStatus != agentEpisodeThinking || controlGeneration != episode.ControlGeneration || activeExecutionID != "" {
+		return nil
+	}
+	var message domain.StewardConversationMessage
+	if !backgroundAgentTrigger(episode.TriggerKind) {
+		message, err = s.insertConversationMessage(ctx, episode.ConversationID, conversationRoleAssistant, text, episode.DataLevel, s.autonomyAdvisor().Status().Model, "agent-terminal:"+episode.ID)
+		if err != nil {
+			return err
+		}
+	}
+	tag, err := tx.Exec(ctx, `update steward_agent_episodes set status=$2,final_message_id=nullif($3,'')::uuid,
+		progress_message_id=coalesce(nullif($3,'')::uuid,progress_message_id),
+		failure_summary=$4,completed_at=$5,updated_at=$5,lease_owner='',lease_expires_at=null,version=version+1
+		where id=$1 and status='thinking' and control_generation=$6 and active_execution_id is null`,
+		episode.ID, status, message.ID, text, now, episode.ControlGeneration)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return nil
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Service) failAgentEpisode(ctx context.Context, id string, cause error) error {
-	episode, err := s.getAgentEpisodeState(ctx, id)
+	locked, err := s.withAgentEpisodeAdvisoryLock(ctx, id, func() error {
+		episode, getErr := s.getAgentEpisodeState(ctx, id)
+		if getErr != nil {
+			return getErr
+		}
+		failure := "Agent 运行失败：" + sanitizeRuntimeError(cause)
+		if backgroundAgentTrigger(episode.TriggerKind) {
+			// Tool catalog maintenance is background infrastructure. Keep its full
+			// failure in the Episode and daemon status without injecting repetitive
+			// terminal messages into the user's normal conversation.
+			now := time.Now().UTC()
+			_, updateErr := s.db.Pool.Exec(ctx, `update steward_agent_episodes set status=$2,failure_summary=$3,
+				completed_at=$4,updated_at=$4,lease_owner='',lease_expires_at=null,version=version+1
+				where id=$1 and status='thinking' and control_generation=$5 and active_execution_id is null`,
+				episode.ID, agentEpisodeFailed, failure, now, episode.ControlGeneration)
+			return updateErr
+		}
+		return s.finishAgentEpisodeWithText(ctx, episode, failure, agentEpisodeFailed)
+	})
 	if err != nil {
 		return err
 	}
-	failure := "Agent 运行失败：" + sanitizeRuntimeError(cause)
-	if episode.TriggerKind == "proactive_toolsmith" {
-		// Tool catalog maintenance is background infrastructure. Keep its full
-		// failure in the Episode and daemon status without injecting repetitive
-		// terminal messages into the user's normal conversation.
-		now := time.Now().UTC()
-		_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set status=$2,failure_summary=$3,
-			completed_at=$4,updated_at=$4,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`,
-			episode.ID, agentEpisodeFailed, failure, now)
-		return err
+	// An active model turn already owns the Episode. Its own durable result or
+	// error handler is authoritative, so a stale caller must not terminate it.
+	if !locked {
+		return nil
 	}
-	return s.finishAgentEpisodeWithText(ctx, episode, failure, agentEpisodeFailed)
+	return nil
 }
 
 func (s *Service) recordAgentEpisodeMemory(ctx context.Context, id string) error {
 	episode, err := s.GetAgentEpisodeForLoop(ctx, id)
 	if err != nil {
 		return err
+	}
+	if backgroundAgentTrigger(episode.TriggerKind) {
+		return nil
 	}
 	confirmed := true
 	details := buildAgentEpisodeMemoryDetails(episode)
@@ -1651,18 +1779,45 @@ func (s *Service) resumeAwaitingAgentEpisode(ctx context.Context, conversationID
 		return domain.StewardAgentEpisode{}, false, getErr
 	}
 	turn, turnErr := s.getLatestAgentTurn(ctx, id)
-	if turnErr == nil {
-		if turn.Status == "waiting_input" && len(turn.ToolCalls) == 1 {
-			results, _ := json.Marshal([]domain.StewardAgentToolResult{{
-				ToolCallID: turn.ToolCalls[0].ID, ToolName: agentAskUserTool, Output: map[string]any{"user_response": userContent},
-			}})
-			_, _ = s.db.Pool.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,updated_at=$3,completed_at=$3 where id=$1`, turn.ID, string(results), now)
-		}
-	} else if !errors.Is(turnErr, pgx.ErrNoRows) {
+	if turnErr != nil && !errors.Is(turnErr, pgx.ErrNoRows) {
 		return domain.StewardAgentEpisode{}, false, turnErr
 	}
-	_, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set goal=goal||E'\n\n用户补充：'||$2,status='thinking',updated_at=$3,lease_owner='',lease_expires_at=null,version=version+1 where id=$1`, id, userContent, now)
+	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
+		return domain.StewardAgentEpisode{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var status string
+	var generation int64
+	if err = tx.QueryRow(ctx, `select status,control_generation from steward_agent_episodes where id=$1 for update`, id).Scan(&status, &generation); err != nil {
+		return domain.StewardAgentEpisode{}, false, err
+	}
+	if status != agentEpisodeAwaitingInput || generation != episode.ControlGeneration {
+		return domain.StewardAgentEpisode{}, false, tx.Commit(ctx)
+	}
+	if turnErr == nil && turn.Status == "waiting_input" && len(turn.ToolCalls) == 1 {
+		results, _ := json.Marshal([]domain.StewardAgentToolResult{{
+			ToolCallID: turn.ToolCalls[0].ID, ToolName: agentAskUserTool, Output: map[string]any{"user_response": userContent},
+		}})
+		tag, updateErr := tx.Exec(ctx, `update steward_agent_turns set status='tools_complete',tool_results=$2::jsonb,updated_at=$3,completed_at=$3
+			where id=$1 and episode_id=$4 and status='waiting_input'`, turn.ID, string(results), now, id)
+		if updateErr != nil {
+			return domain.StewardAgentEpisode{}, false, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return domain.StewardAgentEpisode{}, false, errAgentEpisodeClaimLost
+		}
+	}
+	tag, err := tx.Exec(ctx, `update steward_agent_episodes set goal=goal||E'\n\n用户补充：'||$2,status='thinking',
+		updated_at=$3,lease_owner='',lease_expires_at=null,version=version+1
+		where id=$1 and status='awaiting_input' and control_generation=$4`, id, userContent, now, episode.ControlGeneration)
+	if err != nil {
+		return domain.StewardAgentEpisode{}, false, err
+	}
+	if tag.RowsAffected() != 1 {
+		return domain.StewardAgentEpisode{}, false, errAgentEpisodeClaimLost
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return domain.StewardAgentEpisode{}, false, err
 	}
 	episode, err = s.GetAgentEpisodeOverview(ctx, id, agentEpisodeOverviewTurnLimit)

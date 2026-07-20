@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"mongojson/backend/internal/domain"
 )
 
@@ -70,9 +72,13 @@ func (t runtimeCreateTaskTool) Execute(ctx context.Context, input map[string]any
 		description = strings.TrimSpace(description + "\n周期：" + strings.TrimSpace(recurrence))
 	}
 	authorization, _ := runtimeExecutionAuthorizationFromContext(ctx)
+	recordID, err := activityBatchSideEffectRecordID(ctx, t.service)
+	if err != nil {
+		return RuntimeToolResult{}, err
+	}
 	confirmed := true
 	task, err := t.service.CreateTask(ctx, CreateTaskInput{
-		Type: taskType, Title: title, Description: description, Priority: "normal", DueAt: dueAt, Source: "conversation_tool",
+		ID: recordID, Type: taskType, Title: title, Description: description, Priority: "normal", DueAt: dueAt, Source: "conversation_tool",
 		DataLevel: defaultString(authorization.DataLevel, DataD0), PermissionLevel: PermissionA3, RiskLevel: "low", UserConfirmed: &confirmed,
 	})
 	if err != nil {
@@ -151,8 +157,12 @@ func (t runtimeSaveMemoryTool) Execute(ctx context.Context, input map[string]any
 		}
 	}
 	confirmed := true
+	recordID, err := activityBatchSideEffectRecordID(ctx, t.service)
+	if err != nil {
+		return RuntimeToolResult{}, err
+	}
 	memory, err := t.service.CreateMemory(ctx, CreateMemoryInput{
-		Type: "explicit_conversation_memory", Title: title, Summary: defaultString(strings.TrimSpace(summary), content), Content: content,
+		ID: recordID, Type: "explicit_conversation_memory", Title: title, Summary: defaultString(strings.TrimSpace(summary), content), Content: content,
 		Scope: defaultString(scope, "global"), Source: "conversation_tool", DataLevel: defaultString(authorization.DataLevel, DataD0),
 		PermissionLevel: PermissionA3, Confidence: 1, UserConfirmed: &confirmed,
 	})
@@ -161,6 +171,14 @@ func (t runtimeSaveMemoryTool) Execute(ctx context.Context, input map[string]any
 	}
 	output := map[string]any{"id": memory.ID, "title": memory.Title, "status": memory.Status}
 	return RuntimeToolResult{Output: output, Evidence: []RuntimeEvidence{{Kind: "memory_saved", Summary: "explicit long-term memory saved", Payload: output}}}, nil
+}
+
+func activityBatchSideEffectRecordID(ctx context.Context, service *Service) (string, error) {
+	key, err := service.activityBatchToolIdempotencyKey(ctx)
+	if err != nil || key == "" {
+		return "", err
+	}
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)).String(), nil
 }
 
 func (runtimeSaveMemoryTool) Verify(_ context.Context, _ map[string]any, output map[string]any, expected map[string]any) error {

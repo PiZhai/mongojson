@@ -9,7 +9,7 @@ function Get-ParseErrors([string]$Name){
 
 Describe 'Windows production installer transaction contracts' {
   It 'keeps all transaction scripts syntactically valid' {
-    foreach($name in @('migrate-steward-production.ps1','install-steward-companion.ps1','rotate-steward-broker-keys.ps1','run-steward-service-install-e2e.ps1')){
+    foreach($name in @('migrate-steward-production.ps1','install-steward-companion.ps1','install-steward-production.ps1','update-steward-production.ps1','test-steward-production.ps1','rotate-steward-broker-keys.ps1','run-steward-service-install-e2e.ps1')){
       @(Get-ParseErrors $name).Count|Should Be 0
     }
   }
@@ -82,7 +82,7 @@ Describe 'Windows production installer transaction contracts' {
       $previousInjection=$env:STEWARD_COMPANION_TEST_FAIL_AFTER_ACTIVATION
       $env:STEWARD_COMPANION_TEST_FAIL_AFTER_ACTIVATION='1'
       $threw=$false
-      try{& (Join-Path $repoRoot 'deploy\install-steward-companion.ps1') -SourceDir $source -LocalEncryptionKey ('A'*43+'=') -InstallDir $install -RollbackRoot $rollback -TaskName ('StewardFixture-'+[guid]::NewGuid().ToString('N')) -ErrorAction Stop|Out-Null}catch{$threw=$true}
+      try{& (Join-Path $repoRoot 'deploy\install-steward-companion.ps1') -SourceDir $source -LocalEncryptionKey ('A'*43+'=') -InstallDir $install -RollbackRoot $rollback -TaskName ('StewardFixture-'+[guid]::NewGuid().ToString('N')) -AllowUnauthenticatedDevelopment -ErrorAction Stop|Out-Null}catch{$threw=$true}
       $threw|Should Be $true
       Test-Path -LiteralPath (Join-Path $install 'sentinel.txt')|Should Be $true
       Test-Path -LiteralPath (Join-Path $install '.steward-companion-operation')|Should Be $false
@@ -90,6 +90,68 @@ Describe 'Windows production installer transaction contracts' {
       $env:STEWARD_COMPANION_TEST_FAIL_AFTER_ACTIVATION=$previousInjection
       if(Test-Path -LiteralPath $fixtureRoot){Remove-Item -LiteralPath $fixtureRoot -Recurse -Force}
     }
+  }
+
+  It 'pins the Companion API base and fails closed on production management authentication' {
+    $companion=Read-Script 'install-steward-companion.ps1'
+    foreach($contract in @(
+      '[string]$APIBase = "http://127.0.0.1:18080/api"',
+      '[switch]$AllowUnauthenticatedDevelopment',
+      '--require-management-token=$requireManagementTokenArgument',
+      '--api `"$APIBase`"',
+      'ManagementAccessTokenFile is required for a production Companion installation'
+    )){$companion.Contains($contract)|Should Be $true}
+
+    $installer=Read-Script 'install-steward-production.ps1'
+    foreach($contract in @(
+      '-APIBase $companionAPIBase',
+      'companion_api_base=$companionAPIBase',
+      '-DetailedReadyURL "$companionAPIBase/system/readiness"'
+    )){$installer.Contains($contract)|Should Be $true}
+
+    $migration=Read-Script 'migrate-steward-production.ps1'
+    foreach($contract in @(
+      "[string]`$HTTPAddress='127.0.0.1:18080'",
+      "[string]`$PeerHTTPAddress='127.0.0.1:18081'",
+      'HTTPAddress=$HTTPAddress',
+      'PeerHTTPAddress=$PeerHTTPAddress'
+    )){$migration.Contains($contract)|Should Be $true}
+
+    $updater=Read-Script 'update-steward-production.ps1'
+    foreach($contract in @(
+      '[string]$CompanionAPIBase=""',
+      'installationMarker.companion_api_base',
+      '-APIBase $CompanionAPIBase',
+      '-DetailedReadyURL $DetailedReadyURL'
+    )){$updater.Contains($contract)|Should Be $true}
+  }
+
+  It 'rejects a production Companion install before mutation when its management token is absent' {
+    $fixtureRoot=Join-Path ([IO.Path]::GetTempPath()) ('steward-companion-auth-fi-'+[guid]::NewGuid().ToString('N'))
+    $source=Join-Path $fixtureRoot 'source';$install=Join-Path $fixtureRoot 'installed'
+    New-Item -ItemType Directory -Force -Path $source|Out-Null
+    try{
+      Set-Content -LiteralPath (Join-Path $source 'steward-companion.exe') -Value 'fixture'
+      $message=''
+      try{& (Join-Path $repoRoot 'deploy\install-steward-companion.ps1') -SourceDir $source -LocalEncryptionKey ('A'*43+'=') -InstallDir $install -TaskName ('StewardFixture-'+[guid]::NewGuid().ToString('N')) -ErrorAction Stop|Out-Null}catch{$message=$_.Exception.Message}
+      $message.Contains('ManagementAccessTokenFile is required for a production Companion installation')|Should Be $true
+      Test-Path -LiteralPath $install|Should Be $false
+    }finally{Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue}
+  }
+
+  It 'accepts a custom loopback Companion API base and rejects a remote one before mutation' {
+    $fixtureRoot=Join-Path ([IO.Path]::GetTempPath()) ('steward-companion-api-fi-'+[guid]::NewGuid().ToString('N'))
+    $source=Join-Path $fixtureRoot 'source';$install=Join-Path $fixtureRoot 'installed';$token=Join-Path $fixtureRoot 'token.txt'
+    New-Item -ItemType Directory -Force -Path $source|Out-Null
+    try{
+      Set-Content -LiteralPath (Join-Path $source 'steward-companion.exe') -Value 'fixture'
+      Set-Content -LiteralPath $token -Value ('x'*40)
+      {& (Join-Path $repoRoot 'deploy\install-steward-companion.ps1') -SourceDir $source -LocalEncryptionKey ('A'*43+'=') -InstallDir $install -ManagementAccessTokenFile $token -APIBase 'http://127.0.0.1:19090/api/' -WhatIf -ErrorAction Stop|Out-Null}|Should Not Throw
+      $message=''
+      try{& (Join-Path $repoRoot 'deploy\install-steward-companion.ps1') -SourceDir $source -LocalEncryptionKey ('A'*43+'=') -InstallDir $install -ManagementAccessTokenFile $token -APIBase 'https://example.com/api' -WhatIf -ErrorAction Stop|Out-Null}catch{$message=$_.Exception.Message}
+      $message.Contains('must target loopback')|Should Be $true
+      Test-Path -LiteralPath $install|Should Be $false
+    }finally{Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue}
   }
 
   It 'proves health and readiness after both key rotation and rollback' {
@@ -121,5 +183,17 @@ Describe 'Windows production installer transaction contracts' {
     $script.Contains('$platform -eq "windows" -and $ConfirmInstall')|Should Be $true
     $script.Contains('legacy direct-SCM Windows install E2E is retired')|Should Be $true
     $script.Contains('test-steward-production.ps1')|Should Be $true
+  }
+
+  It 'requires a post-probe Companion activity sample to reach durable storage' {
+    $verifier=Read-Script 'test-steward-production.ps1'
+    foreach($contract in @(
+      'companion.real_activity_ingestion',
+      '/api/steward/background/status',
+      "collector_name -eq 'companion:windows-activity'",
+      'last_ingested_at',
+      'ingestion_fresh'
+    )){$verifier.Contains($contract)|Should Be $true}
+    $verifier.IndexOf('$managementToken=$null')|Should BeGreaterThan $verifier.IndexOf('companion.real_activity_ingestion')
   }
 }

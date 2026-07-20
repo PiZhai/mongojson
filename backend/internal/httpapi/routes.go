@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -185,6 +186,36 @@ type StewardActivityStore interface {
 	PurgeLifecycle(context.Context, steward.PurgeLifecycleInput) (domain.StewardPurgeResult, error)
 	ListRetentionPolicies(context.Context) ([]domain.StewardRetentionPolicy, error)
 	UpdateRetentionPolicy(context.Context, string, steward.UpdateRetentionPolicyInput) (domain.StewardRetentionPolicy, error)
+}
+
+type StewardIntelligenceSettingsStore interface {
+	GetIntelligenceSettings(context.Context) (steward.IntelligenceSettings, error)
+	UpdateIntelligenceSettings(context.Context, steward.UpdateIntelligenceSettingsInput) (steward.IntelligenceSettings, error)
+}
+
+// StewardPersonalIntelligenceStore keeps the R5.3 management surface optional
+// for lightweight/test stores while exposing the complete production service
+// projection through a single capability check.
+type StewardPersonalIntelligenceStore interface {
+	GetBackgroundStatus(context.Context) (steward.StewardBackgroundStatus, error)
+	GetProfileView(context.Context) (domain.StewardProfileView, error)
+	ListProfileFacts(context.Context, steward.ListProfileFactsInput) ([]domain.StewardProfileFact, error)
+	CorrectProfileFact(context.Context, steward.UpsertProfileFactInput) (domain.StewardProfileFact, error)
+	ListReports(context.Context, string, int, bool) ([]domain.StewardReport, error)
+	GetReport(context.Context, string) (domain.StewardReport, error)
+	RegenerateReport(context.Context, string, steward.RegenerateReportInput) (steward.ReportRegenerationResult, error)
+	GetReminderPolicy(context.Context) (steward.StewardReminderPolicy, error)
+	UpdateReminderPolicy(context.Context, steward.UpdateReminderPolicyInput) (steward.StewardReminderPolicy, error)
+	ListReminderFeedback(context.Context, int) ([]steward.StewardReminderFeedback, error)
+	ListReceptivityWindows(context.Context, int) ([]steward.StewardReceptivityWindow, error)
+	RecordNotificationCallback(context.Context, string, string, string, map[string]any) (steward.StewardReminderFeedback, error)
+	ListIntelligenceJobs(context.Context, string, int) ([]domain.StewardIntelligenceJob, error)
+	GetIntelligenceJob(context.Context, string) (domain.StewardIntelligenceJob, error)
+	CancelIntelligenceJob(context.Context, string) error
+	BuildDueActivityBatches(context.Context, time.Time) ([]steward.ActivityBatch, error)
+	ListActivityBatches(context.Context, string, int) ([]steward.ActivityBatch, error)
+	GetActivityBatch(context.Context, string) (steward.ActivityBatch, error)
+	GetActivityBatchContext(context.Context, string) (steward.ActivityBatchContext, error)
 }
 
 type StewardAutomationPolicyStore interface {
@@ -371,8 +402,34 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/steward/agent-episodes/{id}/decision", handler.decideStewardAgentEpisode)
 		r.Get("/steward/model-settings", handler.getStewardModelSettings)
 		r.Patch("/steward/model-settings", handler.updateStewardModelSettings)
+		r.Get("/steward/intelligence-settings", handler.getStewardIntelligenceSettings)
+		r.Patch("/steward/intelligence-settings", handler.updateStewardIntelligenceSettings)
+		r.Get("/steward/background/status", handler.getStewardBackgroundStatus)
+		r.Get("/steward/background/jobs", handler.listStewardIntelligenceJobs)
+		r.Get("/steward/background/jobs/{id}", handler.getStewardIntelligenceJob)
+		r.Post("/steward/background/jobs/{id}/cancel", handler.cancelStewardIntelligenceJob)
+		r.Get("/steward/profile", handler.getStewardProfile)
+		r.Get("/steward/profile/facts", handler.listStewardProfileFacts)
+		r.Get("/steward/profile/history", handler.listStewardProfileHistory)
+		r.Post("/steward/profile/corrections", handler.correctStewardProfileFact)
+		r.Get("/steward/reports", handler.listStewardReports)
+		r.Post("/steward/reports/{id}/regenerate", handler.regenerateStewardReport)
+		r.Get("/steward/reports/{id}", handler.getStewardReport)
+		// Stable R5.3 aliases group the personal-intelligence management API
+		// without breaking the shorter paths already used by the Web client.
+		r.Get("/steward/personal-intelligence/profile/history", handler.listStewardProfileHistory)
+		r.Post("/steward/personal-intelligence/reports/{id}/regenerate", handler.regenerateStewardReport)
+		r.Get("/steward/reminders/policy", handler.getStewardReminderPolicy)
+		r.Put("/steward/reminders/policy", handler.updateStewardReminderPolicy)
+		r.Patch("/steward/reminders/policy", handler.updateStewardReminderPolicy)
+		r.Get("/steward/reminders/feedback", handler.listStewardReminderFeedback)
+		r.Get("/steward/reminders/receptivity", handler.listStewardReceptivityWindows)
 		r.Get("/steward/activity/observations", handler.listStewardObservations)
 		r.Post("/steward/activity/observations", handler.createStewardObservation)
+		r.Post("/steward/activity/batches/run", handler.runStewardActivityBatches)
+		r.Get("/steward/activity/batches", handler.listStewardActivityBatches)
+		r.Get("/steward/activity/batches/{id}", handler.getStewardActivityBatch)
+		r.Get("/steward/activity/batches/{id}/context", handler.getStewardActivityBatchContext)
 		r.Get("/steward/activity/sessions", handler.listStewardActivitySessions)
 		r.Get("/steward/activity/timeline", handler.listStewardTimelineSegments)
 		r.Get("/steward/entities", handler.listStewardEntities)
@@ -457,6 +514,7 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Post("/steward/proactive/run", handler.runStewardProactiveCycle)
 		r.Get("/steward/notifications", handler.listStewardNotifications)
 		r.Post("/steward/notifications", handler.createStewardNotification)
+		r.Post("/steward/notifications/feedback/callback", handler.recordStewardNotificationFeedbackCallback)
 		r.Post("/steward/notifications/{id}/decision", handler.decideStewardNotification)
 		r.Get("/steward/notification-endpoints", handler.listStewardNotificationEndpoints)
 		r.Put("/steward/notification-endpoints", handler.upsertStewardNotificationEndpoint)

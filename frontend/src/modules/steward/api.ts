@@ -359,6 +359,10 @@ export async function decideStewardTool(name: string, decision: 'enable' | 'disa
   })
 }
 
+export async function getStewardCollectors() {
+  return request<{ collectors: StewardCollectorConfig[] }>(`${API_BASE}/steward/collectors`)
+}
+
 export async function createStewardConversation(payload: { title?: string; data_level?: string }) {
   return request<{ conversation: StewardConversation }>(`${API_BASE}/steward/conversations`, {
     method: 'POST',
@@ -1197,7 +1201,11 @@ export async function getStewardNotifications(status = '', limit = 100) {
   return request<{ notifications: import('./types').StewardNotification[] }>(`${API_BASE}/steward/notifications?${params.toString()}`)
 }
 
-export async function decideStewardNotification(id: string, decision: 'acknowledge' | 'snooze' | 'cancel' | 'resend', snoozeSeconds = 0) {
+export async function decideStewardNotification(
+  id: string,
+  decision: 'opened' | 'acted' | 'acknowledge' | 'snooze' | 'dismiss' | 'cancel' | 'resend',
+  snoozeSeconds = 0,
+) {
   return request<{ notification: import('./types').StewardNotification }>(`${API_BASE}/steward/notifications/${encodeURIComponent(id)}/decision`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, snooze_seconds: snoozeSeconds }),
   })
@@ -1218,4 +1226,118 @@ export async function saveStewardNotificationEndpoint(payload: {
 
 export async function testStewardNotificationEndpoint(id: string) {
   return request<{ endpoint: import('./types').StewardNotificationEndpoint }>(`${API_BASE}/steward/notification-endpoints/${encodeURIComponent(id)}/test`, { method: 'POST' })
+}
+
+export async function getStewardBackgroundStatus() {
+  return request<{ status: import('./types').StewardBackgroundStatus }>(`${API_BASE}/steward/background/status`)
+}
+
+export async function runStewardActivityBatches() {
+  return request<{ batches: import('./types').StewardActivityBatch[] }>(`${API_BASE}/steward/activity/batches/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
+export async function getStewardIntelligenceSettings() {
+  return request<{ settings: import('./types').StewardIntelligenceSettings }>(`${API_BASE}/steward/intelligence-settings`)
+}
+
+export async function updateStewardIntelligenceSettings(
+  payload: Partial<Omit<import('./types').StewardIntelligenceSettings, 'revision' | 'created_at' | 'updated_at'>> & {
+    expected_revision: number
+  },
+) {
+  return request<{ settings: import('./types').StewardIntelligenceSettings }>(`${API_BASE}/steward/intelligence-settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardProfile() {
+  const views = ['recent', 'stable', 'explicit', 'merged'] as const
+  const results = await Promise.all(views.map((view) => request<{
+    view: typeof view
+    profile: import('./types').StewardProfileSnapshot | null
+  }>(`${API_BASE}/steward/profile?view=${view}`)))
+  const profile: import('./types').StewardProfileView = {}
+  results.forEach((result) => { profile[result.view] = result.profile })
+  return { profile }
+}
+
+export async function getStewardProfileFacts(horizon = '', limit = 100) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (horizon) params.set('horizon', horizon)
+  return request<{ facts: import('./types').StewardProfileFact[] }>(`${API_BASE}/steward/profile/facts?${params.toString()}`)
+}
+
+export async function getStewardProfileHistory(query: {
+  horizon?: '' | 'recent' | 'stable' | 'explicit'
+  status?: string
+  key?: string
+  limit?: number
+} = {}) {
+  const params = new URLSearchParams({ limit: String(query.limit ?? 200) })
+  if (query.horizon) params.set('horizon', query.horizon)
+  if (query.status) params.set('status', query.status)
+  if (query.key) params.set('key', query.key)
+  return request<{ facts: import('./types').StewardProfileFact[] }>(`${API_BASE}/steward/personal-intelligence/profile/history?${params.toString()}`)
+}
+
+export async function correctStewardProfileFact(payload: {
+  key: string
+  value: Record<string, unknown>
+  summary: string
+}) {
+  return request<{ fact: import('./types').StewardProfileFact }>(`${API_BASE}/steward/profile/corrections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardReports(cadence = '', limit = 50, includeHistory = false) {
+  const params = new URLSearchParams({ limit: String(limit), include_history: String(includeHistory) })
+  if (cadence) params.set('cadence', cadence)
+  return request<{ reports: import('./types').StewardReport[] }>(`${API_BASE}/steward/reports?${params.toString()}`)
+}
+
+export async function getStewardReport(id: string) {
+  return request<{ report: import('./types').StewardReport }>(`${API_BASE}/steward/reports/${encodeURIComponent(id)}`)
+}
+
+export async function regenerateStewardReport(id: string, reason = '') {
+  return request<{ regeneration: import('./types').StewardReportRegenerationResult }>(`${API_BASE}/steward/personal-intelligence/reports/${encodeURIComponent(id)}/regenerate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reason.trim() ? { reason: reason.trim() } : {}),
+  })
+}
+
+export async function getStewardReminderPolicy() {
+  return request<{ policy: import('./types').StewardReminderPolicy }>(`${API_BASE}/steward/reminders/policy`)
+}
+
+export async function updateStewardReminderPolicy(payload: {
+  profile_scope?: string
+  category?: string
+  policy: Record<string, unknown>
+  rationale: string
+  evidence_manifest?: string[]
+}) {
+  return request<{ policy: import('./types').StewardReminderPolicy }>(`${API_BASE}/steward/reminders/policy`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getStewardReminderFeedback(limit = 100) {
+  return request<{ feedback: import('./types').StewardReminderFeedback[] }>(`${API_BASE}/steward/reminders/feedback?limit=${limit}`)
+}
+
+export async function getStewardReceptivityWindows(limit = 100) {
+  return request<{ windows: import('./types').StewardReceptivityWindow[] }>(`${API_BASE}/steward/reminders/receptivity?limit=${limit}`)
 }

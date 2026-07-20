@@ -1,10 +1,11 @@
 package main
 
 type systemNotificationAction struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Kind  string `json:"kind"`
-	Value string `json:"value"`
+	ID            string `json:"id"`
+	Label         string `json:"label"`
+	Kind          string `json:"kind"`
+	Value         string `json:"value"`
+	CallbackToken string `json:"callback_token"`
 }
 
 type systemNotification struct {

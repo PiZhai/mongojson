@@ -54,6 +54,7 @@ func TestStewardNotificationOutboxDeduplicatesDeliversAndAcknowledges(t *testing
 	created, err := node.service.CreateNotification(ctx, steward.CreateNotificationInput{
 		Title: "数据库备份完成", Body: "备份文件已经校验。", Priority: "high", ScheduledAt: &now,
 		DedupeKey: "notification-e2e", Channels: []string{"ntfy"},
+		DecisionContext: map[string]any{"policy_override": true},
 	})
 	if err != nil {
 		t.Fatalf("create notification: %v", err)
@@ -61,6 +62,7 @@ func TestStewardNotificationOutboxDeduplicatesDeliversAndAcknowledges(t *testing
 	replayed, err := node.service.CreateNotification(ctx, steward.CreateNotificationInput{
 		Title: "数据库备份完成", Body: "备份文件已经校验。", Priority: "high", ScheduledAt: &now,
 		DedupeKey: "notification-e2e", Channels: []string{"ntfy"},
+		DecisionContext: map[string]any{"policy_override": true},
 	})
 	if err != nil || replayed.ID != created.ID {
 		t.Fatalf("dedupe replay=%+v err=%v want id=%s", replayed, err, created.ID)

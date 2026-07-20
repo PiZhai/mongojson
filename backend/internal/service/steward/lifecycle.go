@@ -145,23 +145,44 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, input EvaluateLifecycle
 	}
 	if len(evaluation.Actions) < limit {
 		rows, err := s.db.Pool.Query(ctx, `
-			select b.id::text from steward_encrypted_blobs b
+			select b.id::text, retention.require_preview
+			from steward_encrypted_blobs b
+			cross join lateral (
+				select p.ttl_days,p.auto_purge,p.require_preview
+				from steward_retention_policies p
+				where p.source_pattern='*' and p.data_kind='unreferenced_media' and p.data_level='*'
+				union all
+				select greatest(s.unreferenced_media_retention_days,1)::double precision,
+				       s.unreferenced_media_retention_days>0,
+				       false
+				from steward_intelligence_settings s
+				where s.id='default' and not exists(
+					select 1 from steward_retention_policies p
+					where p.source_pattern='*' and p.data_kind='unreferenced_media' and p.data_level='*'
+				)
+				limit 1
+			) retention
 			where not exists (
 				select 1 from steward_observations o
 				where o.id=b.observation_id and o.occurred_at=b.observation_time
-			) limit $1
+			)
+			  and retention.auto_purge=true
+			  and b.created_at <= now()-(retention.ttl_days*interval '1 day')
+			limit $1
 		`, limit-len(evaluation.Actions))
 		if err != nil {
 			return evaluation, err
 		}
 		for rows.Next() {
 			var id string
-			if err := rows.Scan(&id); err != nil {
+			var preview bool
+			if err := rows.Scan(&id, &preview); err != nil {
 				rows.Close()
 				return evaluation, err
 			}
 			evaluation.Actions = append(evaluation.Actions, domain.StewardLifecycleAction{
-				TargetType: "encrypted_blob", TargetID: id, Action: "delete_orphan_blob", Reason: "媒体文件没有任何原始观察引用",
+				TargetType: "encrypted_blob", TargetID: id, Action: "delete_orphan_blob",
+				Reason: "媒体文件没有任何原始观察引用且已超过保留期", RequiresPreview: preview,
 			})
 		}
 		rows.Close()

@@ -41,22 +41,26 @@ type ObservationBlobInput struct {
 }
 
 type CreateObservationInput struct {
-	Source          string                  `json:"source"`
-	Type            string                  `json:"type"`
-	Summary         string                  `json:"summary"`
-	DataLevel       string                  `json:"data_level"`
-	PermissionLevel string                  `json:"permission_level"`
-	ContextKey      string                  `json:"context_key"`
-	Fingerprint     string                  `json:"fingerprint"`
-	Payload         map[string]any          `json:"payload"`
-	Metadata        map[string]any          `json:"metadata"`
-	EntityHints     []ObservationEntityHint `json:"entity_hints"`
-	Blob            *ObservationBlobInput   `json:"blob,omitempty"`
-	OccurredAt      *time.Time              `json:"occurred_at,omitempty"`
-	EndedAt         *time.Time              `json:"ended_at,omitempty"`
-	ExpiresAt       *time.Time              `json:"expires_at,omitempty"`
-	SystemGenerated *bool                   `json:"system_generated,omitempty"`
-	RetentionLocked *bool                   `json:"retention_locked,omitempty"`
+	Source               string                  `json:"source"`
+	Type                 string                  `json:"type"`
+	Summary              string                  `json:"summary"`
+	SourceEventKey       string                  `json:"source_event_key,omitempty"`
+	SourceRevision       int64                   `json:"source_revision,omitempty"`
+	InteractiveSessionID string                  `json:"interactive_session_id,omitempty"`
+	SourceTimezone       string                  `json:"source_timezone,omitempty"`
+	DataLevel            string                  `json:"data_level"`
+	PermissionLevel      string                  `json:"permission_level"`
+	ContextKey           string                  `json:"context_key"`
+	Fingerprint          string                  `json:"fingerprint"`
+	Payload              map[string]any          `json:"payload"`
+	Metadata             map[string]any          `json:"metadata"`
+	EntityHints          []ObservationEntityHint `json:"entity_hints"`
+	Blob                 *ObservationBlobInput   `json:"blob,omitempty"`
+	OccurredAt           *time.Time              `json:"occurred_at,omitempty"`
+	EndedAt              *time.Time              `json:"ended_at,omitempty"`
+	ExpiresAt            *time.Time              `json:"expires_at,omitempty"`
+	SystemGenerated      *bool                   `json:"system_generated,omitempty"`
+	RetentionLocked      *bool                   `json:"retention_locked,omitempty"`
 }
 
 type UpdateRetentionPolicyInput struct {
@@ -128,39 +132,45 @@ func (s *Service) CreateObservation(ctx context.Context, input CreateObservation
 	input.Source = strings.TrimSpace(input.Source)
 	input.Type = strings.TrimSpace(input.Type)
 	input.Summary = strings.TrimSpace(input.Summary)
+	input.SourceEventKey = strings.TrimSpace(input.SourceEventKey)
+	input.InteractiveSessionID = strings.TrimSpace(input.InteractiveSessionID)
+	input.SourceTimezone = strings.TrimSpace(input.SourceTimezone)
 	input.ContextKey = strings.TrimSpace(input.ContextKey)
 	input.DataLevel = strings.ToUpper(defaultString(strings.TrimSpace(input.DataLevel), DataD2))
 	input.PermissionLevel = defaultString(strings.TrimSpace(input.PermissionLevel), PermissionA1)
 	if input.Source == "" || input.Type == "" {
 		return domain.StewardObservation{}, fmt.Errorf("source and type are required")
 	}
+	if input.SourceRevision < 0 {
+		return domain.StewardObservation{}, fmt.Errorf("source_revision cannot be negative")
+	}
+	if input.SourceRevision == 0 {
+		input.SourceRevision = 1
+	}
 	if !validDataLevel(input.DataLevel) {
 		return domain.StewardObservation{}, fmt.Errorf("invalid data level %q", input.DataLevel)
 	}
-	classifiedLevel, credentialCategory := ClassifyObservationDataLevel(input)
-	if classifiedLevel == DataD5 {
-		input.DataLevel = DataD5
+	input, _ = SanitizeObservationSecrets(input)
+	if err := ValidateObservationBeforePersistence(input); err != nil {
+		return domain.StewardObservation{}, err
+	}
+	systemGenerated := defaultBool(input.SystemGenerated, true)
+	// Legacy D0-D6 labels remain on the record for history and API
+	// compatibility, but do not decide collection or model visibility. Secret
+	// plaintext is handled by the deterministic field-level sanitizer above.
+	dataPolicy := domain.StewardDataPolicy{
+		ModelMode: PolicyModeAuto, ModelContentMode: ModelContentRaw,
+		AllowLocalPersistence: true, AllowSync: true,
+	}
+	protectedInput, piiDetected, err := s.applyPresidioProtection(ctx, input)
+	if err == nil {
+		input = protectedInput
+	} else {
 		if input.Metadata == nil {
 			input.Metadata = map[string]any{}
 		}
-		input.Metadata["classification"] = credentialCategory
-	}
-	systemGenerated := defaultBool(input.SystemGenerated, true)
-	dataPolicy, err := s.ResolveDataPolicy(ctx, input.DataLevel, input.Source)
-	if err != nil || !dataPolicyAllowsCollection(dataPolicy, systemGenerated) {
-		reason := "collection policy is not enabled"
-		if err != nil {
-			reason = err.Error()
-		}
-		s.recordDataPolicyBlock(ctx, input, reason)
-		if input.DataLevel == DataD5 {
-			return domain.StewardObservation{}, fmt.Errorf("%w: %s", ErrCredentialDataBlocked, reason)
-		}
-		return domain.StewardObservation{}, fmt.Errorf("%w: %s", ErrDataPolicyDenied, reason)
-	}
-	input, piiDetected, err := s.applyPresidioProtection(ctx, input)
-	if err != nil {
-		return domain.StewardObservation{}, err
+		input.Metadata["pii_redaction_error"] = truncateAdvisorText(err.Error(), 300)
+		piiDetected = false
 	}
 
 	now := time.Now().UTC()
@@ -182,6 +192,16 @@ func (s *Service) CreateObservation(ctx context.Context, input CreateObservation
 	expiresAt, err := s.resolveObservationExpiry(ctx, input.Source, input.Type, occurredAt, input.ExpiresAt)
 	if err != nil {
 		return domain.StewardObservation{}, err
+	}
+	if input.SourceEventKey != "" {
+		if existing, found, err := s.mergeSourceEventRevision(ctx, input, occurredAt, endedAt, expiresAt); err != nil {
+			return domain.StewardObservation{}, err
+		} else if found {
+			if stateErr := s.recordCompanionSourceIngestion(ctx, input, occurredAt, endedAt, now); stateErr != nil {
+				s.recordObservationPostProcessingError(ctx, existing.ID, existing.OccurredAt, "update_collection_source_state", stateErr)
+			}
+			return existing, nil
+		}
 	}
 	fingerprint := strings.TrimSpace(input.Fingerprint)
 	if fingerprint == "" {
@@ -206,32 +226,31 @@ func (s *Service) CreateObservation(ctx context.Context, input CreateObservation
 		}
 		payload = cloned
 	}
-	if dataLevelRank(input.DataLevel) >= dataLevelRank(DataD4) {
-		if input.Summary != "" {
-			payload["_steward_original_summary"] = input.Summary
-		}
-		if input.ContextKey != "" {
-			payload["_steward_original_context_key"] = input.ContextKey
-		}
-		input.Summary = input.DataLevel + " encrypted observation"
-		input.ContextKey = "sensitive:" + fingerprint[:16]
-	}
 	payloadEncrypted := false
-	if (dataPolicy.RequireEncryption || dataLevelRank(input.DataLevel) >= dataLevelRank(DataD4) || piiDetected) && len(payload) > 0 {
+	if piiDetected && len(payload) > 0 {
 		cipherConfig, enabled, err := localPayloadCipherFromEnv()
 		if err != nil {
 			return domain.StewardObservation{}, err
 		}
-		if !enabled {
-			return domain.StewardObservation{}, fmt.Errorf("STEWARD_LOCAL_ENCRYPTION_KEY is required for D4-D6 observations")
+		if enabled {
+			payload, err = encryptPayloadEnvelope(cipherConfig, observationEncryptionAAD(input.Source, fingerprint, occurredAt), payload, SyncEncryptionScopeLocalAtRest)
+			if err != nil {
+				return domain.StewardObservation{}, err
+			}
+			payloadEncrypted = true
 		}
-		payload, err = encryptPayloadEnvelope(cipherConfig, observationEncryptionAAD(input.Source, fingerprint, occurredAt), payload, SyncEncryptionScopeLocalAtRest)
-		if err != nil {
-			return domain.StewardObservation{}, err
-		}
-		payloadEncrypted = true
 	}
 	metadata := sanitizeObservationMetadata(input.Metadata)
+	if input.SourceEventKey != "" {
+		metadata["source_event_key"] = input.SourceEventKey
+		metadata["source_revision"] = input.SourceRevision
+	}
+	if input.InteractiveSessionID != "" {
+		metadata["interactive_session_id"] = input.InteractiveSessionID
+	}
+	if input.SourceTimezone != "" {
+		metadata["source_timezone"] = input.SourceTimezone
+	}
 	observationID := uuid.NewString()
 	var media encryptedBlobResult
 	var mediaMIME string
@@ -262,12 +281,14 @@ func (s *Service) CreateObservation(ctx context.Context, input CreateObservation
 	_, err = tx.Exec(ctx, `
 		insert into steward_observations (
 			id, source, type, summary, data_level, permission_level, device_id, context_key,
-			fingerprint, payload, payload_encrypted, metadata, status, system_generated,
+			fingerprint, payload, payload_encrypted, metadata, source_event_key, source_revision,
+			interactive_session_id, source_timezone, ingested_at, status, system_generated,
 			retention_locked, duplicate_count, occurred_at, ended_at, expires_at, created_at
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active',$13,$14,1,$15,$16,$17,$18)
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'active',$18,$19,1,$20,$21,$22,$23)
 	`, observationID, input.Source, input.Type, input.Summary, input.DataLevel, input.PermissionLevel,
 		s.agentIDValue(), input.ContextKey, fingerprint, payload, payloadEncrypted, metadata,
-		systemGenerated, retentionLocked, occurredAt, endedAt, expiresAt, now)
+		input.SourceEventKey, input.SourceRevision, input.InteractiveSessionID,
+		input.SourceTimezone, now, systemGenerated, retentionLocked, occurredAt, endedAt, expiresAt, now)
 	if err != nil {
 		if media.Path != "" {
 			_ = os.Remove(media.Path)
@@ -301,7 +322,7 @@ func (s *Service) CreateObservation(ctx context.Context, input CreateObservation
 	s.storeObservationEmbedding(ctx, observationID, occurredAt, input.Summary)
 
 	if err := s.linkObservationEntities(ctx, observationID, occurredAt, input.DataLevel, input.EntityHints); err != nil {
-		return domain.StewardObservation{}, fmt.Errorf("link observation entities: %w", err)
+		s.recordObservationPostProcessingError(ctx, observationID, occurredAt, "link_entities", err)
 	}
 	confirmed, syncable := false, false
 	_, _ = s.recordAudit(ctx, AuditInput{
@@ -310,12 +331,93 @@ func (s *Service) CreateObservation(ctx context.Context, input CreateObservation
 		InputSummary: "redacted observation envelope", OutputSummary: input.Type + " observation stored",
 		UserConfirmed: &confirmed, Syncable: &syncable, ResultStatus: ResultOK,
 	})
-	if dataPolicy.ModelMode == PolicyModeAuto {
+	batchMode, batchModeErr := s.intelligenceBatchEnabled(ctx)
+	if batchModeErr != nil {
+		s.recordObservationPostProcessingError(ctx, observationID, occurredAt, "resolve_intelligence_mode", batchModeErr)
+	}
+	if !batchMode && dataPolicy.ModelMode == PolicyModeAuto {
 		if err := s.enqueueModelDispatch(ctx, observationID, occurredAt, input.Source, input.DataLevel, dataPolicy.ModelContentMode); err != nil {
-			return domain.StewardObservation{}, fmt.Errorf("enqueue observation model dispatch: %w", err)
+			s.recordObservationPostProcessingError(ctx, observationID, occurredAt, "enqueue_model_dispatch", err)
 		}
 	}
-	return s.getObservation(ctx, observationID, occurredAt)
+	record, err := s.getObservation(ctx, observationID, occurredAt)
+	if err != nil {
+		return record, err
+	}
+	if stateErr := s.recordCompanionSourceIngestion(ctx, input, occurredAt, endedAt, now); stateErr != nil {
+		s.recordObservationPostProcessingError(ctx, observationID, occurredAt, "update_collection_source_state", stateErr)
+	}
+	return record, nil
+}
+
+func (s *Service) recordCompanionSourceIngestion(ctx context.Context, input CreateObservationInput, occurredAt time.Time, endedAt *time.Time, ingestedAt time.Time) error {
+	state, ok := companionCollectionSourceState(input, occurredAt, endedAt, ingestedAt)
+	if !ok {
+		return nil
+	}
+	return s.updateCollectionSourceState(ctx, state)
+}
+
+func companionCollectionSourceState(input CreateObservationInput, occurredAt time.Time, endedAt *time.Time, ingestedAt time.Time) (collectionSourceStateUpdate, bool) {
+	if !strings.EqualFold(strings.TrimSpace(input.Source), "companion:windows-activity") {
+		return collectionSourceStateUpdate{}, false
+	}
+	sessionID := defaultString(strings.TrimSpace(input.InteractiveSessionID), "unknown")
+	eventType := defaultString(strings.TrimSpace(input.Type), "activity")
+	lastSourceAt := occurredAt.UTC()
+	if endedAt != nil && endedAt.After(lastSourceAt) {
+		lastSourceAt = endedAt.UTC()
+	}
+	backlog := int64(metadataInteger(input.Metadata, "companion_outbox_backlog", 0))
+	captureInterval := metadataInteger(input.Metadata, "capture_interval_seconds", 10)
+	maxLagSeconds := maxActivityInt(60, captureInterval*6)
+	return collectionSourceStateUpdate{
+		Collector: "companion:windows-activity", SourceKey: sessionID + ":" + eventType,
+		Watcher: "steward-companion", EventType: eventType, InteractiveSessionID: sessionID,
+		Status: "healthy", LastPollAt: ingestedAt.UTC(), LastSourceEventAt: &lastSourceAt,
+		LastIngestedAt: &ingestedAt, BacklogCount: backlog, MaxExpectedLagSeconds: maxLagSeconds,
+		Cursor: map[string]any{
+			"source_event_key": input.SourceEventKey, "source_revision": input.SourceRevision,
+			"occurred_at": occurredAt.UTC().Format(time.RFC3339Nano), "last_source_event_at": lastSourceAt.Format(time.RFC3339Nano),
+		},
+		Capabilities: map[string]any{
+			"transport": "encrypted-outbox", "revisioned_events": true,
+			"foreground_window": true, "afk_status": true,
+		},
+	}, true
+}
+
+func metadataInteger(metadata map[string]any, key string, fallback int) int {
+	if metadata == nil {
+		return fallback
+	}
+	switch value := metadata[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+	}
+	return fallback
+}
+
+func (s *Service) recordObservationPostProcessingError(ctx context.Context, id string, occurredAt time.Time, stage string, stageErr error) {
+	if stageErr == nil {
+		return
+	}
+	message := truncateAdvisorText(stageErr.Error(), 500)
+	_, _ = s.db.Pool.Exec(ctx, `
+		update steward_observations
+		set metadata=metadata || jsonb_build_object('post_processing_error_stage',$3,'post_processing_error',$4),
+		    updated_at=now()
+		where id=$1 and occurred_at=$2
+	`, id, occurredAt, stage, message)
 }
 
 func observationEncryptionAAD(source, fingerprint string, occurredAt time.Time) string {
@@ -327,6 +429,12 @@ func sanitizeObservationMetadata(input map[string]any) map[string]any {
 	allowed := map[string]bool{
 		"adapter": true, "source_version": true, "schema_version": true, "bucket_id": true,
 		"duration_seconds": true, "redacted": true, "capture_profile": true, "classification": true,
+		"source_event_key": true, "source_revision": true, "interactive_session_id": true,
+		"source_timezone": true, "source_host": true, "source_event_id": true,
+		"capture_interval_seconds": true, "segment_duration_seconds": true,
+		"companion_outbox_backlog": true,
+		"secret_redacted":          true, "secret_redaction_count": true,
+		"secret_redaction_categories": true, "pii_redaction_error": true,
 	}
 	for key, value := range input {
 		if allowed[key] {
@@ -384,6 +492,49 @@ func (s *Service) mergeObservationHeartbeat(ctx context.Context, input CreateObs
 	`, end, expiresAt, id, originalTime)
 	if err != nil {
 		return domain.StewardObservation{}, false, err
+	}
+	record, err := s.getObservation(ctx, id, originalTime)
+	return record, true, err
+}
+
+// mergeSourceEventRevision implements source-level idempotency independently
+// from the observation heartbeat heuristic. A Companion or sidecar may resend
+// the same durable event after a restart; only a strictly newer revision is
+// allowed to advance the stored end time and revision marker.
+func (s *Service) mergeSourceEventRevision(ctx context.Context, input CreateObservationInput, occurredAt time.Time, endedAt, expiresAt *time.Time) (domain.StewardObservation, bool, error) {
+	var id string
+	var originalTime time.Time
+	var revision int64
+	err := s.db.Pool.QueryRow(ctx, `
+		select id::text, occurred_at, source_revision
+		from steward_observations
+		where source_event_key = $1 and source=$2 and device_id=$3
+		order by occurred_at desc limit 1
+	`, input.SourceEventKey, input.Source, s.agentIDValue()).Scan(&id, &originalTime, &revision)
+	if err == pgx.ErrNoRows {
+		return domain.StewardObservation{}, false, nil
+	}
+	if err != nil {
+		return domain.StewardObservation{}, false, fmt.Errorf("lookup source event %q: %w", input.SourceEventKey, err)
+	}
+	if input.SourceRevision > revision {
+		end := occurredAt
+		if endedAt != nil && endedAt.After(end) {
+			end = endedAt.UTC()
+		}
+		_, err = s.db.Pool.Exec(ctx, `
+			update steward_observations
+			set source_revision=$1,
+			    ended_at=greatest(coalesce(ended_at, occurred_at), $2),
+			    duplicate_count=greatest(duplicate_count, $1::integer),
+			    expires_at=case when expires_at is null then $3 when $3::timestamptz is null then expires_at else greatest(expires_at,$3) end,
+			    ingested_at=now(),
+			    metadata=metadata || jsonb_build_object('source_revision',$1)
+			where id=$4 and occurred_at=$5 and source_revision < $1
+		`, input.SourceRevision, end, expiresAt, id, originalTime)
+		if err != nil {
+			return domain.StewardObservation{}, false, fmt.Errorf("advance source event %q: %w", input.SourceEventKey, err)
+		}
 	}
 	record, err := s.getObservation(ctx, id, originalTime)
 	return record, true, err

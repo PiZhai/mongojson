@@ -34,7 +34,10 @@ param(
   [string]$TrustedSignerThumbprint = "",
   [switch]$SkipCertificateRevocationCheck,
   [string]$ReleaseStagingRoot = (Join-Path $env:ProgramData 'MongojsonStewardReleaseStaging'),
-  [switch]$InstallCompanion,
+  # Session Companion is part of the default Windows production topology.
+  # Headless installations can still opt out explicitly with
+  # -InstallCompanion:$false.
+  [switch]$InstallCompanion = $true,
   [switch]$Start,
   [switch]$Verify
 )
@@ -448,6 +451,8 @@ function Move-OrphanedBrokerData([string]$Path,[string]$Reason) {
 if (-not (Test-Administrator)) { throw "Run this installer from an elevated PowerShell session." }
 Assert-SafeSystemName $ServiceName 'ServiceName';Assert-SafeSystemName $BrokerServiceName 'BrokerServiceName';Assert-SafeSystemName $CompanionTaskName 'CompanionTaskName'
 Assert-Loopback $HTTPAddress "HTTPAddress"; Assert-Loopback $PeerHTTPAddress "PeerHTTPAddress"
+$managementBase="http://$HTTPAddress"
+$companionAPIBase="$managementBase/api"
 $InstallDir=Assert-DedicatedChildPath $InstallDir $env:ProgramFiles 'InstallDir'
 $BrokerInstallDir=Assert-DedicatedChildPath $BrokerInstallDir $env:ProgramFiles 'BrokerInstallDir'
 $DataDir=Assert-DedicatedChildPath $DataDir $env:ProgramData 'DataDir'
@@ -646,19 +651,20 @@ try {
   Protect-MainInstallTree $InstallDir $ServiceName
   Grant-RestrictedCapabilityHostReadExecute (Join-Path $InstallDir 'steward-system-tool-host.exe')
 
+  $managementAccessPath=Write-CurrentUserSecretFile $managementAccessPath $managementToken
+  $managementAccessFileCreated=$true
   if($InstallCompanion){
-    & (Join-Path $InstallDir 'install-steward-companion.ps1') -SourceDir $InstallDir -LocalEncryptionKey $localKey -TaskName $CompanionTaskName -ServiceName $ServiceName -Start:$Start | Out-Host
+    & (Join-Path $InstallDir 'install-steward-companion.ps1') -SourceDir $InstallDir -LocalEncryptionKey $localKey -ManagementAccessTokenFile $managementAccessPath -APIBase $companionAPIBase -TaskName $CompanionTaskName -ServiceName $ServiceName -Start:$Start | Out-Host
     if($LASTEXITCODE -ne 0){throw "Session Companion installation failed"}
     $companionInstalled=$true
   }
-  $managementAccessPath=Write-CurrentUserSecretFile $managementAccessPath $managementToken
-  $managementAccessFileCreated=$true
   $markerPath=Join-Path $DataDir 'installation.json'
   $markerTemporary="$markerPath.tmp-$([guid]::NewGuid().ToString('N'))"
   $marker=[ordered]@{
     schema='mongojson.steward.windows-installation/v2';install_id=[guid]::NewGuid().ToString('D')
     service_name=$ServiceName;broker_service_name=$BrokerServiceName;companion_task_name=$CompanionTaskName
     install_dir=$InstallDir;data_dir=$DataDir;broker_install_dir=$BrokerInstallDir;broker_data_dir=$BrokerDataDir
+    http_address=$HTTPAddress;companion_api_base=$companionAPIBase;detailed_ready_url="$companionAPIBase/system/readiness"
     broker_policy_path=(Join-Path $BrokerDataDir 'policy.json');installed_at=[DateTimeOffset]::UtcNow.ToString('o')
     release_version=[string]$releaseManifest.version;release_commit=[string]$releaseManifest.commit;release_built_at=[string]$releaseManifest.built_at;quarantined_broker_data=$orphanedBrokerData
   }
@@ -668,7 +674,6 @@ try {
   Write-TransactionRecord $transactionPath 'verifying' @{service=$ServiceName;broker=$BrokerServiceName}
   if($Verify){
     if(-not $Start){throw '-Verify requires -Start'}
-    $managementBase="http://$HTTPAddress"
     & (Join-Path $InstallDir 'test-steward-production.ps1') `
       -ServiceName $ServiceName `
       -BrokerServiceName $BrokerServiceName `
@@ -676,6 +681,7 @@ try {
       -HealthURL "$managementBase/healthz" `
       -ReadyURL "$managementBase/readyz" `
       -AgentURL "$managementBase/api/steward/agent" `
+      -DetailedReadyURL "$companionAPIBase/system/readiness" `
       -InstallDir $InstallDir `
       -MainDataDir $DataDir `
       -BrokerDataDir $BrokerDataDir `

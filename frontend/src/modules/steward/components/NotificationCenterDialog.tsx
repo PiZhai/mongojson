@@ -47,7 +47,7 @@ export function NotificationCenterDialog({ open, onClose }: Props) {
   }, [onClose, open])
 
   if (!open) return null
-  const decide = async (id: string, decision: 'acknowledge' | 'snooze' | 'cancel' | 'resend', seconds = 0) => {
+  const decide = async (id: string, decision: 'opened' | 'acted' | 'acknowledge' | 'snooze' | 'dismiss' | 'cancel' | 'resend', seconds = 0) => {
     setBusy(true); setError('')
     try { await decideStewardNotification(id, decision, seconds); await load() }
     catch (reason) { setError(reason instanceof Error ? reason.message : '通知操作失败') }
@@ -76,8 +76,9 @@ export function NotificationCenterDialog({ open, onClose }: Props) {
             <div className="steward-notification-deliveries">{item.deliveries.map((delivery) => <span className={delivery.status === 'accepted' ? 'is-ok' : delivery.status === 'failed' ? 'is-error' : ''} key={delivery.id} title={delivery.last_error}>{channelLabel(delivery.channel)}：{statusLabel(delivery.status)}</span>)}</div>
             {item.deliveries.some((delivery) => delivery.last_error) ? <details><summary>查看错误与处理建议</summary>{item.deliveries.filter((delivery) => delivery.last_error).map((delivery) => <p key={delivery.id}>{channelLabel(delivery.channel)}：{delivery.last_error}<br />请检查对应端点、网络和凭据，然后点击重新发送。</p>)}</details> : null}
             <footer>
-              {!['acknowledged', 'cancelled'].includes(item.status) ? <button onClick={() => void decide(item.id, 'acknowledge')} type="button">知道了</button> : null}
-              {!['acknowledged', 'cancelled'].includes(item.status) ? <button onClick={() => void decide(item.id, 'snooze', 1800)} type="button">30 分钟后</button> : null}
+				{!['acknowledged', 'dismissed', 'auto_resolved', 'cancelled'].includes(item.status) ? <button onClick={() => void decide(item.id, 'acknowledge')} type="button">知道了</button> : null}
+				{!['acknowledged', 'dismissed', 'auto_resolved', 'cancelled'].includes(item.status) ? <button onClick={() => void decide(item.id, 'snooze', 1800)} type="button">30 分钟后</button> : null}
+				{!['acknowledged', 'dismissed', 'auto_resolved', 'cancelled'].includes(item.status) ? <button onClick={() => void decide(item.id, 'dismiss')} type="button">忽略这次</button> : null}
               {item.status === 'failed' ? <button onClick={() => void decide(item.id, 'resend')} type="button">重新发送</button> : null}
             </footer>
           </article>)}
@@ -122,4 +123,4 @@ function EmailForm({ busy, onSaved, setError }: FormProps) {
 
 type FormProps = { busy: boolean; onSaved: () => Promise<void>; setError: (value: string) => void }
 function channelLabel(value: string) { return ({ system: '本机系统', linux_desktop: 'Linux 桌面', ntfy: '其他设备', email: '邮件' } as Record<string, string>)[value] || value }
-function statusLabel(value: string) { return ({ queued: '等待投递', retrying: '等待重试', sending: '发送中', accepted: '已提交', sent: '已发送', acknowledged: '已确认', cancelled: '已取消', failed: '失败', expired: '已过期' } as Record<string, string>)[value] || value }
+function statusLabel(value: string) { return ({ queued: '等待投递', retrying: '等待重试', sending: '发送中', accepted: '已提交', sent: '已发送', acknowledged: '已确认', dismissed: '已忽略', auto_resolved: '已自动解决', cancelled: '已取消', failed: '失败', expired: '已过期' } as Record<string, string>)[value] || value }

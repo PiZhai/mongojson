@@ -234,13 +234,8 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	}
 	response := localConversationFallback(content)
 	model := "local-fallback"
-	dataPolicy, policyErr := s.ResolveDataPolicy(ctx, level, "conversation")
-	// Model inference itself is an A3 governed disclosure. Any tool call the
-	// model requests is evaluated separately against the tool's real A-level.
-	permissionPolicy, permissionErr := s.ResolvePermissionPolicy(ctx, PermissionA3, "model:conversation")
-	modelAllowed := policyErr == nil && permissionErr == nil && dataPolicyAllowsManualModel(dataPolicy) && permissionPolicy.ExecutionMode != PolicyModeDeny
 	advisorEnabled := s.autonomyAdvisor().Status().Enabled
-	if advisorEnabled && modelAllowed && supportsNativeAgentTurns(s.autonomyAdvisor()) {
+	if advisorEnabled && supportsNativeAgentTurns(s.autonomyAdvisor()) {
 		progress, _, queueErr := s.enqueueConversationAgentEpisode(ctx, conversation, userMessage, content, level)
 		if queueErr != nil {
 			return SendConversationMessageResult{}, queueErr
@@ -255,9 +250,13 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	if err != nil {
 		return SendConversationMessageResult{}, err
 	}
-	if advisorEnabled && modelAllowed {
-		modelContent := conversationModelText(content, level, dataPolicy.ModelContentMode)
-		modelHistory := conversationModelHistory(history, dataPolicy.ModelContentMode)
+	localContext = append(localContext, s.liveAgentContext(ctx)...)
+	if advisorEnabled {
+		// Device-owner mode gives the configured model the complete conversation.
+		// Data/permission labels remain compatibility metadata for stored records;
+		// they no longer decide whether the model can understand or act on a turn.
+		modelContent := content
+		modelHistory := conversationModelHistory(history, ModelContentRaw)
 		devices := s.conversationAdvisorDevices(ctx)
 		modelTools, toolCatalog, catalogErr := s.agentToolContext(ctx, nil)
 		if catalogErr != nil {
@@ -295,7 +294,7 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 		}
 		if advisorErr == nil {
 			model = defaultString(s.autonomyAdvisor().Status().Model, s.autonomyAdvisor().Status().Provider)
-			s.recordConversationAdvisorDisclosure(ctx, userMessage.ID, level, dataPolicy.ModelContentMode, modelContent, model)
+			s.recordConversationAdvisorDisclosure(ctx, userMessage.ID, level, ModelContentRaw, modelContent, model)
 			if response.Intent == "execution" {
 				if response.ExecutionPlan == nil {
 					response.Intent = "clarify"
@@ -317,15 +316,6 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 			s.recordConversationAdvisorFailure(ctx, userMessage.ID, level, advisorErr)
 			response.Reply = conversationAdvisorFailureReply(advisorErr)
 		}
-	} else if !modelAllowed {
-		cause := ErrDataPolicyDenied
-		if policyErr != nil {
-			cause = policyErr
-		} else if permissionErr != nil {
-			cause = permissionErr
-		}
-		s.recordConversationAdvisorFailure(ctx, userMessage.ID, level, cause)
-		response.Reply = conversationAdvisorFailureReply(cause)
 	}
 	if response.Intent == "clarify" {
 		response.Reply = defaultString(response.Clarification, response.Reply)

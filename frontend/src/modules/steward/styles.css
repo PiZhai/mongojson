@@ -1,1 +1,459 @@
-/* Steward conversation styling remains in App.css until the legacy theme is split. */
+/* R5.3 personal-intelligence surfaces. Legacy conversation rules remain in App.css. */
+.steward-intelligence-dialog {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(1180px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+
+.steward-intelligence-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 22px;
+  overflow-x: auto;
+  border-block: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.steward-intelligence-tabs button,
+.steward-segmented button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #475569;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.steward-intelligence-tabs button:hover,
+.steward-intelligence-tabs button:focus-visible,
+.steward-segmented button:hover,
+.steward-segmented button:focus-visible {
+  border-color: #bfdbfe;
+  outline: none;
+  color: #1d4ed8;
+}
+
+.steward-intelligence-tabs button.is-active,
+.steward-segmented button.is-active {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.steward-intelligence-content {
+  min-height: 360px;
+  padding: 20px 22px 26px;
+  overflow: auto;
+  background: #f8fafc;
+}
+
+.steward-intelligence-stack,
+.steward-reminder-layout {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+.steward-intelligence-health {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid #dbe4f0;
+  border-left: 5px solid #059669;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.steward-intelligence-health.is-degraded,
+.steward-intelligence-health.is-disabled { border-left-color: #d97706; }
+.steward-intelligence-health.is-unhealthy { border-left-color: #dc2626; }
+.steward-intelligence-health > div { display: flex; align-items: center; gap: 10px; }
+.steward-intelligence-health > div > span { width: 10px; height: 10px; border-radius: 50%; background: #059669; }
+.steward-intelligence-health.is-degraded > div > span,
+.steward-intelligence-health.is-disabled > div > span { background: #d97706; }
+.steward-intelligence-health.is-unhealthy > div > span { background: #dc2626; }
+.steward-intelligence-health > div > div { display: grid; gap: 2px; }
+.steward-intelligence-health strong { color: #0f172a; font-size: 16px; }
+.steward-intelligence-health small,
+.steward-intelligence-health p { color: #64748b; }
+.steward-intelligence-health p { margin: 0; line-height: 1.55; }
+
+.steward-intelligence-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #fff;
+}
+.steward-intelligence-actions > div:first-child { display: grid; gap: 3px; }
+.steward-intelligence-actions > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.steward-intelligence-actions strong { color: #0f172a; }
+.steward-intelligence-actions small { color: #64748b; line-height: 1.5; }
+
+.steward-health-issue-list { display: grid; gap: 8px; }
+.steward-health-issue-list article {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid #fed7aa;
+  border-radius: 9px;
+  background: #fff7ed;
+}
+.steward-health-issue-list article > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.steward-health-issue-list code { color: #9a3412; font-size: 11px; }
+.steward-health-issue-list p { margin: 0; color: #7c2d12; line-height: 1.5; }
+.steward-health-issue-list p span { font-weight: 700; }
+
+.steward-intelligence-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.steward-intelligence-metrics article {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #dbe4f0;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.steward-intelligence-metrics small,
+.steward-intelligence-metrics span { color: #64748b; }
+.steward-intelligence-metrics strong { color: #0f172a; font-size: 18px; }
+.steward-intelligence-metrics span { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+.steward-intelligence-section {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.steward-intelligence-section > header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+.steward-intelligence-section h3 { margin: 0; color: #0f172a; font-size: 16px; }
+.steward-intelligence-section header small { display: block; margin-top: 3px; color: #64748b; }
+
+.steward-source-list,
+.steward-feedback-list,
+.steward-receptivity-list { display: grid; gap: 8px; }
+.steward-source-list article,
+.steward-feedback-list article,
+.steward-receptivity-list article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 9px 11px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+.steward-source-list article > span { width: 8px; height: 8px; border-radius: 50%; background: #d97706; }
+.steward-source-list article > span.is-ok { background: #059669; }
+.steward-source-list article > div,
+.steward-receptivity-list article > div,
+.steward-feedback-list article > div { display: grid; gap: 2px; min-width: 0; }
+.steward-source-list article > div:last-child { text-align: right; }
+.steward-source-list small,
+.steward-feedback-list small,
+.steward-receptivity-list small { overflow: hidden; color: #64748b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+.steward-latest-outcome { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 16px; }
+.steward-latest-outcome span { color: #64748b; font-size: 12px; }
+.steward-latest-outcome p { grid-column: 1 / -1; margin: 4px 0 0; color: #334155; line-height: 1.6; }
+.steward-intelligence-footnotes { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 14px; color: #64748b; font-size: 12px; }
+
+.steward-report-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.5fr);
+  gap: 16px;
+  min-height: 480px;
+}
+
+.steward-report-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+.steward-report-list > button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: 68px;
+  padding: 11px 12px;
+  border: 1px solid #dbe4f0;
+  border-radius: 10px;
+  background: #fff;
+  color: #334155;
+  text-align: left;
+  cursor: pointer;
+}
+.steward-report-list > button.is-active { border-color: #60a5fa; box-shadow: inset 3px 0 #2563eb; }
+.steward-report-list > button small,
+.steward-report-list > button span { overflow: hidden; color: #64748b; text-overflow: ellipsis; white-space: nowrap; }
+.steward-report-list > button span { font-size: 12px; }
+
+.steward-report-detail {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #fff;
+}
+.steward-report-detail > header { display: flex; justify-content: space-between; gap: 16px; }
+.steward-report-detail > header h3 { margin: 6px 0; color: #0f172a; font-size: 22px; }
+.steward-report-detail > header span,
+.steward-report-detail > header small { color: #64748b; }
+.steward-report-actions { display: flex; flex: none; align-items: flex-end; flex-direction: column; gap: 10px; }
+.steward-report-summary { padding: 12px; border-left: 3px solid #3b82f6; background: #eff6ff; color: #1e3a8a; line-height: 1.55; }
+.steward-report-body { color: #334155; line-height: 1.75; white-space: pre-wrap; }
+.steward-report-detail details,
+.steward-profile-fact details { margin-top: 16px; }
+.steward-report-detail summary,
+.steward-profile-fact summary,
+.steward-intelligence-form-section > summary { min-height: 44px; color: #1d4ed8; cursor: pointer; }
+
+.steward-segmented { display: flex; gap: 4px; overflow-x: auto; padding: 3px; border: 1px solid #dbe4f0; border-radius: 11px; background: #fff; }
+.steward-segmented button { flex: 1; }
+.steward-profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.steward-profile-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.steward-profile-fact { padding: 13px; border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; }
+.steward-profile-fact > header { display: flex; justify-content: space-between; gap: 8px; }
+.steward-profile-fact > header span { color: #1d4ed8; font-weight: 700; }
+.steward-profile-fact > p { color: #334155; line-height: 1.55; }
+.steward-profile-fact > small { color: #64748b; }
+.steward-profile-fact pre { max-height: 220px; overflow: auto; padding: 10px; border-radius: 8px; background: #0f172a; color: #e2e8f0; font-size: 12px; }
+.steward-profile-history { display: grid; gap: 10px; }
+.steward-profile-history > article { padding: 13px; border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; }
+.steward-profile-history > article > header { display: flex; justify-content: space-between; gap: 12px; }
+.steward-profile-history > article > header > div { display: grid; gap: 3px; }
+.steward-profile-history > article > header small,
+.steward-profile-history > article > small { color: #64748b; }
+.steward-profile-history > article > header > span { color: #475569; font-size: 12px; font-weight: 700; }
+.steward-profile-history > article > header > span.is-superseded { color: #b45309; }
+.steward-profile-history > article > p { color: #334155; line-height: 1.55; }
+.steward-profile-history pre { max-height: 220px; overflow: auto; padding: 10px; border-radius: 8px; background: #0f172a; color: #e2e8f0; font-size: 12px; }
+.steward-evidence-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; padding: 8px 0; border-top: 1px solid #e2e8f0; color: #475569; font-size: 12px; }
+.steward-evidence-row code { overflow: hidden; text-overflow: ellipsis; }
+
+.steward-intelligence-form-section { padding: 14px 16px; border: 1px solid #dbe4f0; border-radius: 12px; background: #fff; }
+.steward-intelligence-form-section form,
+.steward-reminder-policy-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.steward-intelligence-form-section label,
+.steward-reminder-policy-form label { display: grid; gap: 5px; color: #334155; font-size: 13px; font-weight: 700; }
+.steward-intelligence-form-section input,
+.steward-intelligence-form-section textarea,
+.steward-reminder-policy-form input {
+  min-height: 44px;
+  padding: 9px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+}
+.steward-intelligence-form-section textarea { min-height: 72px; resize: vertical; }
+.steward-reminder-policy-form .is-wide,
+.steward-intelligence-form-section form > label:last-of-type,
+.steward-intelligence-form-section form > button { grid-column: 1 / -1; }
+
+.steward-reminder-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.steward-reminder-layout > section:first-child { grid-column: 1 / -1; }
+.steward-receptivity-list article { grid-template-columns: minmax(0, 1fr) auto; }
+.steward-receptivity-list article > span { font-weight: 800; }
+.steward-receptivity-list .is-positive { color: #047857; }
+.steward-receptivity-list .is-negative { color: #be123c; }
+.steward-feedback-list article > span { min-width: 68px; color: #1d4ed8; font-weight: 700; }
+
+.steward-intelligence-empty { grid-column: 1 / -1; margin: 0; padding: 28px 16px; border: 1px dashed #cbd5e1; border-radius: 10px; color: #64748b; text-align: center; }
+.steward-inline-warning { color: #be123c; line-height: 1.55; }
+
+.steward-intelligence-settings-form,
+.steward-collector-config-list {
+  display: grid;
+  gap: 12px;
+}
+
+.steward-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.steward-settings-grid > label {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.steward-settings-grid > label > small {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.steward-settings-grid input,
+.steward-settings-grid select,
+.steward-collector-config-card .steward-collector-settings input,
+.steward-collector-config-card .steward-collector-settings select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+}
+
+.steward-settings-grid .is-wide { grid-column: 1 / -1; }
+
+.steward-settings-toggle {
+  grid-template-columns: auto minmax(0, 1fr) !important;
+  align-items: center;
+  min-height: 62px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+
+.steward-settings-toggle input,
+.steward-toggle input {
+  width: 18px;
+  min-height: 18px;
+  accent-color: #2563eb;
+}
+
+.steward-settings-toggle > span { display: grid; gap: 2px; }
+
+.steward-collector-config-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.steward-collector-config-heading,
+.steward-collector-config-meta,
+.steward-settings-actions,
+.steward-toggle {
+  display: flex;
+  align-items: center;
+}
+
+.steward-collector-config-heading {
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.steward-collector-config-heading > div { display: grid; gap: 3px; min-width: 0; }
+.steward-collector-config-heading small { color: #64748b; line-height: 1.4; }
+.steward-toggle { flex: none; gap: 7px; color: #334155; font-size: 13px; font-weight: 700; }
+.steward-collector-config-meta { flex-wrap: wrap; gap: 5px 12px; color: #64748b; font-size: 12px; }
+.steward-collector-config-meta .is-positive { color: #047857; font-weight: 700; }
+.steward-collector-config-meta .is-warning { color: #b45309; font-weight: 700; }
+
+.steward-collector-config-card .steward-collector-settings {
+  grid-template-columns: minmax(0, 1fr) minmax(140px, auto) auto;
+  padding: 0;
+}
+
+.steward-revision-badge {
+  align-self: flex-start;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.steward-intelligence-message {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid #dbe4f0;
+  border-radius: 9px;
+  background: #fff;
+  color: #475569;
+  line-height: 1.5;
+}
+.steward-intelligence-message.is-success { border-color: #a7f3d0; background: #ecfdf5; color: #047857; }
+.steward-intelligence-message.is-warning { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+.steward-intelligence-message.is-error { border-color: #fecaca; background: #fef2f2; color: #be123c; }
+.steward-intelligence-message.is-loading { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
+
+.steward-settings-actions {
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #fff;
+}
+.steward-settings-actions small { color: #64748b; line-height: 1.45; }
+
+@media (max-width: 900px) {
+  .steward-intelligence-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .steward-report-layout,
+  .steward-reminder-layout { grid-template-columns: minmax(0, 1fr); }
+  .steward-reminder-layout > section:first-child { grid-column: auto; }
+}
+
+@media (max-width: 640px) {
+  .steward-intelligence-dialog { max-height: calc(100dvh - 24px); border-radius: 14px 14px 0 0; }
+  .steward-intelligence-tabs { padding-inline: 12px; }
+  .steward-intelligence-content { padding: 14px 12px 20px; }
+  .steward-intelligence-metrics,
+  .steward-profile-grid,
+  .steward-settings-grid,
+  .steward-intelligence-form-section form,
+  .steward-reminder-policy-form { grid-template-columns: minmax(0, 1fr); }
+  .steward-reminder-policy-form .is-wide,
+  .steward-intelligence-form-section form > label:last-of-type,
+  .steward-intelligence-form-section form > button { grid-column: auto; }
+  .steward-report-layout { min-height: 0; }
+  .steward-report-list { max-height: 260px; overflow: auto; }
+  .steward-report-detail { padding: 15px; }
+  .steward-source-list article { grid-template-columns: auto minmax(0, 1fr); }
+  .steward-source-list article > div:last-child { grid-column: 2; text-align: left; }
+  .steward-settings-grid .is-wide { grid-column: auto; }
+  .steward-collector-config-heading,
+  .steward-settings-actions,
+  .steward-intelligence-actions { align-items: stretch; flex-direction: column; }
+  .steward-intelligence-actions > div:last-child { justify-content: stretch; }
+  .steward-intelligence-actions > div:last-child > button { flex: 1; }
+  .steward-profile-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .steward-report-detail > header { align-items: stretch; flex-direction: column; }
+  .steward-report-actions { align-items: stretch; }
+  .steward-toggle { align-self: flex-start; }
+  .steward-collector-config-card .steward-collector-settings { grid-template-columns: minmax(0, 1fr); }
+}

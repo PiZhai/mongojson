@@ -33,6 +33,7 @@ type CreateIntentInput struct {
 }
 
 type CreateMemoryInput struct {
+	ID              string  `json:"-"`
 	Type            string  `json:"type"`
 	Title           string  `json:"title"`
 	Summary         string  `json:"summary"`
@@ -504,13 +505,28 @@ func (s *Service) DeleteIntent(ctx context.Context, id string) error {
 }
 
 func (s *Service) CreateMemory(ctx context.Context, input CreateMemoryInput) (domain.StewardMemory, error) {
+	recordID := strings.TrimSpace(input.ID)
+	if recordID != "" {
+		if _, err := uuid.Parse(recordID); err != nil {
+			return domain.StewardMemory{}, fmt.Errorf("invalid internal memory id: %w", err)
+		}
+		existing, err := s.getMemory(ctx, recordID)
+		if err == nil {
+			return existing, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return domain.StewardMemory{}, err
+		}
+	} else {
+		recordID = uuid.NewString()
+	}
 	now := time.Now().UTC()
 	confidence := input.Confidence
 	if confidence <= 0 {
 		confidence = 1
 	}
 	record := domain.StewardMemory{
-		ID:              uuid.NewString(),
+		ID:              recordID,
 		Type:            defaultString(input.Type, "project_fact"),
 		Title:           defaultString(input.Title, "记忆"),
 		Summary:         strings.TrimSpace(input.Summary),

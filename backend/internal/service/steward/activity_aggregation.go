@@ -13,25 +13,40 @@ import (
 )
 
 type pendingObservation struct {
-	ID             string
-	Source         string
-	Type           string
-	Summary        string
-	DataLevel      string
-	DeviceID       string
-	ContextKey     string
-	DuplicateCount int
-	OccurredAt     time.Time
-	EndedAt        *time.Time
+	ID                   string
+	Source               string
+	Type                 string
+	Summary              string
+	DataLevel            string
+	DeviceID             string
+	ContextKey           string
+	InteractiveSessionID string
+	SourceRevision       int64
+	DuplicateCount       int
+	OccurredAt           time.Time
+	EndedAt              *time.Time
 }
+
+type activityScope struct {
+	deviceID             string
+	interactiveSessionID string
+}
+
+type activitySpan struct {
+	start time.Time
+	end   time.Time
+}
+
+type activityAFKIndex map[activityScope][]activitySpan
 
 func (s *Service) AggregateActivitySessions(ctx context.Context, limit int) (int, error) {
 	limit = normalizeLimit(limit, 1000, 5000)
 	rows, err := s.db.Pool.Query(ctx, `
 		select id::text, source, type, summary, data_level, device_id, context_key,
-		       duplicate_count, occurred_at, ended_at
+		       interactive_session_id, source_revision, duplicate_count, occurred_at, ended_at
 		from steward_observations
-		where session_id is null and status = 'active' and occurred_at <= now() - interval '30 seconds'
+		where session_id is null and status = 'active'
+		  and coalesce(ingested_at,created_at) <= now() - interval '30 seconds'
 		order by occurred_at asc limit $1
 	`, limit)
 	if err != nil {
@@ -41,20 +56,26 @@ func (s *Service) AggregateActivitySessions(ctx context.Context, limit int) (int
 	for rows.Next() {
 		var item pendingObservation
 		if err := rows.Scan(&item.ID, &item.Source, &item.Type, &item.Summary, &item.DataLevel,
-			&item.DeviceID, &item.ContextKey, &item.DuplicateCount, &item.OccurredAt, &item.EndedAt); err != nil {
+			&item.DeviceID, &item.ContextKey, &item.InteractiveSessionID, &item.SourceRevision,
+			&item.DuplicateCount, &item.OccurredAt, &item.EndedAt); err != nil {
 			rows.Close()
 			return 0, err
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
 	rows.Close()
+	afks := buildActivityAFKIndex(items)
 	groups := groupPendingObservations(items)
 	created := 0
 	for _, group := range groups {
 		if len(group) == 0 {
 			continue
 		}
-		ok, err := s.persistActivitySession(ctx, group)
+		ok, err := s.persistActivitySession(ctx, group, afks)
 		if err != nil {
 			return created, err
 		}
@@ -68,28 +89,93 @@ func (s *Service) AggregateActivitySessions(ctx context.Context, limit int) (int
 func groupPendingObservations(items []pendingObservation) [][]pendingObservation {
 	groups := [][]pendingObservation{}
 	for _, item := range items {
-		if len(groups) == 0 {
+		matched := -1
+		for index := len(groups) - 1; index >= 0; index-- {
+			group := groups[index]
+			previous := group[len(group)-1]
+			if item.OccurredAt.Sub(observationEnd(previous)) > heartbeatMergeWindow {
+				break
+			}
+			if observationsShareSession(previous, item) && observationsHaveCompatibleContext(previous, item) {
+				matched = index
+				break
+			}
+		}
+		if matched >= 0 {
+			groups[matched] = append(groups[matched], item)
+		} else {
 			groups = append(groups, []pendingObservation{item})
-			continue
 		}
-		group := groups[len(groups)-1]
-		previous := group[len(group)-1]
-		previousEnd := previous.OccurredAt
-		if previous.EndedAt != nil {
-			previousEnd = *previous.EndedAt
-		}
-		sameContext := item.Source == previous.Source && item.Type == previous.Type &&
-			item.DeviceID == previous.DeviceID && item.ContextKey == previous.ContextKey
-		if sameContext && item.OccurredAt.Sub(previousEnd) <= heartbeatMergeWindow {
-			groups[len(groups)-1] = append(group, item)
-			continue
-		}
-		groups = append(groups, []pendingObservation{item})
 	}
 	return groups
 }
 
-func (s *Service) persistActivitySession(ctx context.Context, group []pendingObservation) (bool, error) {
+func observationsShareSession(left, right pendingObservation) bool {
+	if left.DeviceID != right.DeviceID {
+		return false
+	}
+	if left.InteractiveSessionID != "" && right.InteractiveSessionID != "" && left.InteractiveSessionID != right.InteractiveSessionID {
+		return false
+	}
+	return true
+}
+
+func observationsHaveCompatibleContext(left, right pendingObservation) bool {
+	leftAFK, rightAFK := isAFKObservation(left), isAFKObservation(right)
+	if leftAFK || rightAFK {
+		return leftAFK && rightAFK && strings.EqualFold(left.ContextKey, right.ContextKey)
+	}
+	if strings.EqualFold(strings.TrimSpace(left.ContextKey), strings.TrimSpace(right.ContextKey)) {
+		return true
+	}
+	leftApp := canonicalActivityContext(left)
+	rightApp := canonicalActivityContext(right)
+	if leftApp != "" && leftApp == rightApp {
+		return true
+	}
+	// ActivityWatch web events and the native browser foreground heartbeat
+	// describe the same activity from different sources. Temporal overlap is
+	// enough to combine those pieces of evidence in one session.
+	return observationIntervalsOverlap(left, right) &&
+		((isWebObservation(left) && isForegroundObservation(right)) ||
+			(isWebObservation(right) && isForegroundObservation(left)))
+}
+
+func observationEnd(item pendingObservation) time.Time {
+	if item.EndedAt != nil && item.EndedAt.After(item.OccurredAt) {
+		return item.EndedAt.UTC()
+	}
+	return item.OccurredAt
+}
+
+func observationIntervalsOverlap(left, right pendingObservation) bool {
+	return !observationEnd(left).Before(right.OccurredAt) && !observationEnd(right).Before(left.OccurredAt)
+}
+
+func isAFKObservation(item pendingObservation) bool {
+	return strings.Contains(strings.ToLower(item.Type), "afk")
+}
+
+func isWebObservation(item pendingObservation) bool {
+	value := strings.ToLower(item.Type + " " + item.Source)
+	return strings.Contains(value, "web") || strings.Contains(value, "browser")
+}
+
+func isForegroundObservation(item pendingObservation) bool {
+	value := strings.ToLower(item.Type)
+	return strings.Contains(value, "window") || strings.Contains(value, "foreground")
+}
+
+func canonicalActivityContext(item pendingObservation) string {
+	value := strings.ToLower(strings.TrimSpace(item.ContextKey))
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, "|")
+	return strings.TrimSpace(parts[0])
+}
+
+func (s *Service) persistActivitySession(ctx context.Context, group []pendingObservation, afks activityAFKIndex) (bool, error) {
 	first := group[0]
 	last := group[len(group)-1]
 	endedAt := last.OccurredAt
@@ -98,9 +184,11 @@ func (s *Service) persistActivitySession(ctx context.Context, group []pendingObs
 	}
 	dataLevel := first.DataLevel
 	observationCount := 0
+	sources := map[string]bool{}
 	summaries := []string{}
 	seenSummaries := map[string]bool{}
 	for _, item := range group {
+		sources[item.Source] = true
 		observationCount += item.DuplicateCount
 		if dataLevelRank(item.DataLevel) > dataLevelRank(dataLevel) {
 			dataLevel = item.DataLevel
@@ -110,6 +198,7 @@ func (s *Service) persistActivitySession(ctx context.Context, group []pendingObs
 			summaries = append(summaries, item.Summary)
 		}
 	}
+	canonicalContext := canonicalActivityContext(first)
 	title := strings.TrimSpace(first.ContextKey)
 	if title == "" {
 		title = strings.ReplaceAll(first.Type, "_", " ")
@@ -122,6 +211,15 @@ func (s *Service) persistActivitySession(ctx context.Context, group []pendingObs
 		SensitivityCost: sensitivityCost(dataLevel),
 	})
 	now := time.Now().UTC()
+	activeSeconds, afkSeconds := activityDurations(group, afks)
+	boundaryKind := "context_change"
+	if isAFKObservation(first) {
+		boundaryKind = strings.ToLower(strings.TrimSpace(first.ContextKey))
+	}
+	source := first.Source
+	if len(sources) > 1 {
+		source = "multi-source"
+	}
 	sessionID, timelineID := uuid.NewString(), uuid.NewString()
 	tx, err := s.db.Pool.Begin(ctx)
 	if err != nil {
@@ -132,10 +230,12 @@ func (s *Service) persistActivitySession(ctx context.Context, group []pendingObs
 		insert into steward_activity_sessions (
 			id, type, title, summary, source, context_key, device_id, data_level, status,
 			observation_count, confidence, value_score, started_at, ended_at, timeline_id,
-			created_at, updated_at
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,'closed',$9,$10,$11,$12,$13,null,$14,$14)
-	`, sessionID, first.Type, title, summary, first.Source, first.ContextKey, first.DeviceID,
-		dataLevel, observationCount, confidence, valueScore, first.OccurredAt, endedAt, now)
+			created_at, updated_at, canonical_context, interactive_session_id, active_seconds,
+			afk_seconds, source_count, last_event_at, boundary_kind
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,'closed',$9,$10,$11,$12,$13,null,$14,$14,$15,$16,$17,$18,$19,$20,$21)
+	`, sessionID, first.Type, title, summary, source, first.ContextKey, first.DeviceID,
+		dataLevel, observationCount, confidence, valueScore, first.OccurredAt, endedAt, now,
+		canonicalContext, first.InteractiveSessionID, activeSeconds, afkSeconds, len(sources), endedAt, boundaryKind)
 	if err != nil {
 		return false, fmt.Errorf("create activity session: %w", err)
 	}
@@ -156,7 +256,7 @@ func (s *Service) persistActivitySession(ctx context.Context, group []pendingObs
 	if _, err := tx.Exec(ctx, `update steward_activity_sessions set timeline_id=$2 where id=$1`, sessionID, timelineID); err != nil {
 		return false, fmt.Errorf("link activity timeline: %w", err)
 	}
-	for _, item := range group {
+	for ordinal, item := range group {
 		result, err := tx.Exec(ctx, `
 			update steward_observations set session_id = $1, status = 'aggregated'
 			where id = $2 and occurred_at = $3 and session_id is null
@@ -166,6 +266,17 @@ func (s *Service) persistActivitySession(ctx context.Context, group []pendingObs
 		}
 		if result.RowsAffected() == 0 {
 			return false, nil
+		}
+		itemActiveSeconds := observationActiveSeconds(item, afks)
+		_, err = tx.Exec(ctx, `
+			insert into steward_activity_session_items (
+				id,session_id,observation_id,observation_time,source,role,active_seconds,ordinal,snapshot_hash
+			) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			on conflict(session_id,observation_id,observation_time) do nothing
+		`, uuid.NewString(), sessionID, item.ID, item.OccurredAt, item.Source,
+			activityObservationRole(item), itemActiveSeconds, ordinal, fmt.Sprintf("%s:%d", item.ID, item.SourceRevision))
+		if err != nil {
+			return false, err
 		}
 		if len(group) <= 20 {
 			_, err = tx.Exec(ctx, `
@@ -195,6 +306,139 @@ func (s *Service) persistActivitySession(ctx context.Context, group []pendingObs
 	_, err = s.upsertRelationWithObservation(ctx, activityEntity.ID, deviceEntity.ID, "occurred_in",
 		dataLevel, false, first.ID, first.OccurredAt, "活动会话设备来源", confidence)
 	return true, err
+}
+
+func activityObservationRole(item pendingObservation) string {
+	if isAFKObservation(item) {
+		return "boundary"
+	}
+	return "evidence"
+}
+
+func activityScopeFor(item pendingObservation) activityScope {
+	return activityScope{
+		deviceID:             strings.TrimSpace(item.DeviceID),
+		interactiveSessionID: strings.TrimSpace(item.InteractiveSessionID),
+	}
+}
+
+func buildActivityAFKIndex(items []pendingObservation) activityAFKIndex {
+	index := activityAFKIndex{}
+	for _, item := range items {
+		if !isAFKObservation(item) || !strings.EqualFold(strings.TrimSpace(item.ContextKey), "afk") {
+			continue
+		}
+		end := observationEnd(item)
+		if !end.After(item.OccurredAt) {
+			continue
+		}
+		scope := activityScopeFor(item)
+		index[scope] = append(index[scope], activitySpan{start: item.OccurredAt, end: end})
+	}
+	for scope, spans := range index {
+		index[scope] = mergeActivitySpans(spans)
+	}
+	return index
+}
+
+func mergeActivitySpans(spans []activitySpan) []activitySpan {
+	if len(spans) == 0 {
+		return nil
+	}
+	values := append([]activitySpan(nil), spans...)
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].start.Equal(values[j].start) {
+			return values[i].end.Before(values[j].end)
+		}
+		return values[i].start.Before(values[j].start)
+	})
+	merged := make([]activitySpan, 0, len(values))
+	for _, value := range values {
+		if !value.end.After(value.start) {
+			continue
+		}
+		if len(merged) == 0 || value.start.After(merged[len(merged)-1].end) {
+			merged = append(merged, value)
+			continue
+		}
+		if value.end.After(merged[len(merged)-1].end) {
+			merged[len(merged)-1].end = value.end
+		}
+	}
+	return merged
+}
+
+func subtractActivitySpans(value activitySpan, excluded []activitySpan) []activitySpan {
+	if !value.end.After(value.start) {
+		return nil
+	}
+	remaining := make([]activitySpan, 0, len(excluded)+1)
+	cursor := value.start
+	for _, blocker := range excluded {
+		if !blocker.end.After(cursor) {
+			continue
+		}
+		if !blocker.start.Before(value.end) {
+			break
+		}
+		if blocker.start.After(cursor) {
+			end := blocker.start
+			if end.After(value.end) {
+				end = value.end
+			}
+			if end.After(cursor) {
+				remaining = append(remaining, activitySpan{start: cursor, end: end})
+			}
+		}
+		if blocker.end.After(cursor) {
+			cursor = blocker.end
+		}
+		if !cursor.Before(value.end) {
+			return remaining
+		}
+	}
+	if cursor.Before(value.end) {
+		remaining = append(remaining, activitySpan{start: cursor, end: value.end})
+	}
+	return remaining
+}
+
+func activitySpanSeconds(spans []activitySpan) float64 {
+	var total time.Duration
+	for _, span := range mergeActivitySpans(spans) {
+		total += span.end.Sub(span.start)
+	}
+	if total < 0 {
+		return 0
+	}
+	return total.Seconds()
+}
+
+func observationActiveSeconds(item pendingObservation, afks activityAFKIndex) float64 {
+	if isAFKObservation(item) {
+		return 0
+	}
+	span := activitySpan{start: item.OccurredAt, end: observationEnd(item)}
+	return activitySpanSeconds(subtractActivitySpans(span, afks[activityScopeFor(item)]))
+}
+
+func activityDurations(group []pendingObservation, afks activityAFKIndex) (activeSeconds, afkSeconds float64) {
+	active, afk := []activitySpan{}, []activitySpan{}
+	for _, item := range group {
+		end := observationEnd(item)
+		if !end.After(item.OccurredAt) {
+			continue
+		}
+		if isAFKObservation(item) && strings.EqualFold(strings.TrimSpace(item.ContextKey), "afk") {
+			afk = append(afk, activitySpan{start: item.OccurredAt, end: end})
+		} else if isAFKObservation(item) {
+			continue
+		} else {
+			span := activitySpan{start: item.OccurredAt, end: end}
+			active = append(active, subtractActivitySpans(span, afks[activityScopeFor(item)])...)
+		}
+	}
+	return activitySpanSeconds(active), activitySpanSeconds(afk)
 }
 
 func (s *Service) EvaluateHabitsAndInsights(ctx context.Context, now time.Time) (map[string]int, error) {

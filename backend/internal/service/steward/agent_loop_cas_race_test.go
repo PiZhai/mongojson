@@ -93,6 +93,66 @@ func TestFinishAgentEpisodeRejectsStaleControlGeneration(t *testing.T) {
 	}
 }
 
+func TestFinishAgentEpisodeWithTextRejectsStaleControlGeneration(t *testing.T) {
+	ctx, db := openAgentLoopCASTestDB(t)
+	service := NewService(db)
+	for _, test := range []struct {
+		name, storedStatus string
+	}{
+		{name: "paused", storedStatus: agentEpisodePaused},
+		{name: "cancelled", storedStatus: agentEpisodeCancelled},
+		{name: "generation_changed", storedStatus: agentEpisodeThinking},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conversationID := uuid.NewString()
+			triggerMessageID := uuid.NewString()
+			episodeID := uuid.NewString()
+			now := time.Now().UTC()
+			if _, err := db.Pool.Exec(ctx, `insert into steward_conversations(id,title,status,data_level,created_at,updated_at)
+				values($1,'terminal text CAS','active','D0',$2,$2)`, conversationID, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Pool.Exec(ctx, `insert into steward_conversation_messages(id,conversation_id,role,content,data_level,model,created_at)
+				values($1,$2,'user','finish with terminal text','D0','',$3)`, triggerMessageID, conversationID, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Pool.Exec(ctx, `insert into steward_agent_episodes(
+				id,conversation_id,trigger_message_id,trigger_kind,goal,data_level,status,current_round,
+				tool_call_count,max_rounds,max_tool_calls,max_duration_seconds,no_progress_limit,control_generation,created_at,updated_at
+			) values($1,$2,$3,'conversation','terminal text CAS','D0',$4,1,1,12,40,1800,3,1,$5,$5)`,
+				episodeID, conversationID, triggerMessageID, test.storedStatus, now); err != nil {
+				t.Fatal(err)
+			}
+
+			staleEpisode := domain.StewardAgentEpisode{
+				ID: episodeID, ConversationID: conversationID, DataLevel: DataD0,
+				Status: agentEpisodeThinking, ControlGeneration: 0,
+			}
+			if err := service.finishAgentEpisodeWithText(ctx, staleEpisode, "must not be emitted", agentEpisodeFailed); err != nil {
+				t.Fatal(err)
+			}
+
+			var status, finalMessageID string
+			var generation int64
+			if err := db.Pool.QueryRow(ctx, `select status,control_generation,coalesce(final_message_id::text,'')
+				from steward_agent_episodes where id=$1`, episodeID).Scan(&status, &generation, &finalMessageID); err != nil {
+				t.Fatal(err)
+			}
+			if status != test.storedStatus || generation != 1 || finalMessageID != "" {
+				t.Fatalf("episode overwritten by stale terminal text: status=%s generation=%d final=%s", status, generation, finalMessageID)
+			}
+			var finalMessages int
+			if err := db.Pool.QueryRow(ctx, `select count(*) from steward_conversation_messages
+				where conversation_id=$1 and context_summary=$2`, conversationID, "agent-terminal:"+episodeID).Scan(&finalMessages); err != nil {
+				t.Fatal(err)
+			}
+			if finalMessages != 0 {
+				t.Fatalf("stale terminal transition persisted %d messages", finalMessages)
+			}
+		})
+	}
+}
+
 func TestConcurrentInitialAgentTurnDispatchCreatesAndLinksOneExecution(t *testing.T) {
 	ctx, db := openAgentLoopCASTestDB(t)
 	tool := newDispatchBarrierRuntimeTool()

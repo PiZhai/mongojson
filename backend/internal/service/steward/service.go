@@ -574,22 +574,26 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 		return fmt.Errorf("ensure steward agent status: %w", err)
 	}
 
-	defaults := []domain.StewardCollectorConfig{
-		{Name: "manual-input", Enabled: true, ScopeSummary: "用户手动创建事件和任务"},
-		{Name: "windows-activity", Enabled: runtime.GOOS == "windows", ScopeSummary: "Windows 前台应用与窗口标题活动采样，不采集键盘内容"},
-		{Name: "browser-link", Enabled: false, ScopeSummary: "用户手动导入网页链接"},
-		{Name: "clipboard-summary", Enabled: false, ScopeSummary: "剪贴板文本摘要，不保存疑似敏感字段原文"},
-		{Name: "watched-directory", Enabled: false, ScopeSummary: "指定目录文件新增、修改、删除元数据"},
-		{Name: "system-status", Enabled: false, ScopeSummary: "磁盘、网络和本地 Agent 状态摘要"},
-		{Name: "screenpipe-bridge", Enabled: false, ScopeSummary: "固定版本 Screenpipe 本地 API，禁用键盘内容采集"},
-		{Name: "activitywatch-bridge", Enabled: false, ScopeSummary: "ActivityWatch bucket/event/heartbeat 导入"},
-	}
+	defaults := defaultCollectorConfigs(runtime.GOOS)
 	for _, collector := range defaults {
+		settings := collector.Settings
+		if settings == nil {
+			settings = map[string]any{}
+		}
+		settingsJSON, err := json.Marshal(settings)
+		if err != nil {
+			return fmt.Errorf("encode default steward collector %s settings: %w", collector.Name, err)
+		}
 		if _, err := s.db.Pool.Exec(ctx, `
-			insert into steward_collector_configs (id, name, enabled, scope_summary, created_at, updated_at)
-			values ($1,$2,$3,$4,$5,$5)
-			on conflict (name) do nothing
-		`, uuid.NewString(), collector.Name, collector.Enabled, collector.ScopeSummary, now); err != nil {
+			insert into steward_collector_configs (id, name, enabled, scope_summary, settings, execution_target, created_at, updated_at)
+			values ($1,$2,$3,$4,$5::jsonb,$6,$7,$7)
+			on conflict (name) do update set
+				enabled=case when steward_collector_configs.user_overridden then steward_collector_configs.enabled else excluded.enabled end,
+				settings=case when steward_collector_configs.user_overridden then steward_collector_configs.settings else excluded.settings end,
+				scope_summary=excluded.scope_summary,
+				execution_target=excluded.execution_target,
+				updated_at=excluded.updated_at
+		`, uuid.NewString(), collector.Name, collector.Enabled, collector.ScopeSummary, string(settingsJSON), collector.ExecutionTarget, now); err != nil {
 			return fmt.Errorf("ensure steward collector %s: %w", collector.Name, err)
 		}
 	}
@@ -629,6 +633,29 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func defaultCollectorConfigs(goos string) []domain.StewardCollectorConfig {
+	activityWatchEndpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("STEWARD_ACTIVITYWATCH_ENDPOINT")), "/")
+	if activityWatchEndpoint == "" {
+		activityWatchEndpoint = "http://127.0.0.1:6100"
+	}
+	return []domain.StewardCollectorConfig{
+		{Name: "manual-input", Enabled: true, ExecutionTarget: "main", ScopeSummary: "用户手动创建事件和任务"},
+		{Name: "windows-activity", Enabled: goos == "windows", Settings: map[string]any{"sample_interval_seconds": 10}, ExecutionTarget: "companion", ScopeSummary: "登录会话中的 Windows 前台应用、窗口和 AFK 活动"},
+		{Name: "browser-link", Enabled: false, ExecutionTarget: "companion", ScopeSummary: "浏览器访问 URL、标题和域名元数据"},
+		{Name: "clipboard-summary", Enabled: false, ExecutionTarget: "companion", ScopeSummary: "剪贴板短期摘要与任务、链接提取"},
+		// A directory collector without an explicit path is not collecting
+		// anything. Keep it disabled until a user supplies governed paths.
+		{Name: "watched-directory", Enabled: false, ExecutionTarget: "companion", ScopeSummary: "已知目录和项目目录的文件变更元数据"},
+		{Name: "system-status", Enabled: true, ExecutionTarget: "auto", ScopeSummary: "磁盘、网络、电量、服务和本地 Agent 状态变化"},
+		{Name: "screenpipe-bridge", Enabled: false, ExecutionTarget: "companion", ScopeSummary: "固定版本 Screenpipe 本地 API 增强来源"},
+		// Deep capture is the Windows default. Probe ActivityWatch automatically
+		// when it is installed; an unavailable sidecar is recorded as degraded
+		// source health and never blocks native Companion capture or the rest of
+		// the collection loop.
+		{Name: "activitywatch-bridge", Enabled: goos == "windows", Settings: map[string]any{"endpoint": activityWatchEndpoint, "limit": 100}, ExecutionTarget: "companion", ScopeSummary: "ActivityWatch 窗口、AFK 和浏览器事件增量导入"},
+	}
 }
 
 func (s *Service) GetOverview(ctx context.Context) (domain.StewardOverview, error) {
@@ -826,7 +853,8 @@ func (s *Service) StopAgent(ctx context.Context) (domain.StewardAgentStatus, err
 
 func (s *Service) ListCollectors(ctx context.Context) ([]domain.StewardCollectorConfig, error) {
 	rows, err := s.db.Pool.Query(ctx, `
-		select id, name, enabled, scope_summary, settings, last_run_at, last_error, created_at, updated_at, audit_id
+		select id, name, enabled, scope_summary, settings, execution_target, user_overridden,
+		       last_run_at, last_error, created_at, updated_at, audit_id
 		from steward_collector_configs
 		order by name
 	`)
@@ -844,6 +872,8 @@ func (s *Service) ListCollectors(ctx context.Context) ([]domain.StewardCollector
 			&collector.Enabled,
 			&collector.ScopeSummary,
 			&collector.Settings,
+			&collector.ExecutionTarget,
+			&collector.UserOverridden,
 			&collector.LastRunAt,
 			&collector.LastError,
 			&collector.CreatedAt,
@@ -901,7 +931,8 @@ func (s *Service) UpdateCollector(ctx context.Context, name string, input Update
 
 	if _, err := s.db.Pool.Exec(ctx, `
 		update steward_collector_configs
-		set enabled = $1, scope_summary = $2, settings = $3::jsonb, updated_at = $4, audit_id = $5
+		set enabled = $1, scope_summary = $2, settings = $3::jsonb, user_overridden=true,
+		    updated_at = $4, audit_id = $5
 		where name = $6
 	`, enabled, scopeSummary, string(settingsJSON), now, auditID, name); err != nil {
 		return domain.StewardCollectorConfig{}, fmt.Errorf("update steward collector: %w", err)
@@ -1322,7 +1353,8 @@ func (s *Service) recordAudit(ctx context.Context, input AuditInput) (string, er
 func (s *Service) getCollector(ctx context.Context, name string) (domain.StewardCollectorConfig, error) {
 	var collector domain.StewardCollectorConfig
 	if err := s.db.Pool.QueryRow(ctx, `
-		select id, name, enabled, scope_summary, settings, last_run_at, last_error, created_at, updated_at, audit_id
+		select id, name, enabled, scope_summary, settings, execution_target, user_overridden,
+		       last_run_at, last_error, created_at, updated_at, audit_id
 		from steward_collector_configs
 		where name = $1
 	`, name).Scan(
@@ -1331,6 +1363,8 @@ func (s *Service) getCollector(ctx context.Context, name string) (domain.Steward
 		&collector.Enabled,
 		&collector.ScopeSummary,
 		&collector.Settings,
+		&collector.ExecutionTarget,
+		&collector.UserOverridden,
 		&collector.LastRunAt,
 		&collector.LastError,
 		&collector.CreatedAt,

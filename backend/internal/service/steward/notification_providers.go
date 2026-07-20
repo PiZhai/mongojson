@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,13 +22,29 @@ import (
 )
 
 type companionNotificationRequest struct {
-	ID        string                             `json:"id"`
-	Title     string                             `json:"title"`
-	Body      string                             `json:"body"`
-	Category  string                             `json:"category"`
-	Priority  string                             `json:"priority"`
-	Actions   []domain.StewardNotificationAction `json:"actions"`
-	ExpiresAt *time.Time                         `json:"expires_at,omitempty"`
+	ID               string                        `json:"id"`
+	Title            string                        `json:"title"`
+	Body             string                        `json:"body"`
+	Category         string                        `json:"category"`
+	Priority         string                        `json:"priority"`
+	ScheduleRevision int                           `json:"schedule_revision"`
+	Actions          []companionNotificationAction `json:"actions"`
+	ExpiresAt        *time.Time                    `json:"expires_at,omitempty"`
+}
+
+type companionNotificationAction struct {
+	domain.StewardNotificationAction
+	CallbackToken string `json:"callback_token"`
+}
+
+type NotificationCallbackClaims struct {
+	NotificationID   string `json:"notification_id"`
+	ScheduleRevision int    `json:"schedule_revision"`
+	ActionID         string `json:"action_id"`
+	Action           string `json:"action"`
+	ActionValue      string `json:"action_value,omitempty"`
+	SnoozeSeconds    int    `json:"snooze_seconds,omitempty"`
+	ExpiresAt        int64  `json:"expires_at"`
 }
 
 func (s *Service) sendNotification(ctx context.Context, endpoint notificationEndpointRecord, notification domain.StewardNotification) (string, error) {
@@ -46,15 +63,32 @@ func (s *Service) sendNotification(ctx context.Context, endpoint notificationEnd
 }
 
 func (s *Service) sendCompanionNotification(ctx context.Context, notification domain.StewardNotification) (string, error) {
-	payload, _ := json.Marshal(companionNotificationRequest{
-		ID: notification.ID, Title: notification.Title, Body: notification.Body,
-		Category: notification.Category, Priority: notification.Priority,
-		Actions: notification.Actions, ExpiresAt: notification.ExpiresAt,
-	})
 	key, err := sessionToolKey()
 	if err != nil {
 		return "", err
 	}
+	actions := make([]companionNotificationAction, 0, len(notification.Actions))
+	for _, action := range notification.Actions {
+		expiresAt := time.Now().UTC().Add(48 * time.Hour)
+		if notification.ExpiresAt != nil && notification.ExpiresAt.Before(expiresAt) {
+			expiresAt = notification.ExpiresAt.UTC()
+		}
+		normalized, normalizeErr := normalizeReminderFeedbackAction(action.Kind)
+		if normalizeErr != nil {
+			normalized = action.Kind
+		}
+		claims := newNotificationCallbackClaims(notification.ID, notification.ScheduleRevision, action, normalized, expiresAt)
+		token, tokenErr := signNotificationCallbackToken(key, claims)
+		if tokenErr != nil {
+			return "", tokenErr
+		}
+		actions = append(actions, companionNotificationAction{StewardNotificationAction: action, CallbackToken: token})
+	}
+	payload, _ := json.Marshal(companionNotificationRequest{
+		ID: notification.ID, Title: notification.Title, Body: notification.Body,
+		Category: notification.Category, Priority: notification.Priority,
+		ScheduleRevision: notification.ScheduleRevision, Actions: actions, ExpiresAt: notification.ExpiresAt,
+	})
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("STEWARD_COMPANION_URL")), "/")
 	client := &http.Client{Timeout: 15 * time.Second}
 	if base == "" {
@@ -83,6 +117,126 @@ func (s *Service) sendCompanionNotification(ctx context.Context, notification do
 	}
 	_ = json.Unmarshal(body, &result)
 	return defaultString(result.ProviderMessageID, notification.ID), nil
+}
+
+func signNotificationCallbackToken(key []byte, claims NotificationCallbackClaims) (string, error) {
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	return encoded + "." + signSessionToolPayload(key, "notification-action", payload), nil
+}
+
+func verifyNotificationCallbackToken(key []byte, token string, now time.Time) (NotificationCallbackClaims, error) {
+	var claims NotificationCallbackClaims
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 {
+		return claims, fmt.Errorf("invalid notification callback token")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return claims, fmt.Errorf("decode notification callback token: %w", err)
+	}
+	want := signSessionToolPayload(key, "notification-action", payload)
+	if !constantTimeStringEqual(parts[1], want) {
+		return claims, fmt.Errorf("notification callback token signature is invalid")
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return claims, fmt.Errorf("decode notification callback claims: %w", err)
+	}
+	// Revision zero is retained for notifications created before the versioned
+	// scheduling migration. New notifications start at revision one.
+	if claims.NotificationID == "" || claims.ActionID == "" || claims.Action == "" || claims.ScheduleRevision < 0 {
+		return claims, fmt.Errorf("notification callback token claims are incomplete")
+	}
+	if claims.ExpiresAt <= now.UTC().Unix() {
+		return claims, fmt.Errorf("notification callback token expired")
+	}
+	if claims.SnoozeSeconds < 0 {
+		return claims, fmt.Errorf("notification callback token snooze_seconds is invalid")
+	}
+	return claims, nil
+}
+
+func notificationActionSnoozeSeconds(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return seconds
+	}
+	if duration, err := time.ParseDuration(value); err == nil && duration > 0 {
+		seconds := duration / time.Second
+		if seconds > 0 && seconds <= time.Duration(maxInt()) {
+			return int(seconds)
+		}
+	}
+	return 0
+}
+
+func newNotificationCallbackClaims(notificationID string, scheduleRevision int, action domain.StewardNotificationAction, normalized string, expiresAt time.Time) NotificationCallbackClaims {
+	claims := NotificationCallbackClaims{
+		NotificationID: notificationID, ScheduleRevision: scheduleRevision,
+		ActionID: action.ID, Action: normalized, ActionValue: action.Value, ExpiresAt: expiresAt.UTC().Unix(),
+	}
+	if normalized == ReminderFeedbackSnoozed {
+		claims.SnoozeSeconds = notificationActionSnoozeSeconds(action.Value)
+	}
+	return claims
+}
+
+func maxInt() int {
+	return int(^uint(0) >> 1)
+}
+
+func constantTimeStringEqual(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	var diff byte
+	for index := range left {
+		diff |= left[index] ^ right[index]
+	}
+	return diff == 0
+}
+
+func (s *Service) RecordNotificationCallback(ctx context.Context, token, deviceID, channel string, metadata map[string]any) (StewardReminderFeedback, error) {
+	key, err := sessionToolKey()
+	if err != nil {
+		return StewardReminderFeedback{}, err
+	}
+	claims, err := verifyNotificationCallbackToken(key, strings.TrimSpace(token), time.Now().UTC())
+	if err != nil {
+		return StewardReminderFeedback{}, err
+	}
+	current, err := s.GetNotification(ctx, claims.NotificationID)
+	if err != nil {
+		return StewardReminderFeedback{}, err
+	}
+	if current.ScheduleRevision != claims.ScheduleRevision {
+		return StewardReminderFeedback{}, fmt.Errorf("notification callback belongs to superseded schedule revision %d", claims.ScheduleRevision)
+	}
+	callbackMetadata := make(map[string]any, len(metadata)+2)
+	for key, value := range metadata {
+		callbackMetadata[key] = value
+	}
+	callbackMetadata["signed_action_id"] = claims.ActionID
+	if claims.ActionValue != "" {
+		callbackMetadata["signed_action_value"] = claims.ActionValue
+	}
+	var occurredAt *time.Time
+	if raw, ok := callbackMetadata["reported_occurred_at"].(string); ok {
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw)); parseErr == nil {
+			parsed = parsed.UTC()
+			occurredAt = &parsed
+		}
+	}
+	return s.RecordReminderFeedback(ctx, claims.NotificationID, NotificationDecisionInput{
+		Decision: claims.Action, SnoozeSeconds: claims.SnoozeSeconds, DeviceID: deviceID, Channel: channel,
+		IdempotencyKey: "callback:" + strings.TrimSpace(token), OccurredAt: occurredAt, Metadata: callbackMetadata,
+	})
 }
 
 func sendNtfyNotification(ctx context.Context, endpoint notificationEndpointRecord, notification domain.StewardNotification) (string, error) {

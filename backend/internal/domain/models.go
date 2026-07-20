@@ -101,16 +101,18 @@ type StewardBackgroundLoopStatus struct {
 }
 
 type StewardCollectorConfig struct {
-	ID           string         `json:"id"`
-	Name         string         `json:"name"`
-	Enabled      bool           `json:"enabled"`
-	ScopeSummary string         `json:"scope_summary"`
-	Settings     map[string]any `json:"settings"`
-	LastRunAt    *time.Time     `json:"last_run_at,omitempty"`
-	LastError    *string        `json:"last_error,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	AuditID      *string        `json:"audit_id,omitempty"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Enabled         bool           `json:"enabled"`
+	ScopeSummary    string         `json:"scope_summary"`
+	Settings        map[string]any `json:"settings"`
+	ExecutionTarget string         `json:"execution_target"`
+	UserOverridden  bool           `json:"user_overridden"`
+	LastRunAt       *time.Time     `json:"last_run_at,omitempty"`
+	LastError       *string        `json:"last_error,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	AuditID         *string        `json:"audit_id,omitempty"`
 }
 
 type StewardConversation struct {
@@ -200,6 +202,11 @@ type StewardAgentEpisode struct {
 	ProgressMessageID   string                   `json:"progress_message_id,omitempty"`
 	FinalMessageID      string                   `json:"final_message_id,omitempty"`
 	TriggerKind         string                   `json:"trigger_kind"`
+	Visibility          string                   `json:"visibility,omitempty"`
+	ContextRefType      string                   `json:"context_ref_type,omitempty"`
+	ContextRefID        string                   `json:"context_ref_id,omitempty"`
+	ResultSink          string                   `json:"result_sink,omitempty"`
+	IdempotencyKey      string                   `json:"idempotency_key,omitempty"`
 	Goal                string                   `json:"goal"`
 	DataLevel           string                   `json:"data_level"`
 	Status              string                   `json:"status"`
@@ -814,6 +821,7 @@ type StewardNotificationDelivery struct {
 	EndpointID        *string    `json:"endpoint_id,omitempty"`
 	Channel           string     `json:"channel"`
 	Status            string     `json:"status"`
+	ScheduleRevision  int        `json:"schedule_revision"`
 	AttemptCount      int        `json:"attempt_count"`
 	MaxAttempts       int        `json:"max_attempts"`
 	NextAttemptAt     time.Time  `json:"next_attempt_at"`
@@ -825,24 +833,29 @@ type StewardNotificationDelivery struct {
 }
 
 type StewardNotification struct {
-	ID             string                        `json:"id"`
-	SourceType     string                        `json:"source_type"`
-	SourceID       string                        `json:"source_id,omitempty"`
-	Title          string                        `json:"title"`
-	Body           string                        `json:"body"`
-	Category       string                        `json:"category"`
-	Priority       string                        `json:"priority"`
-	Status         string                        `json:"status"`
-	ScheduledAt    time.Time                     `json:"scheduled_at"`
-	ExpiresAt      *time.Time                    `json:"expires_at,omitempty"`
-	DedupeKey      string                        `json:"dedupe_key,omitempty"`
-	Actions        []StewardNotificationAction   `json:"actions"`
-	Metadata       map[string]any                `json:"metadata"`
-	AcknowledgedAt *time.Time                    `json:"acknowledged_at,omitempty"`
-	CancelledAt    *time.Time                    `json:"cancelled_at,omitempty"`
-	Deliveries     []StewardNotificationDelivery `json:"deliveries"`
-	CreatedAt      time.Time                     `json:"created_at"`
-	UpdatedAt      time.Time                     `json:"updated_at"`
+	ID                 string                        `json:"id"`
+	SourceType         string                        `json:"source_type"`
+	SourceID           string                        `json:"source_id,omitempty"`
+	Title              string                        `json:"title"`
+	Body               string                        `json:"body"`
+	Category           string                        `json:"category"`
+	Priority           string                        `json:"priority"`
+	Status             string                        `json:"status"`
+	ScheduleRevision   int                           `json:"schedule_revision"`
+	ScheduledAt        time.Time                     `json:"scheduled_at"`
+	AllowedWindowStart *time.Time                    `json:"allowed_window_start,omitempty"`
+	AllowedWindowEnd   *time.Time                    `json:"allowed_window_end,omitempty"`
+	ExpiresAt          *time.Time                    `json:"expires_at,omitempty"`
+	DedupeKey          string                        `json:"dedupe_key,omitempty"`
+	Actions            []StewardNotificationAction   `json:"actions"`
+	Metadata           map[string]any                `json:"metadata"`
+	PolicyID           *string                       `json:"policy_id,omitempty"`
+	DecisionContext    map[string]any                `json:"decision_context,omitempty"`
+	AcknowledgedAt     *time.Time                    `json:"acknowledged_at,omitempty"`
+	CancelledAt        *time.Time                    `json:"cancelled_at,omitempty"`
+	Deliveries         []StewardNotificationDelivery `json:"deliveries"`
+	CreatedAt          time.Time                     `json:"created_at"`
+	UpdatedAt          time.Time                     `json:"updated_at"`
 }
 
 type StewardNotificationEndpoint struct {

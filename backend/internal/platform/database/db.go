@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,6 +38,7 @@ func (db *DB) Ping(ctx context.Context) error {
 }
 
 func (db *DB) Migrate(ctx context.Context) error {
+	captureProfileDefault := defaultIntelligenceCaptureProfile(runtime.GOOS)
 	statements := []string{
 		`create extension if not exists "pgcrypto";`,
 		`create table if not exists tool_files (
@@ -1628,8 +1630,404 @@ func (db *DB) Migrate(ctx context.Context) error {
 			metadata jsonb not null default '{}'::jsonb,
 			created_at timestamptz not null default now()
 		);`,
+		fmt.Sprintf(`create table if not exists steward_intelligence_settings (
+			id text primary key,
+			enabled boolean not null default true,
+			mode text not null default 'batch',
+			capture_profile text not null default '%s',
+			timezone text not null default '',
+			activity_sample_seconds integer not null default 10,
+			sessionize_interval_seconds integer not null default 60,
+			batch_interval_seconds integer not null default 1800,
+			boundary_grace_seconds integer not null default 300,
+			daily_report_fallback_local time not null default '21:30',
+			weekly_report_day smallint not null default 0,
+			weekly_report_local time not null default '21:45',
+			monthly_report_local time not null default '22:00',
+			recent_profile_days integer not null default 14,
+			stable_min_evidence_days integer not null default 3,
+			profile_bootstrap_days integer not null default 30,
+			report_catchup_days integer not null default 7,
+			background_max_rounds integer not null default 64,
+			background_max_tool_calls integer not null default 256,
+			background_max_duration_seconds integer not null default 7200,
+			background_no_progress_limit integer not null default 3,
+			quiet_start_local time not null default '23:00',
+			quiet_end_local time not null default '08:00',
+			reminder_daily_soft_budget integer not null default 8,
+			reminder_category_soft_budget integer not null default 3,
+			reminder_cooldown_seconds integer not null default 1200,
+			raw_metadata_retention_days integer not null default 0,
+			unreferenced_media_retention_days integer not null default 30,
+			settings_revision bigint not null default 1,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`, captureProfileDefault),
+		`insert into steward_intelligence_settings(id) values('default') on conflict(id) do nothing;`,
+		`create table if not exists steward_collection_source_states (
+			device_id text not null,
+			collector_name text not null,
+			source_key text not null,
+			execution_target text not null default 'companion',
+			watcher text not null default '',
+			host text not null default '',
+			event_type text not null default '',
+			interactive_session_id text not null default '',
+			status text not null default 'starting',
+			cursor jsonb not null default '{}'::jsonb,
+			capabilities jsonb not null default '{}'::jsonb,
+			api_version text not null default '',
+			last_poll_at timestamptz,
+			last_source_event_at timestamptz,
+			last_ingested_at timestamptz,
+			backlog_count bigint not null default 0,
+			max_expected_lag_seconds integer not null default 300,
+			last_error text not null default '',
+			control_generation bigint not null default 0,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			primary key(device_id, collector_name, source_key)
+		);`,
+		`create table if not exists steward_activity_session_items (
+			id uuid primary key,
+			session_id uuid not null references steward_activity_sessions(id) on delete cascade,
+			observation_id uuid not null,
+			observation_time timestamptz not null,
+			source text not null default '',
+			role text not null default 'evidence',
+			active_seconds double precision not null default 0,
+			ordinal integer not null default 0,
+			snapshot_hash text not null default '',
+			created_at timestamptz not null default now(),
+			unique(session_id, observation_id, observation_time)
+		);`,
+		`create table if not exists steward_activity_batches (
+			id uuid primary key,
+			device_id text not null default '',
+			window_start timestamptz not null,
+			window_end timestamptz not null,
+			trigger_kind text not null default 'interval',
+			revision integer not null default 1,
+			supersedes_id uuid references steward_activity_batches(id) on delete set null,
+			catalog_generation bigint not null default 0,
+			context_hash text not null default '',
+			statistics jsonb not null default '{}'::jsonb,
+			checkpoint jsonb not null default '{}'::jsonb,
+			status text not null default 'pending',
+			due_at timestamptz not null default now(),
+			last_started_at timestamptz,
+			completed_at timestamptz,
+			attempt_count integer not null default 0,
+			next_attempt_at timestamptz not null default now(),
+			lease_owner text not null default '',
+			lease_expires_at timestamptz,
+			idempotency_key text not null,
+			control_generation bigint not null default 0,
+			episode_id uuid references steward_agent_episodes(id) on delete set null,
+			provider text not null default '',
+			model text not null default '',
+			provider_response_id text not null default '',
+			response_summary text not null default '',
+			error_code text not null default '',
+			error_summary text not null default '',
+			missed_run_count integer not null default 0,
+			catch_up_policy text not null default 'ordered',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique(idempotency_key),
+			unique(device_id, window_start, window_end, catalog_generation, revision)
+		);`,
+		`create table if not exists steward_activity_batch_items (
+			id uuid primary key,
+			batch_id uuid not null references steward_activity_batches(id) on delete cascade,
+			item_type text not null,
+			item_id text not null,
+			item_occurred_at timestamptz not null,
+			role text not null default 'evidence',
+			ordinal integer not null default 0,
+			snapshot_hash text not null default '',
+			source_revision bigint not null default 0,
+			source_updated_at timestamptz not null default 'epoch',
+			evidence_summary text not null default '',
+			created_at timestamptz not null default now(),
+			unique(batch_id, item_type, item_id, item_occurred_at)
+		);`,
+		`create table if not exists steward_memory_consolidation_runs (
+			id uuid primary key,
+			kind text not null,
+			profile_scope text not null default 'default',
+			window_start timestamptz not null,
+			window_end timestamptz not null,
+			status text not null default 'pending',
+			due_at timestamptz not null default now(),
+			last_started_at timestamptz,
+			completed_at timestamptz,
+			attempt_count integer not null default 0,
+			next_attempt_at timestamptz not null default now(),
+			lease_owner text not null default '',
+			lease_expires_at timestamptz,
+			checkpoint jsonb not null default '{}'::jsonb,
+			idempotency_key text not null unique,
+			control_generation bigint not null default 0,
+			episode_id uuid references steward_agent_episodes(id) on delete set null,
+			provider_response_id text not null default '',
+			error_code text not null default '',
+			error_summary text not null default '',
+			missed_run_count integer not null default 0,
+			catch_up_policy text not null default 'ordered',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists steward_profile_facts (
+			id uuid primary key,
+			profile_scope text not null default 'default',
+			key text not null,
+			layer text not null,
+			value jsonb not null default 'null'::jsonb,
+			status text not null default 'candidate',
+			confidence double precision not null default 0.5,
+			evidence_count integer not null default 0,
+			evidence_days integer not null default 0,
+			valid_from timestamptz,
+			valid_to timestamptz,
+			updated_by text not null default 'model',
+			provider text not null default '',
+			model text not null default '',
+			change_reason text not null default '',
+			supersedes_id uuid references steward_profile_facts(id) on delete set null,
+			conflict_group_id uuid,
+			source_run_id uuid references steward_memory_consolidation_runs(id) on delete set null,
+			source_episode_id uuid references steward_agent_episodes(id) on delete set null,
+			idempotency_key text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists steward_profile_snapshots (
+			id uuid primary key,
+			profile_scope text not null default 'default',
+			view text not null,
+			revision bigint not null,
+			as_of timestamptz not null,
+			window_start timestamptz,
+			window_end timestamptz,
+			document jsonb not null default '{}'::jsonb,
+			fact_count integer not null default 0,
+			content_hash text not null default '',
+			source_run_id uuid references steward_memory_consolidation_runs(id) on delete set null,
+			supersedes_id uuid references steward_profile_snapshots(id) on delete set null,
+			provider text not null default '',
+			model text not null default '',
+			created_at timestamptz not null default now(),
+			unique(profile_scope, view, revision)
+		);`,
+		`create table if not exists steward_reports (
+			id uuid primary key,
+			profile_scope text not null default 'default',
+			cadence text not null,
+			period_key text not null,
+			timezone text not null default '',
+			period_start timestamptz not null,
+			period_end timestamptz not null,
+			revision integer not null default 1,
+			status text not null default 'draft',
+			summary text not null default '',
+			sections jsonb not null default '[]'::jsonb,
+			evidence_manifest jsonb not null default '[]'::jsonb,
+			evidence_count integer not null default 0,
+			evidence_coverage double precision not null default 0,
+			missing_evidence jsonb not null default '[]'::jsonb,
+			supersedes_id uuid references steward_reports(id) on delete set null,
+			episode_id uuid references steward_agent_episodes(id) on delete set null,
+			proactive_run_id uuid references steward_proactive_runs(id) on delete set null,
+			notification_id uuid references steward_notifications(id) on delete set null,
+			delivery_decision text not null default '',
+			due_at timestamptz not null default now(),
+			last_started_at timestamptz,
+			completed_at timestamptz,
+			attempt_count integer not null default 0,
+			next_attempt_at timestamptz not null default now(),
+			lease_owner text not null default '',
+			lease_expires_at timestamptz,
+			checkpoint jsonb not null default '{}'::jsonb,
+			idempotency_key text not null,
+			control_generation bigint not null default 0,
+			provider text not null default '',
+			model text not null default '',
+			provider_response_id text not null default '',
+			error_code text not null default '',
+			error_summary text not null default '',
+			missed_run_count integer not null default 0,
+			catch_up_policy text not null default 'ordered',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique(profile_scope, cadence, period_key, revision),
+			unique(idempotency_key)
+		);`,
+		`create table if not exists steward_reminder_policies (
+			id uuid primary key,
+			profile_scope text not null default 'default',
+			category text not null default '*',
+			version bigint not null,
+			status text not null default 'active',
+			policy jsonb not null default '{}'::jsonb,
+			rationale text not null default '',
+			evidence_manifest jsonb not null default '[]'::jsonb,
+			idempotency_key text not null default '',
+			source_episode_id uuid references steward_agent_episodes(id) on delete set null,
+			supersedes_id uuid references steward_reminder_policies(id) on delete set null,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique(profile_scope, category, version)
+		);`,
+		`create table if not exists steward_receptivity_windows (
+			id uuid primary key,
+			profile_scope text not null default 'default',
+			category text not null default '*',
+			weekday smallint not null,
+			time_slot smallint not null,
+			activity_context text not null default '',
+			device_id text not null default '',
+			channel text not null default '',
+			sample_count integer not null default 0,
+			opened_count integer not null default 0,
+			acted_count integer not null default 0,
+			acknowledged_count integer not null default 0,
+			snoozed_count integer not null default 0,
+			dismissed_count integer not null default 0,
+			ignored_count integer not null default 0,
+			cancelled_count integer not null default 0,
+			auto_resolved_count integer not null default 0,
+			mean_response_seconds double precision not null default 0,
+			confidence double precision not null default 0,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique(profile_scope, category, weekday, time_slot, activity_context, device_id, channel)
+		);`,
+		`create table if not exists steward_reminder_feedback (
+			id uuid primary key,
+			notification_id uuid not null references steward_notifications(id) on delete cascade,
+			schedule_revision integer not null default 0,
+			policy_id uuid references steward_reminder_policies(id) on delete set null,
+			action text not null,
+			category text not null default 'general',
+			channel text not null default '',
+			device_id text not null default '',
+			timezone text not null default '',
+			activity_context text not null default '',
+			response_seconds integer,
+			snooze_seconds integer,
+			new_scheduled_at timestamptz,
+			metadata jsonb not null default '{}'::jsonb,
+			idempotency_key text not null,
+			created_at timestamptz not null default now(),
+			unique(idempotency_key)
+		);`,
+		`alter table steward_collector_configs
+			add column if not exists execution_target text not null default 'auto',
+			add column if not exists user_overridden boolean not null default false;`,
+		`alter table steward_observations
+			add column if not exists source_event_key text not null default '',
+			add column if not exists source_revision bigint not null default 1,
+			add column if not exists interactive_session_id text not null default '',
+			add column if not exists source_timezone text not null default '',
+			add column if not exists ingested_at timestamptz not null default now(),
+			add column if not exists updated_at timestamptz not null default now(),
+			add column if not exists revision bigint not null default 1;`,
+		`alter table steward_activity_sessions
+			add column if not exists revision bigint not null default 1,
+			add column if not exists canonical_context text not null default '',
+			add column if not exists interactive_session_id text not null default '',
+			add column if not exists active_seconds double precision not null default 0,
+			add column if not exists afk_seconds double precision not null default 0,
+			add column if not exists source_count integer not null default 0,
+			add column if not exists last_event_at timestamptz,
+			add column if not exists boundary_kind text not null default '',
+			add column if not exists supersedes_id uuid references steward_activity_sessions(id) on delete set null;`,
+		`alter table steward_activity_batch_items
+			add column if not exists source_revision bigint not null default 0,
+			add column if not exists source_updated_at timestamptz not null default 'epoch';`,
+		`update steward_activity_batch_items
+			set source_revision=split_part(snapshot_hash,':',2)::bigint,
+			    source_updated_at=regexp_replace(snapshot_hash,'^[^:]+:[^:]+:','')::timestamptz
+			where item_type='activity_session' and source_revision=0
+			  and split_part(snapshot_hash,':',2) ~ '^[0-9]+$'
+			  and regexp_replace(snapshot_hash,'^[^:]+:[^:]+:','') ~ '^20[0-9]{2}-';`,
+		`alter table steward_agent_episodes
+			add column if not exists visibility text not null default 'conversation',
+			add column if not exists context_ref_type text not null default '',
+			add column if not exists context_ref_id text not null default '',
+			add column if not exists result_sink text not null default '',
+			add column if not exists idempotency_key text not null default '';`,
+		`alter table steward_agent_episodes drop constraint if exists steward_agent_episodes_status_check;`,
+		`alter table steward_agent_episodes add constraint steward_agent_episodes_status_check
+			check (status in ('thinking','executing','awaiting_input','waiting_model','paused','completed','failed','cancelled','blocked'));`,
+		`alter table steward_proactive_runs
+			add column if not exists report_id uuid references steward_reports(id) on delete set null,
+			add column if not exists due_at timestamptz not null default now(),
+			add column if not exists last_started_at timestamptz,
+			add column if not exists attempt_count integer not null default 0,
+			add column if not exists next_attempt_at timestamptz not null default now(),
+			add column if not exists lease_owner text not null default '',
+			add column if not exists lease_expires_at timestamptz,
+			add column if not exists checkpoint jsonb not null default '{}'::jsonb,
+			add column if not exists control_generation bigint not null default 0,
+			add column if not exists missed_run_count integer not null default 0,
+			add column if not exists catch_up_policy text not null default 'ordered';`,
+		`alter table steward_source_refs
+			add column if not exists idempotency_key text not null default '',
+			add column if not exists source_occurred_at timestamptz,
+			add column if not exists tombstone jsonb not null default '{}'::jsonb;`,
+		`alter table steward_model_dispatches
+			add column if not exists superseded_at timestamptz,
+			add column if not exists superseded_reason text not null default '';`,
+		`alter table steward_reminder_policies
+			add column if not exists idempotency_key text not null default '';`,
+		`alter table steward_notifications
+			add column if not exists schedule_revision integer not null default 0,
+			add column if not exists policy_id uuid references steward_reminder_policies(id) on delete set null,
+			add column if not exists allowed_window_start timestamptz,
+			add column if not exists allowed_window_end timestamptz,
+			add column if not exists feedback_due_at timestamptz,
+			add column if not exists decision_context jsonb not null default '{}'::jsonb;`,
+		`alter table steward_notification_deliveries
+			add column if not exists schedule_revision integer not null default 0;`,
+		`alter table steward_notification_deliveries drop constraint if exists steward_notification_deliveries_notification_id_channel_endpoint_id_key;`,
+		// PostgreSQL truncates identifiers to 63 bytes. Existing installations
+		// therefore carry this shortened form of the original table-generated
+		// UNIQUE constraint; drop both spellings before installing the
+		// schedule-revision-aware index below.
+		`alter table steward_notification_deliveries drop constraint if exists steward_notification_deliveri_notification_id_channel_endpo_key;`,
+		`create unique index if not exists idx_steward_notification_delivery_occurrence
+			on steward_notification_deliveries(notification_id, schedule_revision, channel, coalesce(endpoint_id, '00000000-0000-0000-0000-000000000000'::uuid));`,
+		`create unique index if not exists idx_steward_observation_source_event
+			on steward_observations(source, device_id, source_event_key, source_revision, occurred_at)
+			where source_event_key <> '';`,
+		`create unique index if not exists idx_steward_agent_episode_idempotency
+			on steward_agent_episodes(idempotency_key) where idempotency_key <> '';`,
+		`create unique index if not exists idx_steward_source_ref_idempotency
+			on steward_source_refs(idempotency_key) where idempotency_key <> '';`,
+		`create unique index if not exists idx_steward_profile_fact_idempotency
+			on steward_profile_facts(idempotency_key) where idempotency_key <> '';`,
+		`create index if not exists idx_steward_collection_source_freshness
+			on steward_collection_source_states(status, last_source_event_at, updated_at);`,
+		`create index if not exists idx_steward_activity_batches_runnable
+			on steward_activity_batches(status, next_attempt_at, window_start);`,
+		`create index if not exists idx_steward_activity_batch_item_snapshot
+			on steward_activity_batch_items(item_type,item_id,source_revision,source_updated_at);`,
+		`create index if not exists idx_steward_consolidation_runs_runnable
+			on steward_memory_consolidation_runs(status, next_attempt_at, window_start);`,
+		`create index if not exists idx_steward_profile_facts_current
+			on steward_profile_facts(profile_scope, key, layer, status, updated_at desc);`,
+		`create index if not exists idx_steward_reports_period
+			on steward_reports(profile_scope, cadence, period_start desc, revision desc);`,
+		`create index if not exists idx_steward_reports_runnable
+			on steward_reports(status, next_attempt_at, period_start);`,
+		`create index if not exists idx_steward_reminder_feedback_time
+			on steward_reminder_feedback(created_at desc, category, action);`,
 		`create unique index if not exists idx_steward_notifications_dedupe
 		on steward_notifications(dedupe_key) where dedupe_key <> '';`,
+		`create unique index if not exists idx_steward_reminder_policy_idempotency
+		on steward_reminder_policies(idempotency_key) where idempotency_key <> '';`,
 		`create index if not exists idx_steward_notifications_status
 		on steward_notifications(status, scheduled_at desc);`,
 		`create index if not exists idx_steward_notification_deliveries_queue
@@ -1735,6 +2133,19 @@ func (db *DB) Migrate(ctx context.Context) error {
 		`create index if not exists idx_steward_agent_workers_heartbeat
 		on steward_agent_workers(agent_id, status, heartbeat_at);`,
 	}
+	statements = append(statements, fmt.Sprintf(
+		`alter table steward_intelligence_settings alter column capture_profile set default '%s';`,
+		captureProfileDefault,
+	))
+	if runtime.GOOS == "windows" {
+		// R5.3 changed the untouched Windows default from hybrid to deep. The
+		// revision fence deliberately leaves every row that has ever been saved
+		// through the settings API unchanged, even when its current value is
+		// still "hybrid".
+		statements = append(statements, `update steward_intelligence_settings
+			set capture_profile='deep', updated_at=now()
+			where id='default' and capture_profile='hybrid' and settings_revision=1;`)
+	}
 
 	for _, statement := range statements {
 		if _, err := db.Pool.Exec(ctx, statement); err != nil {
@@ -1757,6 +2168,13 @@ func (db *DB) Migrate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func defaultIntelligenceCaptureProfile(goos string) string {
+	if goos == "windows" {
+		return "deep"
+	}
+	return "hybrid"
 }
 
 func ScanNullableTime(row pgx.Row) (*string, error) {

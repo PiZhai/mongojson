@@ -5,6 +5,9 @@ param(
   [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "MongojsonSteward"),
   [string]$TaskName = "MongojsonStewardCompanion",
   [string]$ServiceName = "MongojsonSteward",
+  [string]$ManagementAccessTokenFile = "",
+  [string]$APIBase = "http://127.0.0.1:18080/api",
+  [switch]$AllowUnauthenticatedDevelopment,
   [string]$RollbackRoot = "",
   [switch]$KeepRollbackData,
   [switch]$Start
@@ -35,6 +38,19 @@ function Assert-PathWithin([string]$Path,[string]$Root,[string]$Label) {
   $pathFull=[IO.Path]::GetFullPath($Path).TrimEnd('\')
   if(-not $pathFull.StartsWith($rootFull,[StringComparison]::OrdinalIgnoreCase)){throw "$Label must remain under ${rootFull}: $pathFull"}
   return $pathFull
+}
+function Normalize-CompanionAPIBase([string]$Value) {
+  if([string]::IsNullOrWhiteSpace($Value)){throw 'APIBase must not be empty'}
+  try{$uri=[Uri]$Value.Trim()}catch{throw "APIBase must be an absolute HTTP URL: $Value"}
+  if(-not $uri.IsAbsoluteUri -or @('http','https') -notcontains $uri.Scheme){throw "APIBase must be an absolute HTTP URL: $Value"}
+  if(-not [string]::IsNullOrEmpty($uri.UserInfo) -or -not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment)){throw 'APIBase must not contain credentials, a query, or a fragment'}
+  $loopback=$uri.Host.Equals('localhost',[StringComparison]::OrdinalIgnoreCase)
+  $address=$null
+  if(-not $loopback -and [Net.IPAddress]::TryParse($uri.Host,[ref]$address)){$loopback=[Net.IPAddress]::IsLoopback($address)}
+  if(-not $loopback){throw "APIBase must target loopback: $Value"}
+  $path=$uri.AbsolutePath.TrimEnd('/')
+  if(-not $path.Equals('/api',[StringComparison]::OrdinalIgnoreCase)){throw "APIBase must end with /api: $Value"}
+  return $uri.GetLeftPart([UriPartial]::Authority)+'/api'
 }
 function Stop-CompanionInstance([string]$ExecutablePath) {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -73,10 +89,23 @@ Assert-NoReparsePoints $source 'Companion release source'
 $sourceExe = Join-Path $source "steward-companion.exe"
 if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) { throw "missing steward-companion.exe in $source" }
 if ($LocalEncryptionKey -notmatch '^[A-Za-z0-9+/]{43}=$') { throw "LocalEncryptionKey must be a base64 encoded 32-byte key" }
+$installFull=[IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+$APIBase=Normalize-CompanionAPIBase $APIBase
+$effectiveManagementTokenFile=if(-not [string]::IsNullOrWhiteSpace($ManagementAccessTokenFile)){[IO.Path]::GetFullPath($ManagementAccessTokenFile)}else{Join-Path $installFull 'management-access-token.txt'}
+$requireManagementToken=-not [bool]$AllowUnauthenticatedDevelopment
+if(Test-Path -LiteralPath $effectiveManagementTokenFile -PathType Leaf){
+  $managementTokenItem=Get-Item -LiteralPath $effectiveManagementTokenFile -Force
+  if(($managementTokenItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "ManagementAccessTokenFile must not be a reparse point: $effectiveManagementTokenFile"}
+  $managementToken=[IO.File]::ReadAllText($effectiveManagementTokenFile).Trim()
+  if([string]::IsNullOrWhiteSpace($managementToken)){throw "ManagementAccessTokenFile is empty: $effectiveManagementTokenFile"}
+  if($managementToken.Contains("`r") -or $managementToken.Contains("`n")){throw "ManagementAccessTokenFile must contain one line: $effectiveManagementTokenFile"}
+  $managementToken=$null
+}elseif($requireManagementToken){
+  throw "ManagementAccessTokenFile is required for a production Companion installation: $effectiveManagementTokenFile. Use -AllowUnauthenticatedDevelopment only for an explicit local development instance."
+}
 
-$result=[ordered]@{ok=$true;task_name=$TaskName;install_dir=$InstallDir;service_name=$ServiceName;run_level="Limited";updated=$false;rollback_dir=$null;rollback_task_xml=$null;previous_task_present=$false;previous_task_running=$false;transaction_state='not_started'}
+$result=[ordered]@{ok=$true;task_name=$TaskName;install_dir=$InstallDir;service_name=$ServiceName;api_base=$APIBase;management_auth_required=$requireManagementToken;run_level="Limited";updated=$false;rollback_dir=$null;rollback_task_xml=$null;previous_task_present=$false;previous_task_running=$false;transaction_state='not_started'}
 if ($PSCmdlet.ShouldProcess($InstallDir, "atomically install Steward Session Companion")) {
-  $installFull=[IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
   $parent=Split-Path -Parent $installFull
   if([string]::IsNullOrWhiteSpace($parent)){throw "Companion InstallDir must have a parent directory: $installFull"}
   if([string]::IsNullOrWhiteSpace($RollbackRoot)){$RollbackRoot=$parent}
@@ -117,13 +146,19 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "atomically install Steward Session Com
     $stageCreated=$true;$result.transaction_state='staged'
     Write-Utf8NoBom (Join-Path $stageDir '.steward-companion-operation') $operationID
     Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $stageDir "steward-companion.exe") -Force
+    $sourceNotifierDir=Join-Path $source 'windows-notifier'
+    if(Test-Path -LiteralPath $sourceNotifierDir -PathType Container){
+      Copy-Item -LiteralPath $sourceNotifierDir -Destination (Join-Path $stageDir 'windows-notifier') -Recurse -Force
+    }
     $stageSecret=Join-Path $stageDir "companion-secrets.json"
     Write-Utf8NoBom $stageSecret (@{ STEWARD_LOCAL_ENCRYPTION_KEY = $LocalEncryptionKey } | ConvertTo-Json -Compress)
-    $existingManagementToken=Join-Path $installFull 'management-access-token.txt'
+    $existingManagementToken=$effectiveManagementTokenFile
     $stagedManagementToken=Join-Path $stageDir 'management-access-token.txt'
     if(Test-Path -LiteralPath $existingManagementToken -PathType Leaf){Copy-Item -LiteralPath $existingManagementToken -Destination $stagedManagementToken -Force}
     Protect-CurrentUserPath $stageDir
     Protect-CurrentUserPath (Join-Path $stageDir "steward-companion.exe")
+    $stagedNotifier=Join-Path $stageDir 'windows-notifier'
+    if(Test-Path -LiteralPath $stagedNotifier -PathType Container){Protect-CurrentUserPath $stagedNotifier}
     Protect-CurrentUserPath $stageSecret
     if(Test-Path -LiteralPath $stagedManagementToken -PathType Leaf){Protect-CurrentUserPath $stagedManagementToken}
 
@@ -140,7 +175,9 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "atomically install Steward Session Com
 
     $secretPath = Join-Path $installFull "companion-secrets.json"
     $exe = Join-Path $installFull "steward-companion.exe"
-    $arguments = "--service-name `"$ServiceName`" --private-environment-file `"$secretPath`""
+    $managementTokenPath=Join-Path $installFull 'management-access-token.txt'
+    $requireManagementTokenArgument=$requireManagementToken.ToString().ToLowerInvariant()
+    $arguments = "--service-name `"$ServiceName`" --private-environment-file `"$secretPath`" --management-access-token-file `"$managementTokenPath`" --require-management-token=$requireManagementTokenArgument --api `"$APIBase`""
     $action = New-ScheduledTaskAction -Execute $exe -Argument $arguments -WorkingDirectory $installFull
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
     $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited

@@ -70,6 +70,16 @@ func (s *Service) ListModelDispatches(ctx context.Context, limit int) ([]domain.
 }
 
 func (s *Service) RunModelDispatches(ctx context.Context, limit int) ([]domain.StewardModelDispatch, error) {
+	batchMode, err := s.intelligenceBatchEnabled(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read intelligence dispatch mode: %w", err)
+	}
+	if batchMode {
+		if _, err := s.supersedeLegacyModelDispatches(ctx, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+		return []domain.StewardModelDispatch{}, nil
+	}
 	limit = normalizeLimit(limit, 20, 100)
 	rows, err := s.db.Pool.Query(ctx, `
 		select id from steward_model_dispatches
