@@ -241,6 +241,22 @@ function Get-ReleaseSigningCertificate {
   throw "Release signing certificate '$normalized' with a private key was not found in CurrentUser or LocalMachine My stores"
 }
 
+function Resolve-ReleaseTimestampServer {
+  param([string]$TimestampURL)
+  if ([string]::IsNullOrWhiteSpace($TimestampURL)) {
+    return ""
+  }
+  try {
+    $uri = [Uri]$TimestampURL
+  } catch {
+    throw "TimestampServer must be an absolute HTTP URL: $TimestampURL"
+  }
+  if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne [Uri]::UriSchemeHttp) {
+    throw "TimestampServer must start with http://. Set-AuthenticodeSignature uses a Windows API that does not support HTTPS timestamp URLs."
+  }
+  return $uri.AbsoluteUri
+}
+
 function Set-ReleaseAuthenticodeSignature {
   param(
     [string[]]$Paths,
@@ -397,6 +413,9 @@ if ($RequireSignedPackage -and $null -eq $signingCertificate) {
 $packageSigned = $null -ne $signingCertificate
 if ($packageSigned -and [string]::IsNullOrWhiteSpace($TimestampServer)) {
   throw "Every signed package requires -TimestampServer so executable and package-catalog signatures remain valid after certificate expiry"
+}
+if ($packageSigned) {
+  $TimestampServer = Resolve-ReleaseTimestampServer -TimestampURL $TimestampServer
 }
 if ($packageSigned -and ($SkipTests -or $SkipFrontendBuild -or $SkipUI)) {
   throw "Signed release packages require the full Go test suite and a freshly tested, linted, and built frontend; do not use -SkipTests, -SkipFrontendBuild, or -SkipUI"

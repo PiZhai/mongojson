@@ -471,7 +471,7 @@ $signingThumbprint = '<组织代码签名证书 SHA-1 Thumbprint>'
   -Version $version `
   -OutputDir $distRoot `
   -SigningCertificateThumbprint $signingThumbprint `
-  -TimestampServer 'https://timestamp.digicert.com' `
+  -TimestampServer 'http://timestamp.digicert.com' `
   -RequireSignedPackage `
   -Clean
 
@@ -499,6 +499,8 @@ $release = New-VerifiedStewardBootstrap `
 ```
 
 构建脚本默认拒绝包含已修改或未跟踪文件的 Git worktree。生产签名模式不能跳过完整 Go 测试、前端测试、lint 或全新构建。每个平台目录会生成独立的 `release-manifest.json` 与 `SHA256SUMS.txt`，并对 Manifest 生成 CMS detached signature；Windows 包还会生成覆盖整包的 Catalog，并用同一证书做带可信时间戳的 Authenticode 签名。Steward 自有的 EXE 和安装脚本也使用同一证书和时间戳。验证脚本会检查可信发布者、时间戳、Catalog、Manifest 签名、每个文件的 SHA-256、目标架构、版本、Git commit、Go 版本以及当前 Windows 二进制的真实启动结果。
+
+这里必须使用 `http://` 时间戳 URL。`Set-AuthenticodeSignature` 的底层 Windows API 不支持 HTTPS 时间戳端点；即使 PowerShell 接受 `https://` 参数，也会返回错误并留下没有时间戳的签名。时间戳响应本身由时间戳机构签名，发布验证仍会校验其证书链和签名。
 
 没有代码签名证书的本地开发只能显式使用：
 

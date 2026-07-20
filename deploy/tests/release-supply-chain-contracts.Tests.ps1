@@ -33,6 +33,14 @@ Describe 'Steward production release supply-chain contracts' {
     $verify.Contains('package catalog signature does not contain a trusted timestamp')|Should Be $true
   }
 
+  It 'rejects unsupported HTTPS timestamp URLs before release assembly' {
+    $build=Read-DeployScript 'build-steward.ps1'
+    $build.Contains('Resolve-ReleaseTimestampServer')|Should Be $true
+    $build.Contains('$uri.Scheme -ne [Uri]::UriSchemeHttp')|Should Be $true
+    $build.Contains('Set-AuthenticodeSignature uses a Windows API that does not support HTTPS timestamp URLs')|Should Be $true
+    $build.IndexOf('$TimestampServer = Resolve-ReleaseTimestampServer')|Should BeLessThan $build.IndexOf('$packageSigned -and ($SkipTests -or $SkipFrontendBuild -or $SkipUI)')
+  }
+
   It 'requires every Windows lifecycle and desktop-notification asset' {
     $script=Read-DeployScript 'verify-steward-dist.ps1'
     foreach($asset in @(
