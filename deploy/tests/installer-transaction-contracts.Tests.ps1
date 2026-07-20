@@ -101,6 +101,9 @@ Describe 'Windows production installer transaction contracts' {
       '--api `"$APIBase`"',
       'ManagementAccessTokenFile is required for a production Companion installation'
     )){$companion.Contains($contract)|Should Be $true}
+    foreach($aclContract in @('*S-1-5-18:F','*S-1-5-32-544:F','/setowner "*${identity}"')){
+      $companion.Contains($aclContract)|Should Be $true
+    }
 
     $installer=Read-Script 'install-steward-production.ps1'
     foreach($contract in @(

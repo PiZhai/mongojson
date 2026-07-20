@@ -17,10 +17,14 @@ $ErrorActionPreference = "Stop"
 
 function Protect-CurrentUserPath([string]$Path) {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-  $userGrant="*${identity}:F"; $systemGrant="*S-1-5-18:F"
-  if(Test-Path -LiteralPath $Path -PathType Container){$userGrant="*${identity}:(OI)(CI)F";$systemGrant="*S-1-5-18:(OI)(CI)F"}
-  & icacls.exe $Path /inheritance:r /grant:r $userGrant $systemGrant | Out-Null
+  $userGrant="*${identity}:F"; $systemGrant="*S-1-5-18:F"; $administratorsGrant='*S-1-5-32-544:F'
+  if(Test-Path -LiteralPath $Path -PathType Container){
+    $userGrant="*${identity}:(OI)(CI)F";$systemGrant="*S-1-5-18:(OI)(CI)F";$administratorsGrant='*S-1-5-32-544:(OI)(CI)F'
+  }
+  & icacls.exe $Path /inheritance:r /grant:r $userGrant $systemGrant $administratorsGrant | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "failed to protect companion path: $Path" }
+  & icacls.exe $Path /setowner "*${identity}" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "failed to set current-user ownership on companion path: $Path" }
 }
 function Write-Utf8NoBom([string]$Path,[string]$Value){[IO.File]::WriteAllText($Path,$Value,[Text.UTF8Encoding]::new($false))}
 function Assert-NoReparsePoints([string]$Root,[string]$Label) {
