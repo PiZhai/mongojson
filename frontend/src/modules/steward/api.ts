@@ -73,7 +73,16 @@ function resolveApiUrl(path: string) {
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init)
   if (!response.ok) {
-    const message = await response.text()
+    const payload = await response.text()
+    let message = payload
+    if (payload) {
+      try {
+        const parsed = JSON.parse(payload) as { error?: unknown }
+        if (typeof parsed.error === 'string' && parsed.error.trim()) message = parsed.error.trim()
+      } catch {
+        // Preserve non-JSON error responses verbatim.
+      }
+    }
     throw new Error(message || `Request failed: ${response.status}`)
   }
   return (await response.json()) as T

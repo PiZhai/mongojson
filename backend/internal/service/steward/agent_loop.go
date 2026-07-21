@@ -1223,6 +1223,30 @@ func (s *Service) withAgentEpisodeAdvisoryLock(ctx context.Context, id string, f
 	return true, fn()
 }
 
+// withAgentEpisodeControlLock serializes user controls without waiting for the
+// long-running model-turn lock. The episode status and control_generation CAS
+// fence the in-flight model turn; keeping controls on their own lock prevents
+// concurrent pause/cancel/resume requests from reconciling the same child
+// execution twice.
+func (s *Service) withAgentEpisodeControlLock(ctx context.Context, id string, fn func() error) error {
+	conn, err := s.db.Pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	lockKey := "steward-agent-episode-control:" + id
+	if _, err := conn.Exec(ctx, `select pg_advisory_lock(hashtextextended($1,0))`, lockKey); err != nil {
+		return err
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var ignored bool
+		_ = conn.QueryRow(unlockCtx, `select pg_advisory_unlock(hashtextextended($1,0))`, lockKey).Scan(&ignored)
+	}()
+	return fn()
+}
+
 func (s *Service) repairExecutingAgentEpisodes(ctx context.Context, limit int) error {
 	rows, err := s.db.Pool.Query(ctx, `select id::text,active_execution_id::text from steward_agent_episodes
 		where status='executing' and active_execution_id is not null order by updated_at limit $1`, limit)
@@ -1303,10 +1327,11 @@ func (s *Service) handleAgentEpisodeAdvanceError(ctx context.Context, id, claimI
 	if err != nil || failures < agentModelFailureLimit {
 		return err
 	}
-	// The failed claim has just been released. Re-enter the same advisory-lock
-	// domain used by model turns and user controls before committing the terminal
-	// message; otherwise a fresh worker could start a new model turn between the
-	// counter update and this finalization.
+	// The failed claim has just been released. Re-enter the advisory-lock domain
+	// used by model turns before committing the terminal message; otherwise a
+	// fresh worker could start a new model turn between the counter update and
+	// this finalization. User controls are fenced independently by
+	// control_generation and the episode status CAS.
 	locked, lockErr := s.withAgentEpisodeAdvisoryLock(ctx, id, func() error {
 		episode, getErr := s.getAgentEpisodeState(ctx, id)
 		if getErr != nil {
@@ -1593,16 +1618,13 @@ func (s *Service) recordAgentEpisodeMemory(ctx context.Context, id string) error
 
 func (s *Service) DecideAgentEpisode(ctx context.Context, id string, input DecideAgentEpisodeInput) (domain.StewardAgentEpisode, error) {
 	var result domain.StewardAgentEpisode
-	locked, err := s.withAgentEpisodeAdvisoryLock(ctx, id, func() error {
+	err := s.withAgentEpisodeControlLock(ctx, id, func() error {
 		var decisionErr error
 		result, decisionErr = s.decideAgentEpisodeLocked(ctx, id, input)
 		return decisionErr
 	})
 	if err != nil {
 		return result, err
-	}
-	if !locked {
-		return result, fmt.Errorf("agent episode is busy; retry the control action")
 	}
 	return result, nil
 }
@@ -1625,8 +1647,10 @@ func (s *Service) decideAgentEpisodeLocked(ctx context.Context, id string, input
 		if tag.RowsAffected() != 1 {
 			return episode, fmt.Errorf("agent episode cannot pause from %s", episode.Status)
 		}
-		episode.ControlGeneration++
-		episode.Status = agentEpisodePaused
+		episode, err = s.getAgentEpisodeState(ctx, id)
+		if err != nil {
+			return episode, err
+		}
 		if episode.ActiveExecutionID != "" {
 			if err = s.controlAndReconcileAgentExecution(ctx, episode, "pause"); err != nil {
 				return episode, err
@@ -1707,8 +1731,10 @@ func (s *Service) decideAgentEpisodeLocked(ctx context.Context, id string, input
 		if tag.RowsAffected() != 1 {
 			return episode, fmt.Errorf("agent episode cannot cancel from %s", episode.Status)
 		}
-		episode.ControlGeneration++
-		episode.Status = agentEpisodeCancelled
+		episode, err = s.getAgentEpisodeState(ctx, id)
+		if err != nil {
+			return episode, err
+		}
 		if episode.ActiveExecutionID != "" {
 			if err = s.controlAndReconcileAgentExecution(ctx, episode, "cancel"); err != nil {
 				return episode, err
@@ -1730,9 +1756,10 @@ func (s *Service) decideAgentEpisodeLocked(ctx context.Context, id string, input
 		if tag.RowsAffected() != 1 {
 			return episode, fmt.Errorf("agent episode cannot switch device from %s", episode.Status)
 		}
-		episode.ControlGeneration++
-		episode.Status = agentEpisodePaused
-		episode.TargetDeviceID = target.ID
+		episode, err = s.getAgentEpisodeState(ctx, id)
+		if err != nil {
+			return episode, err
+		}
 		resolved := true
 		resultSummary := episode.LastResultSummary
 		if episode.ActiveExecutionID != "" {

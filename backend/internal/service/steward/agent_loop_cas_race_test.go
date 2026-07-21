@@ -153,6 +153,62 @@ func TestFinishAgentEpisodeWithTextRejectsStaleControlGeneration(t *testing.T) {
 	}
 }
 
+func TestAgentControlDoesNotContendWithActiveModelTurnLock(t *testing.T) {
+	ctx, db := openAgentLoopCASTestDB(t)
+	service := NewService(db)
+	for _, test := range []struct {
+		decision, expectedStatus string
+	}{
+		{decision: "pause", expectedStatus: agentEpisodePaused},
+		{decision: "cancel", expectedStatus: agentEpisodeCancelled},
+	} {
+		t.Run(test.decision, func(t *testing.T) {
+			conversationID := uuid.NewString()
+			triggerMessageID := uuid.NewString()
+			episodeID := uuid.NewString()
+			now := time.Now().UTC()
+			if _, err := db.Pool.Exec(ctx, `insert into steward_conversations(id,title,status,data_level,created_at,updated_at)
+				values($1,'control during model turn','active','D0',$2,$2)`, conversationID, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Pool.Exec(ctx, `insert into steward_conversation_messages(id,conversation_id,role,content,data_level,model,created_at)
+				values($1,$2,'user','control the active model turn','D0','',$3)`, triggerMessageID, conversationID, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Pool.Exec(ctx, `insert into steward_agent_episodes(
+				id,conversation_id,trigger_message_id,trigger_kind,goal,data_level,status,current_round,
+				tool_call_count,max_rounds,max_tool_calls,max_duration_seconds,no_progress_limit,control_generation,created_at,updated_at
+			) values($1,$2,$3,'conversation','control during model turn','D0','thinking',0,0,12,40,1800,3,0,$4,$4)`,
+				episodeID, conversationID, triggerMessageID, now); err != nil {
+				t.Fatal(err)
+			}
+
+			conn, err := db.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lockKey := "steward-agent-episode:" + episodeID
+			if _, err = conn.Exec(ctx, `select pg_advisory_lock(hashtextextended($1,0))`, lockKey); err != nil {
+				conn.Release()
+				t.Fatal(err)
+			}
+			defer func() {
+				var ignored bool
+				_ = conn.QueryRow(context.Background(), `select pg_advisory_unlock(hashtextextended($1,0))`, lockKey).Scan(&ignored)
+				conn.Release()
+			}()
+
+			controlled, err := service.DecideAgentEpisode(ctx, episodeID, DecideAgentEpisodeInput{Decision: test.decision})
+			if err != nil {
+				t.Fatalf("%s must not contend with the active model-turn lock: %v", test.decision, err)
+			}
+			if controlled.Status != test.expectedStatus || controlled.ControlGeneration != 1 {
+				t.Fatalf("controlled episode status=%s generation=%d, want %s/1", controlled.Status, controlled.ControlGeneration, test.expectedStatus)
+			}
+		})
+	}
+}
+
 func TestConcurrentInitialAgentTurnDispatchCreatesAndLinksOneExecution(t *testing.T) {
 	ctx, db := openAgentLoopCASTestDB(t)
 	tool := newDispatchBarrierRuntimeTool()
