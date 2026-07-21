@@ -1037,6 +1037,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 			failure_summary text not null default '',
 			created_at timestamptz not null default now(),
 			updated_at timestamptz not null default now(),
+			scheduler_checked_at timestamptz,
 			started_at timestamptz,
 			completed_at timestamptz,
 			check (status in ('draft','planning','awaiting_approval','queued','running','verifying','succeeded','failed','cancelled','compensating','blocked'))
@@ -1255,6 +1256,8 @@ func (db *DB) Migrate(ctx context.Context) error {
 		`alter table steward_orchestrations drop constraint if exists steward_orchestrations_failure_policy_check;`,
 		`alter table steward_orchestrations add constraint steward_orchestrations_failure_policy_check
 			check (failure_policy in ('fail_fast','compensate','collect_all'));`,
+		`alter table steward_orchestrations
+			add column if not exists scheduler_checked_at timestamptz;`,
 		`create table if not exists steward_orchestration_nodes (
 			id uuid primary key,
 			orchestration_id uuid not null references steward_orchestrations(id) on delete cascade,
@@ -2120,6 +2123,8 @@ func (db *DB) Migrate(ctx context.Context) error {
 		on steward_orchestrations(idempotency_key) where idempotency_key is not null;`,
 		`create index if not exists idx_steward_orchestrations_queue
 		on steward_orchestrations(status, updated_at, created_at);`,
+		`create index if not exists idx_steward_orchestrations_scheduler
+		on steward_orchestrations(status, scheduler_checked_at, updated_at, created_at);`,
 		`create index if not exists idx_steward_orchestration_nodes_schedule
 		on steward_orchestration_nodes(orchestration_id, status, position);`,
 		`create index if not exists idx_steward_orchestration_nodes_agent

@@ -1019,8 +1019,21 @@ func (s *Service) RunOrchestrationCycle(ctx context.Context, limit int) (int, er
 		limit = 10
 	}
 	rows, err := s.db.Pool.Query(ctx, `
-		select id::text from steward_orchestrations
-		where status in ('queued','running','compensating') order by updated_at, created_at limit $1
+		select orchestration.id::text
+		from steward_orchestrations orchestration
+		where orchestration.status in ('queued','running','compensating')
+		order by case when exists (
+			select 1
+			from steward_orchestration_nodes node
+			join steward_agent_runs run on run.id=node.runtime_run_id
+			where node.orchestration_id=orchestration.id
+			  and node.status in ('dispatched','running')
+			  and run.status in ('succeeded','failed','cancelled','blocked')
+		) then 0 else 1 end,
+		orchestration.scheduler_checked_at asc nulls first,
+		orchestration.updated_at,
+		orchestration.created_at
+		limit $1
 	`, limit)
 	if err != nil {
 		return 0, err
@@ -1100,6 +1113,12 @@ func (s *Service) processOrchestration(ctx context.Context, id string, generatio
 		return false, nil
 	}
 	now := time.Now().UTC()
+	// A successful scheduler visit moves this parent behind work that has not
+	// been inspected yet. Keep this operational cursor separate from updated_at,
+	// which remains the user-visible timestamp for meaningful state changes.
+	if _, err := tx.Exec(ctx, `update steward_orchestrations set scheduler_checked_at=$2 where id=$1`, id, now); err != nil {
+		return false, err
+	}
 	if s.orchestrationWorkers {
 		if err := s.recoverUnavailableOrchestrationWorkersTx(ctx, tx, id, now); err != nil {
 			return false, err

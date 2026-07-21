@@ -679,6 +679,85 @@ func TestStewardR40LocalMultiAgentOrchestration(t *testing.T) {
 	}
 }
 
+func TestStewardR40SchedulerReclaimsTerminalWorkOutsideBatchWindow(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the Postgres-backed R4.0 scheduler fairness test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r40_scheduler_fairness"), "r4-fair-node",
+		steward.WithRuntimeV2Enabled(true), steward.WithOrchestrationR4Enabled(true),
+		steward.WithOrchestrationSigningKey(bytes.Repeat([]byte{0x47}, 32)))
+	upsertR40Agent(t, ctx, node, map[string]any{
+		"id": "fair-worker", "name": "Fair Worker", "role": "scheduler fairness worker",
+		"permission_ceiling": "A0", "data_level_ceiling": "D0",
+		"tool_allowlist": []string{"runtime.echo"}, "max_concurrency": 1,
+	})
+
+	holder, err := node.service.CreateOrchestration(ctx, steward.CreateOrchestrationInput{
+		Goal: "release a terminal child outside the scheduler batch", AutoStart: true,
+		PermissionCeiling: "A0", DataLevel: "D0",
+		Nodes: []steward.CreateOrchestrationNodeInput{{
+			Key: "holder", AgentID: "fair-worker", Goal: "finish before parent reconciliation",
+			Steps: []steward.CreateAgentRunStepInput{{Key: "echo", ToolName: "runtime.echo", Arguments: map[string]any{"value": "holder"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = node.service.RunOrchestrationCycle(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if processed, runtimeErr := node.service.RunAgentRuntimeCycle(ctx, 1); runtimeErr != nil || processed != 1 {
+		t.Fatalf("terminal holder child processed=%d err=%v", processed, runtimeErr)
+	}
+
+	blockers := make([]domain.StewardOrchestration, 0, 10)
+	for index := 0; index < 10; index++ {
+		item, createErr := node.service.CreateOrchestration(ctx, steward.CreateOrchestrationInput{
+			Goal: fmt.Sprintf("queued fairness task %02d", index), AutoStart: true,
+			PermissionCeiling: "A0", DataLevel: "D0",
+			Nodes: []steward.CreateOrchestrationNodeInput{{
+				Key: "work", AgentID: "fair-worker", Goal: fmt.Sprintf("fair work %02d", index),
+				Steps: []steward.CreateAgentRunStepInput{{Key: "echo", ToolName: "runtime.echo", Arguments: map[string]any{"value": index}}},
+			}},
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		blockers = append(blockers, item)
+	}
+	blockerIDs := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		blockerIDs = append(blockerIDs, blocker.ID)
+	}
+	if _, err = node.pool.Exec(ctx, `update steward_orchestrations set updated_at=now()+interval '1 hour' where id=$1`, holder.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = node.pool.Exec(ctx, `update steward_orchestrations set updated_at=now()-interval '1 hour' where id=any($1::uuid[])`, blockerIDs); err != nil {
+		t.Fatal(err)
+	}
+
+	if processed, cycleErr := node.service.RunOrchestrationCycle(ctx, 10); cycleErr != nil || processed != 10 {
+		t.Fatalf("fair scheduler processed=%d err=%v", processed, cycleErr)
+	}
+	reconciledHolder := getR40Orchestration(t, ctx, node, holder.ID)
+	if reconciledHolder.Status != steward.OrchestrationSucceeded || reconciledHolder.Nodes[0].Status != steward.OrchestrationNodeSucceeded {
+		t.Fatalf("terminal holder outside the original batch was not reclaimed: %+v", reconciledHolder)
+	}
+	dispatched := 0
+	for _, blocker := range blockers {
+		current := getR40Orchestration(t, ctx, node, blocker.ID)
+		if current.Nodes[0].Status == steward.OrchestrationNodeDispatched {
+			dispatched++
+		}
+	}
+	if dispatched != 1 {
+		t.Fatalf("released concurrency slot dispatched %d queued tasks, want 1", dispatched)
+	}
+}
+
 func TestStewardR40CollectAllFinishesIndependentSiblingsBeforeParentFailure(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {
