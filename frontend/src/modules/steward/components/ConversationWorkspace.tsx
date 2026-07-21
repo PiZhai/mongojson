@@ -6,7 +6,6 @@ import {
   decideStewardConversationSuggestion,
   getStewardAgentEpisodeTurns,
   getStewardExecutionControl,
-  getStewardModelSettings,
   getStewardConversationMessages,
   getStewardConversations,
   sendStewardConversationMessage,
@@ -43,7 +42,6 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
   const [archiveLoading, setArchiveLoading] = useState(false)
   const [archiveBusyId, setArchiveBusyId] = useState('')
   const [archiveError, setArchiveError] = useState('')
-  const [agentProgressDetail, setAgentProgressDetail] = useState('compact')
   const [showScrollToLatest, setShowScrollToLatest] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const followLatestRef = useRef(true)
@@ -137,10 +135,6 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
       alive = false
     }
   }, [prepareToFollowLatest])
-
-  useEffect(() => {
-    void getStewardModelSettings().then(({ settings }) => setAgentProgressDetail(settings.agent_progress_detail || 'compact')).catch(() => undefined)
-  }, [modelSettingsOpen])
 
   useEffect(() => {
     if (!followLatestRef.current) return
@@ -280,7 +274,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
       }
       await onDataChanged()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '处理执行计划失败')
+      setError(reason instanceof Error ? reason.message : '处理操作失败')
     } finally {
       setBusy(false)
     }
@@ -443,16 +437,11 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
                 <div className={`steward-execution-card is-${episode.status}`} key={episode.id}>
                   <div className="steward-execution-card-header">
                     <div>
-                      <small>循环 Agent · 第 {episode.current_round} 轮</small>
+                      <small>任务</small>
                       <strong>{episode.goal}</strong>
                     </div>
                     <span>{agentEpisodeStatusLabel(episode.status)}</span>
                   </div>
-                  <div className="steward-execution-meta">
-                    <span>{episode.target_device_id || '自动选择设备'}</span>
-                    <span>{episode.tool_call_count} 次工具调用</span>
-                  </div>
-                  <AgentEpisodeProgress episode={episode} />
                   <div className="steward-row-actions steward-execution-actions">
                     {['thinking', 'executing'].includes(episode.status) ? (
                       <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void decideEpisode(episode, 'pause')} type="button">暂停</button>
@@ -469,16 +458,13 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
                       <button className="steward-button steward-button-secondary" disabled={busy} onClick={() => void sendControlCommand('换到另一台电脑')} type="button">换设备</button>
                     ) : null}
                   </div>
-                  {(episode.turn_count ?? episode.turns?.length ?? 0) > 0 && agentProgressDetail !== 'final_only' ? (
-                    <AgentEpisodeTurnHistory episode={episode} initiallyOpen={agentProgressDetail === 'full'} />
-                  ) : null}
                 </div>
               ))}
-              {(message.executions ?? []).map((execution) => (
+              {(message.executions ?? []).filter((execution) => !execution.episode_id).map((execution) => (
                 <div className={`steward-execution-card is-${execution.status}`} key={execution.id}>
                   <div className="steward-execution-card-header">
                     <div>
-                      <small>{execution.kind === 'orchestration' ? '多 Agent 计划' : execution.kind === 'run' ? '执行计划' : '需要补充信息'}</small>
+                      <small>{execution.kind === 'question' ? '需要补充信息' : '操作'}</small>
                       <strong>{execution.summary}</strong>
                     </div>
                     <span>{executionStatusLabel(execution.status)}</span>
@@ -525,7 +511,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
           {busy ? (
             <div className="steward-message-pending" role="status">
               <span className="steward-thinking-dots" aria-hidden="true"><i /><i /><i /></span>
-              <span>管家正在思考并检查可用工具</span>
+              <span>管家正在思考</span>
             </div>
           ) : null}
           </div>

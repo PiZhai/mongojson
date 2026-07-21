@@ -98,7 +98,6 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
         base_url: form.baseURL,
         model: form.model,
         allow_no_api_key: form.allowNoAPIKey,
-        max_data_level: 'D6',
         timeout_seconds: form.timeoutSeconds,
         agent_max_rounds: form.agentMaxRounds,
         agent_max_tool_calls: form.agentMaxToolCalls,
@@ -210,54 +209,6 @@ export function ModelSettingsDialog({ open, onClose }: Props) {
             <span>本机模型不使用 API Key</span>
             <small>只允许 localhost、127.0.0.1 或 ::1，适用于 Ollama、LM Studio 等本机服务。</small>
           </label>
-
-          <div className="steward-model-grid">
-            <label>
-              <span>请求超时（秒）</span>
-              <input disabled={busy || !enabled} max={120} min={1} onChange={(event) => setForm({ ...form, timeoutSeconds: Number(event.target.value) })} type="number" value={form.timeoutSeconds} />
-            </label>
-            <label>
-              <span>最大模型轮次（0 为不限）</span>
-              <input disabled={busy || !enabled} max={1000} min={0} onChange={(event) => setForm({ ...form, agentMaxRounds: Number(event.target.value) })} type="number" value={form.agentMaxRounds} />
-              <small>0 表示不设置固定轮次上限，模型可根据工具结果继续决策。</small>
-            </label>
-            <label>
-              <span>最大工具调用（0 为不限）</span>
-              <input disabled={busy || !enabled} max={10000} min={0} onChange={(event) => setForm({ ...form, agentMaxToolCalls: Number(event.target.value) })} type="number" value={form.agentMaxToolCalls} />
-              <small>0 表示不设置固定调用次数上限，多步骤任务不会因配额提前结束。</small>
-            </label>
-            <label>
-              <span>最长运行（秒，0 为不限）</span>
-              <input disabled={busy || !enabled} max={604800} min={0} onChange={(event) => setForm({ ...form, agentMaxDurationSeconds: Number(event.target.value) })} type="number" value={form.agentMaxDurationSeconds} />
-              <small>0 表示不设置 Episode 总时长上限，单次工具仍受各自超时和 Watchdog 约束。</small>
-            </label>
-            <label>
-              <span>无进展检测轮数</span>
-              <input disabled={busy || !enabled} max={100} min={1} onChange={(event) => setForm({ ...form, agentNoProgressLimit: Number(event.target.value) })} type="number" value={form.agentNoProgressLimit} />
-              <small>即使其他上限为 0，重复调用无实质进展时仍会停止循环。</small>
-            </label>
-            <label>
-              <span>执行详情</span>
-              <select disabled={busy || !enabled} onChange={(event) => setForm({ ...form, agentProgressDetail: event.target.value })} value={form.agentProgressDetail}>
-                <option value="compact">简洁进度</option>
-                <option value="full">完整工具流</option>
-                <option value="final_only">只看最终结果</option>
-              </select>
-            </label>
-          </div>
-
-          <div className="steward-model-status-row">
-            <span className={form.agentMaxRounds === 0 && form.agentMaxToolCalls === 0 && form.agentMaxDurationSeconds === 0 ? 'is-ready' : ''}>
-              超长任务模式 {form.agentMaxRounds === 0 && form.agentMaxToolCalls === 0 && form.agentMaxDurationSeconds === 0 ? '已启用' : '使用自定义上限'}
-            </span>
-            <small>0 只移除固定配额；无进展检测、Watchdog、暂停、取消和全局停止始终生效。</small>
-            <button
-              className="steward-button-secondary"
-              disabled={busy || !enabled}
-              onClick={() => setForm({ ...form, ...unlimitedAgentLimits })}
-              type="button"
-            >使用超长任务模式</button>
-          </div>
 
           {error ? <div className="steward-model-feedback is-error" role="alert">{error}</div> : null}
           {notice ? <div className="steward-model-feedback is-success" role="status">{notice}</div> : null}

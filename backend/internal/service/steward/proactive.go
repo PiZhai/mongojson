@@ -339,7 +339,7 @@ func (s *Service) ensureProactiveConversation(ctx context.Context) (domain.Stewa
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return domain.StewardConversation{}, err
 	}
-	return s.CreateConversation(ctx, CreateConversationInput{Title: proactiveConversation, DataLevel: DataD2})
+	return s.CreateConversation(ctx, CreateConversationInput{Title: proactiveConversation})
 }
 
 func (s *Service) finishProactiveRun(ctx context.Context, run domain.StewardProactiveRun, status, summary string, analysis map[string]any, cause error) domain.StewardProactiveRun {

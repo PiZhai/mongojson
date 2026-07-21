@@ -864,6 +864,19 @@ func (s *Service) failAgentRunStepWithResult(ctx context.Context, step domain.St
 		eventType = "step.retry_scheduled"
 		message = "step returned to the queue for a durable retry"
 		completedAt = nil
+	} else {
+		// A model may request several independent tools in one ordinary local
+		// execution. One failed tool must not prevent the remaining calls from
+		// producing their real results; the model needs the complete batch to
+		// decide what to do next.
+		var pendingSteps int
+		if err := tx.QueryRow(ctx, `select count(*) from steward_run_steps where run_id=$1 and id<>$2 and status='pending'`, step.RunID, step.ID).Scan(&pendingSteps); err != nil {
+			return err
+		}
+		if pendingSteps > 0 {
+			runStatus = RuntimeRunQueued
+			message = "step failed; remaining independent tools stay queued"
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		update steward_run_steps set status = $2, last_error = $3, updated_at = $4, completed_at = $5 where id = $1

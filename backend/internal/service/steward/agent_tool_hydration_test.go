@@ -24,7 +24,7 @@ func TestNextTurnHydratesCatalogToolBeforeExecution(t *testing.T) {
 	defer server.Close()
 
 	advisor := openAICompatibleAutonomyAdvisor{
-		client: server.Client(), baseURL: server.URL, model: "test-model", maxDataLevel: DataD6,
+		client: server.Client(), baseURL: server.URL, model: "test-model",
 	}
 	decision, err := advisor.NextTurn(context.Background(), AgentTurnInput{
 		Message: "截取屏幕", DataLevel: DataD0,

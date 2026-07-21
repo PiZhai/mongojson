@@ -88,7 +88,7 @@ func (a *durableFirstTurnAdvisor) NextTurn(_ context.Context, input steward.Agen
 	return steward.AgentTurnDecision{Content: "后台模型回合已经完成。"}, nil
 }
 
-func TestStewardAgentFirstTurnIsDurableAndRunsOutsideSendRequest(t *testing.T) {
+func TestStewardSimpleConversationAnswersWithoutCreatingAgentEpisode(t *testing.T) {
 	t.Setenv("STEWARD_OWNER_MODE", "true")
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {
@@ -103,37 +103,22 @@ func TestStewardAgentFirstTurnIsDurableAndRunsOutsideSendRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "直接回答但通过后台回合"})
+	result, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "你在做什么？"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if advisor.calls != 0 {
-		t.Fatalf("advisor was called inside SendConversationMessage: calls=%d", advisor.calls)
+	if advisor.calls != 1 {
+		t.Fatalf("simple conversation should call the model exactly once: calls=%d", advisor.calls)
 	}
-	if len(result.Message.Episodes) != 1 {
-		t.Fatalf("durable Episode was not returned: %+v", result.Message)
-	}
-	episodeID := result.Message.Episodes[0].ID
-	episode, err := node.service.GetAgentEpisode(ctx, episodeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if episode.Status != "thinking" || episode.CurrentRound != 0 || episode.ProgressMessageID != result.Message.ID {
-		t.Fatalf("Episode was not durable before model call: %+v", episode)
+	if result.Message.Content != "后台模型回合已经完成。" || len(result.Message.Episodes) != 0 || len(result.Message.Executions) != 0 {
+		t.Fatalf("simple conversation was turned into execution state: %+v", result.Message)
 	}
 	processed, err := node.service.RunAgentEpisodeCycle(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if processed != 1 || advisor.calls != 1 {
-		t.Fatalf("worker did not perform exactly one model turn: processed=%d calls=%d", processed, advisor.calls)
-	}
-	episode, err = node.service.GetAgentEpisode(ctx, episodeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if episode.Status != "completed" || episode.CurrentRound != 1 || advisor.sawQueueMessage {
-		t.Fatalf("worker finalization/history filtering failed: %+v queue_in_history=%v", episode, advisor.sawQueueMessage)
+	if processed != 0 || advisor.calls != 1 || advisor.sawQueueMessage {
+		t.Fatalf("simple answer leaked into the Agent worker: processed=%d calls=%d queue_in_history=%v", processed, advisor.calls, advisor.sawQueueMessage)
 	}
 }
 func (r50ToolsmithAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
@@ -264,7 +249,7 @@ func TestStewardR50ToolsmithRejectsBareOutputAndRecoversWithNewVersion(t *testin
 type r49ParallelAdvisor struct{}
 
 func (r49ParallelAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "parallel-test", MaxDataLevel: "D6"}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "parallel-test"}
 }
 
 func (r49ParallelAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
@@ -303,14 +288,11 @@ func TestStewardR49ParallelToolBatchPreservesCallIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" ||
-		created.Message.Episodes[0].CurrentRound != 0 || len(created.Message.Executions) != 0 {
-		t.Fatalf("parallel request was not durably queued before the first model turn: %+v", created.Message)
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "executing" ||
+		created.Message.Episodes[0].CurrentRound != 1 || len(created.Message.Executions) != 1 {
+		t.Fatalf("parallel tool request was not dispatched directly: %+v", created.Message)
 	}
 	episodeID := created.Message.Episodes[0].ID
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
 	dispatched, err := node.service.GetAgentEpisode(ctx, episodeID)
 	if err != nil {
 		t.Fatal(err)
@@ -323,13 +305,10 @@ func TestStewardR49ParallelToolBatchPreservesCallIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	queuedExecution := latestR45Execution(t, queuedMessages)
-	if queuedExecution.ID != dispatched.ActiveExecutionID || queuedExecution.Kind != "orchestration" {
-		t.Fatalf("parallel tool calls did not create one orchestration execution: %+v", queuedExecution)
+	if queuedExecution.ID != dispatched.ActiveExecutionID || queuedExecution.Kind != "run" {
+		t.Fatalf("parallel tool calls did not stay in one ordinary execution: %+v", queuedExecution)
 	}
 	for index := 0; index < 12; index++ {
-		if _, err := node.service.RunOrchestrationCycle(ctx, 10); err != nil {
-			t.Fatal(err)
-		}
 		if _, err := node.service.RunAgentRuntimeCycle(ctx, 10); err != nil {
 			t.Fatal(err)
 		}
@@ -355,7 +334,7 @@ func TestStewardR49ParallelToolBatchPreservesCallIDs(t *testing.T) {
 type r49CollectAllAdvisor struct{ missingPath string }
 
 func (r49CollectAllAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "collect-all-test", MaxDataLevel: "D6"}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "collect-all-test"}
 }
 func (r49CollectAllAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
 	return steward.AutonomyAdvisorSuggestion{}, nil
@@ -439,7 +418,7 @@ func TestStewardR49CollectAllPreservesThreeCallResultsAcrossFailure(t *testing.T
 type r49RecoveryAdvisor struct{}
 
 func (r49RecoveryAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "recovery-test", MaxDataLevel: "D6"}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "recovery-test"}
 }
 func (r49RecoveryAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
 	return steward.AutonomyAdvisorSuggestion{}, nil
@@ -468,13 +447,10 @@ func TestStewardR49RestartAfterToolCompletionResumesEpisode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" || created.Message.Episodes[0].CurrentRound != 0 {
-		t.Fatalf("recovery request was not durably queued before the first model turn: %+v", created.Message)
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "executing" || created.Message.Episodes[0].CurrentRound != 1 {
+		t.Fatalf("recovery request was not dispatched directly: %+v", created.Message)
 	}
 	episodeID := created.Message.Episodes[0].ID
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := node.service.RunAgentRuntimeCycle(ctx, 10); err != nil {
 		t.Fatal(err)
 	}
@@ -530,9 +506,6 @@ func TestStewardR49RestartReconcilesAlreadyTerminalConversationExecution(t *test
 		t.Fatalf("first tool Episode was not persisted: %+v", created.Message)
 	}
 	episodeID := created.Message.Episodes[0].ID
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
 	dispatched, err := node.service.GetAgentEpisode(ctx, episodeID)
 	if err != nil || dispatched.Status != "executing" || dispatched.ActiveExecutionID == "" {
 		t.Fatalf("first model turn did not create its child execution: episode=%+v err=%v", dispatched, err)
@@ -592,7 +565,7 @@ type r49LoopAdvisor struct {
 }
 
 func (r49LoopAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "loop-test", MaxDataLevel: "D6"}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "loop-test"}
 }
 
 func (r49LoopAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
@@ -637,14 +610,11 @@ func TestStewardR49AgentLoopsFromListToReadToFinalAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" ||
-		created.Message.Episodes[0].CurrentRound != 0 || len(created.Message.Executions) != 0 {
-		t.Fatalf("agent request was not durably queued before the first model turn: %+v", created.Message)
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "executing" ||
+		created.Message.Episodes[0].CurrentRound != 1 || len(created.Message.Executions) != 1 {
+		t.Fatalf("agent tool request was not dispatched directly: %+v", created.Message)
 	}
 	episodeID := created.Message.Episodes[0].ID
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
 	firstTurn, err := node.service.GetAgentEpisode(ctx, episodeID)
 	if err != nil {
 		t.Fatal(err)
@@ -693,7 +663,7 @@ func TestStewardR49AgentLoopsFromListToReadToFinalAnswer(t *testing.T) {
 type r49AskAdvisor struct{}
 
 func (r49AskAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "ask-test", MaxDataLevel: "D6"}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r49-test", Model: "ask-test"}
 }
 func (r49AskAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
 	return steward.AutonomyAdvisorSuggestion{}, nil
@@ -726,13 +696,10 @@ func TestStewardR49AskUserResumesSameEpisode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Message.Episodes) != 1 || first.Message.Episodes[0].Status != "thinking" || first.Message.Episodes[0].CurrentRound != 0 {
-		t.Fatalf("ask-user request was not durably queued before the first model turn: %+v", first.Message)
+	if len(first.Message.Episodes) != 1 || first.Message.Episodes[0].Status != "awaiting_input" || first.Message.Episodes[0].CurrentRound != 1 {
+		t.Fatalf("ask-user request did not ask directly: %+v", first.Message)
 	}
 	episodeID := first.Message.Episodes[0].ID
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
 	waiting, err := node.service.GetAgentEpisode(ctx, episodeID)
 	if err != nil {
 		t.Fatal(err)
@@ -772,13 +739,10 @@ func TestStewardR49PauseResumeReplansWithoutRepeatingSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" || created.Message.Episodes[0].CurrentRound != 0 {
-		t.Fatalf("pause request was not durably queued before the first model turn: %+v", created.Message)
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "executing" || created.Message.Episodes[0].CurrentRound != 1 {
+		t.Fatalf("pause request was not dispatched directly: %+v", created.Message)
 	}
 	episodeID := created.Message.Episodes[0].ID
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
 	firstTurn, err := node.service.GetAgentEpisode(ctx, episodeID)
 	if err != nil {
 		t.Fatal(err)

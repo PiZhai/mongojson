@@ -117,6 +117,65 @@ func TestProfileReportAndIntelligenceJobPostgresLifecycle(t *testing.T) {
 	}
 }
 
+func TestEnsureDueIntelligenceJobsSkipsEmptyHistory(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if baseDSN == "" {
+		t.Skip("set TEST_DATABASE_URL to run the empty-history scheduling test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	db := newProfileReportTestDatabase(t, ctx, baseDSN)
+	service := NewService(db, WithAgentID("evidence-only-scheduler"), WithAutonomyAdvisor(DisabledAutonomyAdvisor("test")))
+	if err := service.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `
+		update steward_intelligence_settings
+		set enabled=true, timezone='UTC', daily_report_fallback_local='21:00',
+		    weekly_report_day=0, weekly_report_local='21:45', monthly_report_local='22:00',
+		    profile_bootstrap_days=30, report_catchup_days=7
+		where id=$1
+	`, defaultIntelligenceSettingsID); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 7, 21, 23, 0, 0, 0, time.UTC)
+	created, err := service.EnsureDueIntelligenceJobs(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 0 {
+		t.Fatalf("fresh database created %d synthetic catch-up jobs", created)
+	}
+	var jobCount int
+	if err := db.Pool.QueryRow(ctx, `select count(*) from steward_memory_consolidation_runs`).Scan(&jobCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobCount != 0 {
+		t.Fatalf("fresh database retained %d synthetic catch-up jobs", jobCount)
+	}
+
+	if _, err := db.Pool.Exec(ctx, `
+		insert into steward_observations(id,source,type,summary,data_level,permission_level,device_id,occurred_at)
+		values($1,'collector','window','real collected evidence','D0','A0','local',$2)
+	`, uuid.New(), time.Date(2026, 7, 21, 20, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	created, err = service.EnsureDueIntelligenceJobs(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 2 {
+		t.Fatalf("one evidence period should create one profile job and one daily report, created=%d", created)
+	}
+	if err := db.Pool.QueryRow(ctx, `select count(*) from steward_memory_consolidation_runs`).Scan(&jobCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobCount != 2 {
+		t.Fatalf("evidence-only scheduler created unrelated historical jobs: %d", jobCount)
+	}
+}
+
 func TestReportEvidenceCoverageReflectsPersistedSessions(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if baseDSN == "" {

@@ -119,7 +119,7 @@ type StewardConversation struct {
 	ID            string     `json:"id"`
 	Title         string     `json:"title"`
 	Status        string     `json:"status"`
-	DataLevel     string     `json:"data_level"`
+	DataLevel     string     `json:"-"`
 	MessageCount  int        `json:"message_count"`
 	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
 	ArchivedAt    *time.Time `json:"archived_at,omitempty"`
@@ -132,7 +132,7 @@ type StewardConversationMessage struct {
 	ConversationID   string                          `json:"conversation_id"`
 	Role             string                          `json:"role"`
 	Content          string                          `json:"content"`
-	DataLevel        string                          `json:"data_level"`
+	DataLevel        string                          `json:"-"`
 	Model            string                          `json:"model,omitempty"`
 	ContextSummary   string                          `json:"context_summary,omitempty"`
 	PayloadEncrypted bool                            `json:"payload_encrypted"`
@@ -208,7 +208,7 @@ type StewardAgentEpisode struct {
 	ResultSink          string                   `json:"result_sink,omitempty"`
 	IdempotencyKey      string                   `json:"idempotency_key,omitempty"`
 	Goal                string                   `json:"goal"`
-	DataLevel           string                   `json:"data_level"`
+	DataLevel           string                   `json:"-"`
 	Status              string                   `json:"status"`
 	CurrentRound        int                      `json:"current_round"`
 	ToolCallCount       int                      `json:"tool_call_count"`
@@ -253,7 +253,7 @@ type StewardConversationExecution struct {
 	OrchestrationID      string         `json:"orchestration_id,omitempty"`
 	TargetDeviceID       string         `json:"target_device_id"`
 	TargetDeviceName     string         `json:"target_device_name"`
-	PermissionLevel      string         `json:"permission_level"`
+	PermissionLevel      string         `json:"-"`
 	RiskLevel            string         `json:"risk_level"`
 	PlanHash             string         `json:"plan_hash"`
 	RequiresConfirmation bool           `json:"requires_confirmation"`
@@ -282,8 +282,8 @@ type StewardConversationSuggestion struct {
 	Summary          string    `json:"summary"`
 	Content          string    `json:"content"`
 	SuggestedAction  string    `json:"suggested_action"`
-	DataLevel        string    `json:"data_level"`
-	PermissionLevel  string    `json:"permission_level"`
+	DataLevel        string    `json:"-"`
+	PermissionLevel  string    `json:"-"`
 	RiskLevel        string    `json:"risk_level"`
 	Status           string    `json:"status"`
 	TargetID         *string   `json:"target_id,omitempty"`
@@ -734,7 +734,6 @@ type StewardAutonomyAdvisorStatus struct {
 	Provider            string     `json:"provider"`
 	Model               string     `json:"model,omitempty"`
 	BaseURL             string     `json:"base_url,omitempty"`
-	MaxDataLevel        string     `json:"max_data_level,omitempty"`
 	Reason              string     `json:"reason,omitempty"`
 	CircuitOpen         bool       `json:"circuit_open,omitempty"`
 	ConsecutiveFailures int        `json:"consecutive_failures,omitempty"`

@@ -8,7 +8,7 @@ import (
 func TestValidateModelSettingsRequiresSecretForRemoteEndpoint(t *testing.T) {
 	values := modelSettingsValues{
 		provider: "openai-compatible", baseURL: "https://models.example/v1", model: "example-model",
-		maxDataLevel: DataD1, timeoutSeconds: 30,
+		timeoutSeconds: 30,
 	}
 	if err := validateModelSettings(values); err == nil || !strings.Contains(err.Error(), "API key") {
 		t.Fatalf("expected API key validation error, got %v", err)
@@ -33,7 +33,7 @@ func TestModelSettingsKeyRecoveryRequiresExplicitMarker(t *testing.T) {
 func TestModelSettingsAllowNoKeyOnlyOnLoopback(t *testing.T) {
 	values := modelSettingsValues{
 		provider: "openai-compatible", baseURL: "http://127.0.0.1:11434/v1", model: "local-model",
-		allowNoAPIKey: true, maxDataLevel: DataD1, timeoutSeconds: 30,
+		allowNoAPIKey: true, timeoutSeconds: 30,
 	}
 	if err := validateModelSettings(values); err != nil {
 		t.Fatalf("expected loopback model settings to be accepted: %v", err)
@@ -51,7 +51,7 @@ func TestPublicModelSettingsNeverReturnsAPIKey(t *testing.T) {
 	service := NewService(nil)
 	values := modelSettingsValues{
 		provider: "openai-compatible", baseURL: "https://models.example/v1", model: "example-model",
-		apiKey: "secret-value-1234", maxDataLevel: DataD1, timeoutSeconds: 30, source: modelSettingsSourceDB,
+		apiKey: "secret-value-1234", timeoutSeconds: 30, source: modelSettingsSourceDB,
 	}
 	service.applyModelSettings(values)
 	public := service.publicModelSettings(values)

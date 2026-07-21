@@ -57,7 +57,7 @@ func TestOpenAICompatibleAgentTurnSendsProviderCompatibleOptionalTool(t *testing
 	}))
 	defer server.Close()
 
-	advisor := openAICompatibleAutonomyAdvisor{client: server.Client(), baseURL: server.URL, model: "test-model", maxDataLevel: DataD6}
+	advisor := openAICompatibleAutonomyAdvisor{client: server.Client(), baseURL: server.URL, model: "test-model"}
 	decision, err := advisor.NextTurn(context.Background(), AgentTurnInput{
 		Message: "probe", DataLevel: DataD0,
 		Tools: []domain.StewardToolSpec{{

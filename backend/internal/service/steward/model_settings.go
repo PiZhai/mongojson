@@ -43,7 +43,6 @@ type StewardModelSettings struct {
 	APIKeyConfigured        bool                                `json:"api_key_configured"`
 	APIKeyMask              string                              `json:"api_key_mask,omitempty"`
 	AllowNoAPIKey           bool                                `json:"allow_no_api_key"`
-	MaxDataLevel            string                              `json:"max_data_level,omitempty"`
 	TimeoutSeconds          int                                 `json:"timeout_seconds"`
 	AgentMaxRounds          int                                 `json:"agent_max_rounds"`
 	AgentMaxToolCalls       int                                 `json:"agent_max_tool_calls"`
@@ -62,7 +61,6 @@ type UpdateStewardModelSettingsInput struct {
 	Model                   *string `json:"model"`
 	APIKey                  *string `json:"api_key"`
 	AllowNoAPIKey           *bool   `json:"allow_no_api_key"`
-	MaxDataLevel            *string `json:"max_data_level"`
 	TimeoutSeconds          *int    `json:"timeout_seconds"`
 	AgentMaxRounds          *int    `json:"agent_max_rounds"`
 	AgentMaxToolCalls       *int    `json:"agent_max_tool_calls"`
@@ -77,7 +75,6 @@ type modelSettingsValues struct {
 	model                   string
 	apiKey                  string
 	allowNoAPIKey           bool
-	maxDataLevel            string
 	timeoutSeconds          int
 	agentMaxRounds          int
 	agentMaxToolCalls       int
@@ -119,9 +116,6 @@ func (s *Service) UpdateModelSettings(ctx context.Context, input UpdateStewardMo
 	if input.AllowNoAPIKey != nil {
 		current.allowNoAPIKey = *input.AllowNoAPIKey
 	}
-	if input.MaxDataLevel != nil {
-		current.maxDataLevel = strings.ToUpper(strings.TrimSpace(*input.MaxDataLevel))
-	}
 	if input.TimeoutSeconds != nil {
 		current.timeoutSeconds = *input.TimeoutSeconds
 	}
@@ -159,19 +153,19 @@ func (s *Service) UpdateModelSettings(ctx context.Context, input UpdateStewardMo
 	now := time.Now().UTC()
 	_, err = s.db.Pool.Exec(ctx, `
 		insert into steward_model_settings (
-			id, provider, base_url, model, api_key_encrypted, allow_no_api_key, max_data_level, timeout_seconds,
+			id, provider, base_url, model, api_key_encrypted, allow_no_api_key, timeout_seconds,
 			agent_max_rounds, agent_max_tool_calls, agent_max_duration_seconds, agent_no_progress_limit, agent_progress_detail, updated_at
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		on conflict (id) do update set
 			provider=excluded.provider, base_url=excluded.base_url, model=excluded.model,
 			api_key_encrypted=excluded.api_key_encrypted, allow_no_api_key=excluded.allow_no_api_key,
-			max_data_level=excluded.max_data_level, timeout_seconds=excluded.timeout_seconds,
+			timeout_seconds=excluded.timeout_seconds,
 			agent_max_rounds=excluded.agent_max_rounds, agent_max_tool_calls=excluded.agent_max_tool_calls,
 			agent_max_duration_seconds=excluded.agent_max_duration_seconds,
 			agent_no_progress_limit=excluded.agent_no_progress_limit, agent_progress_detail=excluded.agent_progress_detail,
 			updated_at=excluded.updated_at
 	`, primaryModelSettingsID, current.provider, current.baseURL, current.model, encryptedKey,
-		current.allowNoAPIKey, current.maxDataLevel, current.timeoutSeconds, current.agentMaxRounds,
+		current.allowNoAPIKey, current.timeoutSeconds, current.agentMaxRounds,
 		current.agentMaxToolCalls, current.agentMaxDurationSeconds, current.agentNoProgressLimit, current.agentProgressDetail, now)
 	if err != nil {
 		return StewardModelSettings{}, fmt.Errorf("save model settings: %w", err)
@@ -235,11 +229,11 @@ func (s *Service) loadPersistedModelSettings(ctx context.Context) (modelSettings
 	var encryptedKey map[string]any
 	var updatedAt time.Time
 	err := s.db.Pool.QueryRow(ctx, `
-		select provider, base_url, model, api_key_encrypted, allow_no_api_key, max_data_level, timeout_seconds,
+		select provider, base_url, model, api_key_encrypted, allow_no_api_key, timeout_seconds,
 		       agent_max_rounds, agent_max_tool_calls, agent_max_duration_seconds, agent_no_progress_limit, agent_progress_detail, updated_at
 		from steward_model_settings where id=$1
 	`, primaryModelSettingsID).Scan(&values.provider, &values.baseURL, &values.model, &encryptedKey,
-		&values.allowNoAPIKey, &values.maxDataLevel, &values.timeoutSeconds, &values.agentMaxRounds,
+		&values.allowNoAPIKey, &values.timeoutSeconds, &values.agentMaxRounds,
 		&values.agentMaxToolCalls, &values.agentMaxDurationSeconds, &values.agentNoProgressLimit, &values.agentProgressDetail, &updatedAt)
 	if err != nil {
 		return modelSettingsValues{}, err
@@ -277,11 +271,11 @@ func (s *Service) recoverPersistedModelSettingsAPIKey(ctx context.Context) (mode
 	var values modelSettingsValues
 	var updatedAt time.Time
 	err := s.db.Pool.QueryRow(ctx, `
-		select provider, base_url, model, allow_no_api_key, max_data_level, timeout_seconds,
+		select provider, base_url, model, allow_no_api_key, timeout_seconds,
 		       agent_max_rounds, agent_max_tool_calls, agent_max_duration_seconds, agent_no_progress_limit, agent_progress_detail, updated_at
 		from steward_model_settings where id=$1
 	`, primaryModelSettingsID).Scan(&values.provider, &values.baseURL, &values.model,
-		&values.allowNoAPIKey, &values.maxDataLevel, &values.timeoutSeconds, &values.agentMaxRounds,
+		&values.allowNoAPIKey, &values.timeoutSeconds, &values.agentMaxRounds,
 		&values.agentMaxToolCalls, &values.agentMaxDurationSeconds, &values.agentNoProgressLimit,
 		&values.agentProgressDetail, &updatedAt)
 	if err != nil {
@@ -322,7 +316,6 @@ func modelSettingsFromEnv() modelSettingsValues {
 		model:                   strings.TrimSpace(os.Getenv("STEWARD_LLM_MODEL")),
 		apiKey:                  strings.TrimSpace(os.Getenv("STEWARD_LLM_API_KEY")),
 		allowNoAPIKey:           allowNoKey,
-		maxDataLevel:            strings.ToUpper(strings.TrimSpace(envOrDefault("STEWARD_LLM_MAX_DATA_LEVEL", DataD1))),
 		timeoutSeconds:          int(durationEnv("STEWARD_LLM_TIMEOUT", 30*time.Second) / time.Second),
 		agentMaxRounds:          nonNegativeIntEnv("STEWARD_AGENT_MAX_ROUNDS", defaultAgentMaxRounds),
 		agentMaxToolCalls:       nonNegativeIntEnv("STEWARD_AGENT_MAX_TOOL_CALLS", defaultAgentMaxToolCalls),
@@ -368,9 +361,6 @@ func validateModelSettings(values modelSettingsValues) error {
 	if values.allowNoAPIKey && !runtimePlannerLoopbackHost(parsed.Hostname()) {
 		return errors.New("no-key mode is restricted to localhost endpoints")
 	}
-	if !validDataLevel(values.maxDataLevel) {
-		return errors.New("max_data_level must be D0-D6")
-	}
 	if values.timeoutSeconds < 1 || values.timeoutSeconds > 120 {
 		return errors.New("timeout_seconds must be between 1 and 120")
 	}
@@ -406,11 +396,11 @@ func modelClientsFromSettings(values modelSettingsValues) (AutonomyAdvisor, Runt
 	baseURL := strings.TrimRight(values.baseURL, "/")
 	advisor := openAICompatibleAutonomyAdvisor{
 		client: &http.Client{Timeout: timeout}, baseURL: baseURL, apiKey: values.apiKey,
-		model: values.model, maxDataLevel: values.maxDataLevel,
+		model: values.model,
 	}
 	planner := &openAICompatibleRuntimePlanner{
 		client: &http.Client{Timeout: timeout}, baseURL: baseURL, apiKey: values.apiKey,
-		model: values.model, maxDataLevel: values.maxDataLevel,
+		model: values.model,
 	}
 	return advisor, chainedRuntimePlanner{local: local, fallback: planner}
 }
@@ -419,15 +409,12 @@ func (s *Service) publicModelSettings(values modelSettingsValues) StewardModelSe
 	result := StewardModelSettings{
 		Provider: values.provider, BaseURL: values.baseURL, Model: values.model,
 		APIKeyConfigured: values.apiKey != "", AllowNoAPIKey: values.allowNoAPIKey,
-		MaxDataLevel: values.maxDataLevel, TimeoutSeconds: values.timeoutSeconds,
+		TimeoutSeconds: values.timeoutSeconds,
 		AgentMaxRounds: values.agentMaxRounds, AgentMaxToolCalls: values.agentMaxToolCalls,
 		AgentMaxDurationSeconds: values.agentMaxDurationSeconds, AgentNoProgressLimit: values.agentNoProgressLimit,
 		AgentProgressDetail: values.agentProgressDetail,
 		Source:              defaultString(values.source, modelSettingsSourceNone), UpdatedAt: values.updatedAt,
 		Advisor: s.autonomyAdvisor().Status(), Planner: s.runtimePlannerValue().Status(),
-	}
-	if ownerModeEnabled() {
-		result.MaxDataLevel = ""
 	}
 	if values.apiKey != "" {
 		result.APIKeyMask = "••••••••" + lastRunes(values.apiKey, 4)

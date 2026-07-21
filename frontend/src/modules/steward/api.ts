@@ -372,7 +372,7 @@ export async function getStewardCollectors() {
   return request<{ collectors: StewardCollectorConfig[] }>(`${API_BASE}/steward/collectors`)
 }
 
-export async function createStewardConversation(payload: { title?: string; data_level?: string }) {
+export async function createStewardConversation(payload: { title?: string }) {
   return request<{ conversation: StewardConversation }>(`${API_BASE}/steward/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -388,7 +388,7 @@ export async function getStewardConversationMessages(id: string, limit = 100) {
 
 export async function sendStewardConversationMessage(
   id: string,
-  payload: { content: string; data_level?: string; context_limit?: number },
+  payload: { content: string; context_limit?: number },
 ) {
   return request<{ conversation: StewardConversation; message: StewardConversationMessage }>(
     `${API_BASE}/steward/conversations/${encodeURIComponent(id)}/messages`,
@@ -1039,7 +1039,6 @@ export async function updateStewardModelSettings(payload: {
   model?: string
   api_key?: string
   allow_no_api_key?: boolean
-  max_data_level?: string
   timeout_seconds?: number
   agent_max_rounds?: number
   agent_max_tool_calls?: number
@@ -1088,7 +1087,7 @@ export async function probeStewardModelConnection() {
   return request<{ probe: StewardModelProbe }>(`${API_BASE}/steward/autonomy/advisor/probe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data_level: 'D0' }),
+    body: JSON.stringify({}),
   })
 }
 

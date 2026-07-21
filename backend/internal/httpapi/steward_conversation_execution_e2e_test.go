@@ -22,7 +22,7 @@ type r45AgentAdvisor struct {
 const r45ConversationEchoProof = "r45-conversation-echo-proof"
 
 func (r45AgentAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r45-test", Model: "r45-agent-test", MaxDataLevel: "D6"}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r45-test", Model: "r45-agent-test"}
 }
 
 func (r45AgentAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
@@ -62,22 +62,19 @@ func TestStewardR45ConversationExecutesAndControlsLocalTasks(t *testing.T) {
 	defer cancel()
 	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r45_conversation"), "r45-local",
 		steward.WithAutonomyAdvisor(r45AgentAdvisor{}), steward.WithRuntimeR2Enabled(true))
-	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R4.5 acceptance", DataLevel: "D0"})
+	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "R4.5 acceptance"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	created, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{
-		Content: "执行内置回显并返回真实证据", DataLevel: "D0",
+		Content: "执行内置回显并返回真实证据",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "thinking" || created.Message.Episodes[0].CurrentRound != 0 {
-		t.Fatalf("low-risk conversation was not durably queued for the Agent worker: %+v", created.Message)
-	}
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 5); err != nil {
-		t.Fatal(err)
+	if len(created.Message.Episodes) != 1 || created.Message.Episodes[0].Status != "executing" || created.Message.Episodes[0].CurrentRound != 1 {
+		t.Fatalf("tool request was not classified and dispatched directly: %+v", created.Message)
 	}
 	dispatched, err := node.service.GetAgentEpisode(ctx, created.Message.Episodes[0].ID)
 	if err != nil {
@@ -128,15 +125,12 @@ func TestStewardR45ConversationExecutesAndControlsLocalTasks(t *testing.T) {
 		t.Fatalf("Agent did not complete after receiving verified builtin output: %+v", completed)
 	}
 
-	question, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "帮我整理一下", DataLevel: "D0"})
+	question, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "帮我整理一下"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(question.Message.Episodes) != 1 || question.Message.Episodes[0].Status != "thinking" {
-		t.Fatalf("ambiguous request was not durably queued: %+v", question.Message)
-	}
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 5); err != nil {
-		t.Fatal(err)
+	if len(question.Message.Episodes) != 1 || question.Message.Episodes[0].Status != "awaiting_input" {
+		t.Fatalf("ambiguous request did not ask for the missing detail directly: %+v", question.Message)
 	}
 	questionEpisode, err := node.service.GetAgentEpisode(ctx, question.Message.Episodes[0].ID)
 	if err != nil {
@@ -166,7 +160,7 @@ type r46ModelFirstAdvisor struct {
 }
 
 func (r46ModelFirstAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r46-test", Model: "model-first-test", MaxDataLevel: "D6"}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "r46-test", Model: "model-first-test"}
 }
 
 func (r46ModelFirstAdvisor) Suggest(context.Context, steward.AutonomyAdvisorInput) (steward.AutonomyAdvisorSuggestion, error) {
@@ -285,7 +279,7 @@ func TestStewardManualMessageDoesNotInheritConversationDataLevel(t *testing.T) {
 	defer cancel()
 	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r46_manual_message"), "r46-manual-message",
 		steward.WithAutonomyAdvisor(r46ModelFirstAdvisor{}))
-	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "主动管家", DataLevel: "D2"})
+	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{Title: "主动管家"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +320,7 @@ func (r45MultiStepPlanner) Plan(context.Context, steward.RuntimePlannerInput) (s
 	}, nil
 }
 
-func TestStewardR45ConversationAutomaticallyChoosesMultiAgentOrchestration(t *testing.T) {
+func TestStewardR45ConversationKeepsLocalMultiToolWorkInOneExecution(t *testing.T) {
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 	t.Setenv("STEWARD_LOCAL_ENCRYPTION_KEY_ID", "r45-test")
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
@@ -338,31 +332,26 @@ func TestStewardR45ConversationAutomaticallyChoosesMultiAgentOrchestration(t *te
 	node := newStewardHTTPNode(t, ctx, temporaryPostgresDatabaseConfig(t, ctx, baseDSN, "runtime_r45_multi_agent"), "r45-multi",
 		steward.WithAutonomyAdvisor(r45AgentAdvisor{multi: true}), steward.WithRuntimeR2Enabled(true), steward.WithRuntimePlanner(r45MultiStepPlanner{}),
 		steward.WithOrchestrationR4Enabled(true), steward.WithOrchestrationSigningKey(bytes.Repeat([]byte{0x45}, 32)))
-	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{DataLevel: "D0"})
+	conversation, err := node.service.CreateConversation(ctx, steward.CreateConversationInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "帮我完成两步整理", DataLevel: "D0"})
+	result, err := node.service.SendConversationMessage(ctx, conversation.ID, steward.SendConversationMessageInput{Content: "帮我完成两步整理"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Message.Episodes) != 1 || result.Message.Episodes[0].Status != "thinking" || result.Message.Episodes[0].CurrentRound != 0 {
-		t.Fatalf("multi-step instruction was not durably queued: %+v", result.Message)
-	}
-	if _, err := node.service.RunAgentEpisodeCycle(ctx, 10); err != nil {
-		t.Fatal(err)
+	if len(result.Message.Episodes) != 1 || result.Message.Episodes[0].Status != "executing" || result.Message.Episodes[0].CurrentRound != 1 {
+		t.Fatalf("multi-tool instruction was not dispatched directly: %+v", result.Message)
 	}
 	queuedMessages, err := node.service.ListConversationMessages(ctx, conversation.ID, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	queuedExecution := latestR45Execution(t, queuedMessages)
-	if queuedExecution.Kind != "orchestration" || queuedExecution.Status != "queued" {
-		t.Fatalf("worker did not create a silent orchestration: %+v", queuedExecution)
+	if queuedExecution.Kind != "run" || queuedExecution.RunID == "" || queuedExecution.OrchestrationID != "" {
+		t.Fatalf("local tools were expanded into an orchestration: %+v", queuedExecution)
 	}
 	for index := 0; index < 12; index++ {
-		_, _ = node.service.RunOrchestrationCycle(ctx, 10)
-		_, _ = node.service.RunConversationExecutionCycle(ctx, 10)
 		_, _ = node.service.RunAgentRuntimeCycle(ctx, 10)
 		_, _ = node.service.RunConversationExecutionRefreshCycle(ctx, 10)
 		_, _ = node.service.RunAgentEpisodeCycle(ctx, 10)
@@ -372,8 +361,12 @@ func TestStewardR45ConversationAutomaticallyChoosesMultiAgentOrchestration(t *te
 		t.Fatal(err)
 	}
 	execution := latestR45Execution(t, messages)
-	if execution.Status != "succeeded" || intFromR45Evidence(execution.Evidence["child_run_count"]) != 2 {
-		t.Fatalf("multi-Agent state/evidence did not return to conversation: %+v", execution)
+	episode, getErr := node.service.GetAgentEpisode(ctx, result.Message.Episodes[0].ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if execution.Status != "succeeded" || episode.Status != "completed" || len(episode.Turns) != 2 || len(episode.Turns[0].ToolResults) != 2 {
+		t.Fatalf("local tool results did not return through one execution: %+v", execution)
 	}
 }
 

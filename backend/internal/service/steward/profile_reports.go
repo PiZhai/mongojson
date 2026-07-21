@@ -2079,6 +2079,13 @@ func (s *Service) EnsureDueIntelligenceJobs(ctx context.Context, now time.Time) 
 	}
 	created := 0
 	for _, period := range periods {
+		hasEvidence, evidenceErr := s.intelligencePeriodHasEvidence(ctx, period)
+		if evidenceErr != nil {
+			return created, evidenceErr
+		}
+		if !hasEvidence {
+			continue
+		}
 		timezone := strings.TrimSpace(settings.Timezone)
 		if timezone == "" {
 			timezone = period.DueAt.Location().String()
@@ -2099,6 +2106,33 @@ func (s *Service) EnsureDueIntelligenceJobs(ctx context.Context, now time.Time) 
 		}
 	}
 	return created, nil
+}
+
+// intelligencePeriodHasEvidence prevents a fresh installation from filling the
+// worker queue with synthetic catch-up work for days where nothing was
+// collected. Catch-up is useful only when a period has persisted source data.
+func (s *Service) intelligencePeriodHasEvidence(ctx context.Context, period dueIntelligencePeriod) (bool, error) {
+	var exists bool
+	err := s.db.Pool.QueryRow(ctx, `
+		select exists (
+			select 1 from steward_observations
+			where occurred_at >= $1 and occurred_at < $2
+			union all
+			select 1 from steward_activity_sessions
+			where started_at < $2 and ended_at > $1
+			union all
+			select 1 from steward_activity_batches
+			where window_start < $2 and window_end > $1
+			union all
+			select 1 from steward_profile_facts
+			where $3 and coalesce(valid_from,created_at) >= $1 and coalesce(valid_from,created_at) < $2
+			limit 1
+		)
+	`, period.Start.UTC(), period.End.UTC(), period.Kind == intelligenceJobProfileConsolidation).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check intelligence period evidence: %w", err)
+	}
+	return exists, nil
 }
 
 func intelligenceJobReportCadence(kind string) string {

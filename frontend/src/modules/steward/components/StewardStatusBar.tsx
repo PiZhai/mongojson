@@ -1,20 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   getStewardBackgroundStatus,
-  getStewardExecutionControl,
-  getStewardRuntimePlanner,
   probeStewardModelConnection,
   stewardModelProbeError,
 } from '../api'
-import type {
-  StewardBackgroundStatus,
-  StewardRuntimeExecutionControl,
-  StewardRuntimePlannerStatus,
-} from '../types'
+import type { StewardBackgroundStatus } from '../types'
 import { ToolLibraryDialog } from './ToolLibraryDialog'
 import { NotificationCenterDialog } from './NotificationCenterDialog'
 import { PersonalIntelligenceDialog } from './PersonalIntelligenceDialog'
-import { findPersonalIntelligenceLoop } from './personalIntelligencePresentation'
 
 type Props = {
   refreshToken: number
@@ -22,8 +15,6 @@ type Props = {
 
 type StatusSnapshot = {
 	background: StewardBackgroundStatus
-	planner?: StewardRuntimePlannerStatus
-	control?: StewardRuntimeExecutionControl
 }
 
 export function StewardStatusBar({ refreshToken }: Props) {
@@ -44,12 +35,7 @@ export function StewardStatusBar({ refreshToken }: Props) {
         if (!probe.ok) throw new Error(stewardModelProbeError(probe))
       }
 		const background = await getStewardBackgroundStatus()
-		if (probeModel) {
-			const [planner, control] = await Promise.all([getStewardRuntimePlanner(), getStewardExecutionControl()])
-			setSnapshot({ background: background.status, planner: planner.planner, control: control.control })
-		} else {
-			setSnapshot((current) => ({ background: background.status, planner: current?.planner, control: current?.control }))
-		}
+		setSnapshot({ background: background.status })
       setCheckedAt(new Date())
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '状态检查失败')
@@ -69,11 +55,6 @@ export function StewardStatusBar({ refreshToken }: Props) {
   }, [refresh])
 
 	const background = snapshot?.background
-	const stopped = snapshot?.control?.stopped ?? snapshot?.control?.paused ?? false
-	const broker = snapshot?.control?.broker
-  const brokerReady = Boolean(broker?.configured && broker.reachable && !broker.error)
-	const watchdogReady = Boolean(snapshot?.control?.watchdog.enabled && snapshot.control.watchdog.stale_invocations === 0)
-	const proactiveLoop = findPersonalIntelligenceLoop(background?.loops)
 	const sourceCount = background?.pipeline.sources.length ?? 0
 	const freshSourceCount = background?.pipeline.sources.filter((source) => source.fresh).length ?? 0
 	const activityReady = Boolean(background?.pipeline.enabled && sourceCount > 0 && sourceCount === freshSourceCount)
@@ -97,14 +78,8 @@ export function StewardStatusBar({ refreshToken }: Props) {
         </div>
 
         <div className="steward-status-chips" aria-live="polite">
-			<StatusChip ready={background?.agent.status === 'running'} label="Agent" value={agentLabel(background?.agent.status)} />
 			<StatusChip ready={modelReady} label="模型" title={background?.model.last_error} value={modelLabel} />
-			<StatusChip ready={snapshot?.planner?.enabled === true} label="规划" value={snapshot?.planner ? snapshot.planner.enabled ? '可用' : '不可用' : '全面检查'} />
-			<StatusChip ready={activityReady} label="活动采集" value={!background?.pipeline.enabled ? '未启用' : sourceCount === 0 ? '无心跳' : `${freshSourceCount}/${sourceCount} 新鲜`} />
-			<StatusChip ready={Boolean(proactiveLoop?.enabled && proactiveLoop.consecutive_failures === 0)} label="主动管家" value={!proactiveLoop?.enabled ? '未启用' : proactiveLoop.consecutive_failures > 0 ? `失败 ${proactiveLoop.consecutive_failures} 次` : '循环正常'} />
-          <StatusChip ready={!stopped} label="执行" value={stopped ? '已停止' : '允许'} />
-			<StatusChip ready={watchdogReady} label="Watchdog" value={!snapshot?.control ? '全面检查' : watchdogReady ? '正常' : '需检查'} />
-			<StatusChip ready={brokerReady} label="Broker" value={!snapshot?.control ? '全面检查' : !broker?.configured ? '未配置' : brokerReady ? '正常' : '异常'} />
+			<StatusChip ready={activityReady} label="自动采集" value={!background?.pipeline.enabled ? '未启用' : sourceCount === 0 ? '等待数据' : '运行中'} />
         </div>
       </div>
 
@@ -112,7 +87,7 @@ export function StewardStatusBar({ refreshToken }: Props) {
 		<button className="steward-button steward-button-secondary steward-status-check" onClick={() => setIntelligenceOpen(true)} type="button">个人智能</button>
         <button className="steward-button steward-button-secondary steward-status-check" onClick={() => setNotificationsOpen(true)} type="button">通知</button>
         <button className="steward-button steward-button-secondary steward-status-check" onClick={() => setToolsOpen(true)} type="button">工具库</button>
-        <button className="steward-button steward-status-check" disabled={checking} onClick={() => void refresh(true)} type="button">{checking ? '检查中…' : '全面检查'}</button>
+        <button className="steward-button steward-status-check" disabled={checking} onClick={() => void refresh(true)} type="button">{checking ? '检查中…' : '检查连接'}</button>
       </div>
 
       {error ? <div className="steward-status-error" role="alert">{error}</div> : null}
@@ -133,19 +108,10 @@ function StatusChip({ label, ready, title, value }: { label: string; ready: bool
   )
 }
 
-function agentLabel(status?: StewardBackgroundStatus['agent']['status']) {
-  if (status === 'running') return '运行中'
-  if (status === 'degraded') return '降级'
-  if (status === 'starting') return '启动中'
-  if (status === 'stopping') return '停止中'
-  if (status === 'error') return '异常'
-  return '已停止'
-}
-
 function backgroundStateLabel(state?: StewardBackgroundStatus['state']) {
-	if (state === 'healthy') return '管家后台正常'
-	if (state === 'degraded') return '管家部分降级'
-	if (state === 'unhealthy') return '管家后台异常'
-	if (state === 'disabled') return '持续智能已关闭'
+	if (state === 'healthy') return '管家在线'
+	if (state === 'degraded') return '管家需要检查'
+	if (state === 'unhealthy') return '管家离线'
+	if (state === 'disabled') return '自动采集已关闭'
 	return '管家在线'
 }

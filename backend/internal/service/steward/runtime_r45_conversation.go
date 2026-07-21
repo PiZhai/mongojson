@@ -112,9 +112,9 @@ func (s *Service) createConversationExecutionFromPlanLinked(ctx context.Context,
 	}
 	requiresConfirmation := capability != "" || (!ownerModeEnabled() && (risk != "low" || permissionRank(permission) > permissionRank(PermissionA3)))
 	summary := truncateAdvisorText(defaultString(strings.TrimSpace(plan.Summary), instruction), 1000)
-	responseText := "我已生成执行计划。"
+	responseText := "正在执行。"
 	if requiresConfirmation {
-		responseText = "计划已就绪，需要你确认后执行。"
+		responseText = "这个操作需要你确认后执行。"
 	} else {
 		responseText = "开始执行，我会在这里更新状态和结果。"
 	}
@@ -136,7 +136,10 @@ func (s *Service) createConversationExecutionFromPlanLinked(ctx context.Context,
 	if requiresConfirmation {
 		execution.ConfirmationReason = conversationConfirmationReason(permission, risk, target.Remote, capability)
 	}
-	if !target.Remote && len(plan.Steps) == 1 {
+	// Local tool calls belong to one ordinary execution. Splitting a multi-tool
+	// model response into orchestration agents adds queueing and UI complexity
+	// without adding isolation or capability.
+	if !target.Remote {
 		idempotencyKey := defaultString(link.IdempotencyKey, "conversation:"+userMessage.ID)
 		run, createErr := s.CreateAgentRun(ctx, CreateAgentRunInput{
 			Goal: summary, Mode: "planned", IdempotencyKey: idempotencyKey,
@@ -595,7 +598,7 @@ func (s *Service) refreshConversationExecution(ctx context.Context, item domain.
 		failure, completed = orchestration.FailureSummary, orchestration.CompletedAt
 		evidence = map[string]any{
 			"child_run_count": orchestration.Evidence.ChildRunCount, "artifact_count": orchestration.Evidence.ArtifactCount,
-			"redacted_count": orchestration.Evidence.RedactedCount, "data_levels": orchestration.Evidence.DataLevels,
+			"redacted_count":  orchestration.Evidence.RedactedCount,
 			"manifest_sha256": orchestration.Evidence.ManifestSHA256,
 		}
 		toolResults = s.conversationOrchestrationToolResults(ctx, orchestration)
@@ -833,13 +836,11 @@ func conversationExecutionStatus(status string) string {
 
 func (s *Service) conversationRunEvidence(ctx context.Context, runID string) map[string]any {
 	var artifacts, redacted int
-	var levels []string
 	_ = s.db.Pool.QueryRow(ctx, `
-		select count(*)::int, count(*) filter (where redacted)::int,
-		       coalesce(array_agg(distinct data_level) filter (where data_level<>''), array[]::text[])
+		select count(*)::int, count(*) filter (where redacted)::int
 		from steward_evidence_artifacts where run_id=$1
-	`, runID).Scan(&artifacts, &redacted, &levels)
-	return map[string]any{"artifact_count": artifacts, "redacted_count": redacted, "data_levels": levels}
+	`, runID).Scan(&artifacts, &redacted)
+	return map[string]any{"artifact_count": artifacts, "redacted_count": redacted}
 }
 
 func (s *Service) DecideConversationExecution(ctx context.Context, id string, input DecideConversationExecutionInput) (domain.StewardConversationExecution, error) {

@@ -511,11 +511,10 @@ func TestOpenAICompatibleAdvisorCallsChatCompletions(t *testing.T) {
 	defer server.Close()
 
 	advisor := openAICompatibleAutonomyAdvisor{
-		client:       server.Client(),
-		baseURL:      server.URL,
-		apiKey:       "test-key",
-		model:        "test-model",
-		maxDataLevel: DataD1,
+		client:  server.Client(),
+		baseURL: server.URL,
+		apiKey:  "test-key",
+		model:   "test-model",
 	}
 	suggestion, err := advisor.Suggest(context.Background(), AutonomyAdvisorInput{
 		Kind:             "verification_probe",
@@ -537,25 +536,27 @@ func TestOpenAICompatibleAdvisorCallsChatCompletions(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatibleAdvisorBlocksDataAboveMaxWithoutRequest(t *testing.T) {
+func TestOpenAICompatibleAdvisorDoesNotGateOwnerDataByLegacyLevel(t *testing.T) {
 	called := false
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{
+			"content": `{"title":"ok","summary":"ok","trigger_reason":"owner","suggested_action":"answer","impact_summary":"none"}`,
+		}}}})
 	}))
 	defer server.Close()
 
 	advisor := openAICompatibleAutonomyAdvisor{
-		client:       server.Client(),
-		baseURL:      server.URL,
-		model:        "test-model",
-		maxDataLevel: DataD1,
+		client:  server.Client(),
+		baseURL: server.URL,
+		model:   "test-model",
 	}
-	_, err := advisor.Suggest(context.Background(), AutonomyAdvisorInput{DataLevel: DataD2})
-	if err == nil || !strings.Contains(err.Error(), "exceeds advisor max") {
-		t.Fatalf("expected max data level error, got %v", err)
+	_, err := advisor.Suggest(context.Background(), AutonomyAdvisorInput{DataLevel: DataD6})
+	if err != nil {
+		t.Fatalf("legacy data level still blocked the configured model: %v", err)
 	}
-	if called {
-		t.Fatalf("advisor should not issue HTTP request for data above max level")
+	if !called {
+		t.Fatal("configured model was not called")
 	}
 }
 
@@ -578,7 +579,7 @@ func TestOpenAICompatibleAdvisorConcludesWithNativeToolResult(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]any{"content": "已在桌面创建动漫文件夹。"}}}})
 	}))
 	defer server.Close()
-	advisor := openAICompatibleAutonomyAdvisor{client: server.Client(), baseURL: server.URL, model: "test-model", maxDataLevel: DataD6}
+	advisor := openAICompatibleAutonomyAdvisor{client: server.Client(), baseURL: server.URL, model: "test-model"}
 	content, err := advisor.ConcludeToolCalls(context.Background(), ConversationToolResultInput{
 		Message: "在桌面创建动漫文件夹", DataLevel: DataD0, ReasoningContent: "reasoning-token",
 		Results: []ConversationToolResult{{ID: "call_1", ToolName: "fs.create_directory", Arguments: map[string]any{"path": "desktop/动漫"}, Output: map[string]any{"created": true}}},
@@ -684,7 +685,7 @@ type fakeAutonomyAdvisor struct {
 }
 
 func (f fakeAutonomyAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "fake", MaxDataLevel: DataD1}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "fake"}
 }
 
 func (f fakeAutonomyAdvisor) Suggest(context.Context, AutonomyAdvisorInput) (AutonomyAdvisorSuggestion, error) {
@@ -698,7 +699,7 @@ type scriptedAutonomyAdvisor struct {
 }
 
 func (f *scriptedAutonomyAdvisor) Status() domain.StewardAutonomyAdvisorStatus {
-	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "scripted", MaxDataLevel: DataD1}
+	return domain.StewardAutonomyAdvisorStatus{Enabled: true, Provider: "scripted"}
 }
 
 func (f *scriptedAutonomyAdvisor) Suggest(context.Context, AutonomyAdvisorInput) (AutonomyAdvisorSuggestion, error) {

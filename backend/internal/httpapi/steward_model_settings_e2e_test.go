@@ -30,7 +30,7 @@ func TestStewardModelSettingsHTTPPersistsEncryptedSecretWithoutReturningIt(t *te
 	const secret = "model-secret-must-never-be-returned-1234"
 	payload := map[string]any{
 		"provider": "openai-compatible", "base_url": "http://127.0.0.1:11434/v1", "model": "local-test-model",
-		"api_key": secret, "allow_no_api_key": false, "max_data_level": "D1", "timeout_seconds": 20,
+		"api_key": secret, "allow_no_api_key": false, "timeout_seconds": 20,
 	}
 	body, _ := json.Marshal(payload)
 	blockedRequest, _ := http.NewRequestWithContext(ctx, http.MethodPatch, node.apiBase+"/steward/model-settings", bytes.NewReader(body))

@@ -268,12 +268,11 @@ func (p chainedRuntimePlanner) Plan(ctx context.Context, input RuntimePlannerInp
 }
 
 type openAICompatibleRuntimePlanner struct {
-	client       *http.Client
-	baseURL      string
-	apiKey       string
-	model        string
-	maxDataLevel string
-	disabled     string
+	client   *http.Client
+	baseURL  string
+	apiKey   string
+	model    string
+	disabled string
 }
 
 func newRuntimePlannerFromEnv() RuntimePlanner {
@@ -309,11 +308,6 @@ func newRuntimePlannerFromEnv() RuntimePlanner {
 		remote.disabled = "planner allow-no-api-key is restricted to loopback endpoints"
 		return chainedRuntimePlanner{local: local, fallback: remote}
 	}
-	remote.maxDataLevel = strings.ToUpper(strings.TrimSpace(defaultString(os.Getenv("STEWARD_RUNTIME_PLANNER_MAX_DATA_LEVEL"), defaultString(os.Getenv("STEWARD_LLM_MAX_DATA_LEVEL"), DataD1))))
-	if !validRuntimeDataLevel(remote.maxDataLevel) {
-		remote.disabled = "planner max data level must be D0-D6"
-		return chainedRuntimePlanner{local: local, fallback: remote}
-	}
 	timeout := durationEnv("STEWARD_RUNTIME_PLANNER_TIMEOUT", 30*time.Second)
 	if timeout <= 0 || timeout > 2*time.Minute {
 		timeout = 30 * time.Second
@@ -345,9 +339,6 @@ func (p *openAICompatibleRuntimePlanner) Status() domain.StewardRuntimePlannerSt
 func (p *openAICompatibleRuntimePlanner) Plan(ctx context.Context, input RuntimePlannerInput) (RuntimePlanDraft, error) {
 	if !p.Status().Enabled {
 		return RuntimePlanDraft{}, fmt.Errorf("%w: %s", ErrRuntimePlannerUnsupported, p.Status().Reason)
-	}
-	if !ownerModeEnabled() && dataLevelRank(input.DataLevel) > dataLevelRank(p.maxDataLevel) {
-		return RuntimePlanDraft{}, fmt.Errorf("%w: data level %s exceeds planner max %s", ErrAdvisorDataLevelDenied, input.DataLevel, p.maxDataLevel)
 	}
 	toolsJSON, _ := json.Marshal(input.Tools)
 	payload := map[string]any{

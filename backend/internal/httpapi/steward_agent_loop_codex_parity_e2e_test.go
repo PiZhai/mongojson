@@ -43,10 +43,10 @@ func (a *codexParityTaskAdvisor) NextTurn(ctx context.Context, input steward.Age
 	a.calls++
 	callNumber := a.calls
 	a.mu.Unlock()
-	if callNumber == 1 && a.started != nil {
+	if callNumber == 2 && a.started != nil {
 		close(a.started)
 	}
-	if callNumber == 1 && a.release != nil {
+	if callNumber == 2 && a.release != nil {
 		select {
 		case <-a.release:
 		case <-ctx.Done():
@@ -189,16 +189,12 @@ func TestStewardAgentCodexParityDefaultUnlimitedLoopExceedsTwelveRounds(t *testi
 	}
 	episodeID := created.Message.Episodes[0].ID
 	queued := created.Message.Episodes[0]
-	if queued.Status != "thinking" || queued.CurrentRound != 0 || queued.ToolCallCount != 0 ||
+	if queued.Status != "executing" || queued.CurrentRound != 1 || queued.ToolCallCount != 1 ||
 		queued.MaxRounds != 0 || queued.MaxToolCalls != 0 || queued.MaxDurationSeconds != 0 {
 		t.Fatalf("long-loop Episode did not start with unlimited defaults: %+v", queued)
 	}
 
 	for round := 1; round <= codexParityLongLoopToolRounds; round++ {
-		processed, cycleErr := node.service.RunAgentEpisodeCycle(ctx, 1)
-		if cycleErr != nil || processed != 1 {
-			t.Fatalf("round %d model cycle failed: processed=%d err=%v", round, processed, cycleErr)
-		}
 		dispatched, getErr := node.service.GetAgentEpisode(ctx, episodeID)
 		if getErr != nil {
 			t.Fatal(getErr)
@@ -221,6 +217,12 @@ func TestStewardAgentCodexParityDefaultUnlimitedLoopExceedsTwelveRounds(t *testi
 		}
 		if withResult.Status != "thinking" || withResult.CurrentRound != round || len(withResult.Turns) != round {
 			t.Fatalf("round %d tool result did not return to the model boundary: %+v", round, withResult)
+		}
+		if round < codexParityLongLoopToolRounds {
+			processed, cycleErr := node.service.RunAgentEpisodeCycle(ctx, 1)
+			if cycleErr != nil || processed != 1 {
+				t.Fatalf("round %d next model cycle failed: processed=%d err=%v", round, processed, cycleErr)
+			}
 		}
 	}
 	processed, err := node.service.RunAgentEpisodeCycle(ctx, 1)
@@ -309,6 +311,12 @@ func TestStewardAgentCodexParityConcurrentServicesAdvanceEpisodeOnce(t *testing.
 		t.Fatalf("queued message has no durable Episode: %+v", created.Message)
 	}
 	episodeID := created.Message.Episodes[0].ID
+	if _, err := node.service.RunAgentRuntimeCycle(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.service.RunConversationExecutionRefreshCycle(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
 
 	start := make(chan struct{})
 	results := make(chan struct {
@@ -334,7 +342,7 @@ func TestStewardAgentCodexParityConcurrentServicesAdvanceEpisodeOnce(t *testing.
 		}
 		processed += result.processed
 	}
-	if processed != 1 || advisor.callCount() != 1 {
+	if processed != 1 || advisor.callCount() != 2 {
 		t.Fatalf("two Services advanced the same model boundary: processed=%d advisor_calls=%d", processed, advisor.callCount())
 	}
 
@@ -379,6 +387,12 @@ func TestStewardAgentCodexParitySlowAdvisorCannotBeDoubleAdvancedAfterLeaseExpir
 		t.Fatal(err)
 	}
 	episodeID := created.Message.Episodes[0].ID
+	if _, err := node.service.RunAgentRuntimeCycle(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.service.RunConversationExecutionRefreshCycle(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
 
 	firstDone := make(chan struct {
 		processed int
@@ -406,7 +420,7 @@ func TestStewardAgentCodexParitySlowAdvisorCannotBeDoubleAdvancedAfterLeaseExpir
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secondProcessed != 0 || advisor.callCount() != 1 {
+	if secondProcessed != 0 || advisor.callCount() != 2 {
 		t.Fatalf("expired lease allowed a second model call: processed=%d advisor_calls=%d", secondProcessed, advisor.callCount())
 	}
 	close(release)
@@ -414,7 +428,7 @@ func TestStewardAgentCodexParitySlowAdvisorCannotBeDoubleAdvancedAfterLeaseExpir
 	if first.err != nil {
 		t.Fatal(first.err)
 	}
-	if first.processed != 1 || advisor.callCount() != 1 {
+	if first.processed != 1 || advisor.callCount() != 2 {
 		t.Fatalf("the fenced slow turn was discarded or duplicated: processed=%d advisor_calls=%d", first.processed, advisor.callCount())
 	}
 

@@ -20,13 +20,11 @@ const (
 )
 
 type CreateConversationInput struct {
-	Title     string `json:"title"`
-	DataLevel string `json:"data_level"`
+	Title string `json:"title"`
 }
 
 type SendConversationMessageInput struct {
 	Content      string `json:"content"`
-	DataLevel    string `json:"data_level"`
 	ContextLimit int    `json:"context_limit"`
 }
 
@@ -44,21 +42,14 @@ type SendConversationMessageResult struct {
 }
 
 func (s *Service) CreateConversation(ctx context.Context, input CreateConversationInput) (domain.StewardConversation, error) {
-	level, err := conversationDataLevel(input.DataLevel)
-	if err != nil {
-		return domain.StewardConversation{}, err
-	}
 	now := time.Now().UTC()
 	record := domain.StewardConversation{
 		ID:        uuid.NewString(),
 		Title:     defaultString(truncateAdvisorText(input.Title, 120), "新对话"),
 		Status:    StatusActive,
-		DataLevel: level,
+		DataLevel: DataD0,
 		CreatedAt: now,
 		UpdatedAt: now,
-	}
-	if !ownerModeEnabled() && dataLevelRank(level) >= dataLevelRank(DataD4) {
-		record.Title = level + " 加密对话"
 	}
 	if _, err := s.db.Pool.Exec(ctx, `
 		insert into steward_conversations (id, title, status, data_level, created_at, updated_at)
@@ -181,23 +172,13 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	if conversation.ArchivedAt != nil {
 		return SendConversationMessageResult{}, fmt.Errorf("conversation is archived; restore it before sending messages")
 	}
-	// The conversation level describes data already stored in the thread; it is
-	// not the provenance of a new message typed by the user. Inheriting it here
-	// made ordinary questions in the proactive D2 thread fail policy checks
-	// before the configured model was called. A manually submitted message is
-	// D0 unless the caller explicitly labels it, and the content classifier below
-	// can still promote credentials or other sensitive input to a stricter level.
-	level, err := conversationDataLevel(defaultString(input.DataLevel, DataD0))
+	// Conversations are an owner-controlled assistant surface. The legacy
+	// data_level column remains a storage-compatibility value only and does not
+	// classify, redact, route or block a user message.
+	level := DataD0
+	history, err := s.conversationAdvisorHistory(ctx, conversationID, 12)
 	if err != nil {
 		return SendConversationMessageResult{}, err
-	}
-	level, _ = ClassifyObservationDataLevel(CreateObservationInput{DataLevel: level, Summary: content})
-	var history []ConversationAdvisorMessage
-	if !supportsNativeAgentTurns(s.autonomyAdvisor()) {
-		history, err = s.conversationAdvisorHistory(ctx, conversationID, 12)
-		if err != nil {
-			return SendConversationMessageResult{}, err
-		}
 	}
 	userMessage, err := s.insertConversationMessage(ctx, conversationID, conversationRoleUser, content, level, "", "")
 	if err != nil {
@@ -208,7 +189,7 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 		if executionErr != nil {
 			return SendConversationMessageResult{}, executionErr
 		}
-		if (conversation.MessageCount == 0 || conversation.Title == "新对话") && dataLevelRank(level) < dataLevelRank(DataD4) {
+		if conversation.MessageCount == 0 || conversation.Title == "新对话" {
 			_, _ = s.db.Pool.Exec(ctx, `update steward_conversations set title = $1, updated_at = $2 where id = $3`, truncateAdvisorText(content, 48), time.Now().UTC(), conversationID)
 		}
 		conversation, err = s.getConversation(ctx, conversationID)
@@ -235,17 +216,6 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	response := localConversationFallback(content)
 	model := "local-fallback"
 	advisorEnabled := s.autonomyAdvisor().Status().Enabled
-	if advisorEnabled && supportsNativeAgentTurns(s.autonomyAdvisor()) {
-		progress, _, queueErr := s.enqueueConversationAgentEpisode(ctx, conversation, userMessage, content, level)
-		if queueErr != nil {
-			return SendConversationMessageResult{}, queueErr
-		}
-		conversation, err = s.finishConversationTurn(ctx, conversation, content, level)
-		if err != nil {
-			return SendConversationMessageResult{}, err
-		}
-		return SendConversationMessageResult{Conversation: conversation, Message: progress}, nil
-	}
 	localContext, err := s.conversationContext(ctx, content, level, contextLimit)
 	if err != nil {
 		return SendConversationMessageResult{}, err
@@ -332,43 +302,6 @@ func (s *Service) SendConversationMessage(ctx context.Context, conversationID st
 	return SendConversationMessageResult{Conversation: conversation, Message: assistantMessage}, nil
 }
 
-func (s *Service) enqueueConversationAgentEpisode(ctx context.Context, conversation domain.StewardConversation, trigger domain.StewardConversationMessage, goal, level string) (domain.StewardConversationMessage, domain.StewardAgentEpisode, error) {
-	values, err := s.loadModelSettings(ctx)
-	if err != nil {
-		return domain.StewardConversationMessage{}, domain.StewardAgentEpisode{}, err
-	}
-	limits := normalizeAgentLoopLimits(values)
-	now := time.Now().UTC()
-	episode := domain.StewardAgentEpisode{
-		ID: uuid.NewString(), ConversationID: conversation.ID, TriggerMessageID: trigger.ID,
-		TriggerKind: "conversation", Goal: goal, DataLevel: level, Status: agentEpisodeThinking,
-		CurrentRound: 0, ToolCallCount: 0, MaxRounds: limits.MaxRounds, MaxToolCalls: limits.MaxToolCalls,
-		MaxDurationSeconds: limits.MaxDurationSeconds, NoProgressLimit: limits.NoProgressLimit,
-		HydratedToolNames: []string{}, CurrentToolVersions: map[string]string{}, CatalogGeneration: s.runtimeTools.generationValue(),
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if limits.MaxDurationSeconds > 0 {
-		deadline := now.Add(time.Duration(limits.MaxDurationSeconds) * time.Second)
-		episode.DeadlineAt = &deadline
-	}
-	if err := s.insertAgentEpisode(ctx, episode); err != nil {
-		return domain.StewardConversationMessage{}, episode, err
-	}
-	progress, err := s.insertConversationMessage(ctx, conversation.ID, conversationRoleAssistant,
-		"已收到，我会持续分析、调用工具并在这里更新结果。", level, "agent-loop-r4.9", "agent-queued:"+episode.ID)
-	if err != nil {
-		_ = s.failAgentEpisode(ctx, episode.ID, err)
-		return progress, episode, err
-	}
-	if _, err = s.db.Pool.Exec(ctx, `update steward_agent_episodes set progress_message_id=$2,updated_at=$3 where id=$1`, episode.ID, progress.ID, now); err != nil {
-		_ = s.failAgentEpisode(ctx, episode.ID, err)
-		return progress, episode, err
-	}
-	episode.ProgressMessageID = progress.ID
-	progress.Episodes = []domain.StewardAgentEpisode{episode}
-	return progress, episode, nil
-}
-
 func (s *Service) conversationAdvisorDevices(ctx context.Context) []ConversationAdvisorDevice {
 	items := []ConversationAdvisorDevice{{ID: s.agentIDValue(), Name: "本机", Platform: "local", TrustStatus: "trusted", PermissionLevel: PermissionA9, Online: true}}
 	devices, err := s.ListDevices(ctx)
@@ -388,7 +321,7 @@ func (s *Service) conversationAdvisorDevices(ctx context.Context) []Conversation
 }
 
 func (s *Service) finishConversationTurn(ctx context.Context, conversation domain.StewardConversation, content, level string) (domain.StewardConversation, error) {
-	if (conversation.MessageCount == 0 || conversation.Title == "新对话") && dataLevelRank(level) < dataLevelRank(DataD4) {
+	if conversation.MessageCount == 0 || conversation.Title == "新对话" {
 		_, _ = s.db.Pool.Exec(ctx, `update steward_conversations set title = $1, updated_at = $2 where id = $3`, truncateAdvisorText(content, 48), time.Now().UTC(), conversation.ID)
 	}
 	return s.getConversation(ctx, conversation.ID)
@@ -527,7 +460,7 @@ func (s *Service) conversationAdvisorHistory(ctx context.Context, conversationID
 	return items, rows.Err()
 }
 
-func (s *Service) conversationContext(ctx context.Context, query, maxLevel string, limit int) ([]domain.StewardSearchResult, error) {
+func (s *Service) conversationContext(ctx context.Context, query, _ string, limit int) ([]domain.StewardSearchResult, error) {
 	results, err := s.Search(ctx, SearchInput{Query: query, Limit: limit * 2})
 	if err != nil {
 		return nil, err
@@ -540,13 +473,9 @@ func (s *Service) conversationContext(ctx context.Context, query, maxLevel strin
 	}
 	filtered := make([]domain.StewardSearchResult, 0, limit)
 	for _, item := range results {
-		policy, policyErr := s.ResolveDataPolicy(ctx, item.DataLevel, item.Source)
-		levelAllowed := ownerModeEnabled() || dataLevelRank(item.DataLevel) <= dataLevelRank(maxLevel)
-		if levelAllowed && policyErr == nil && dataPolicyAllowsManualModel(policy) {
-			filtered = append(filtered, conversationSearchResultForModel(item, policy.ModelContentMode))
-			if len(filtered) >= limit {
-				break
-			}
+		filtered = append(filtered, conversationSearchResultForModel(item, ModelContentRaw))
+		if len(filtered) >= limit {
+			break
 		}
 	}
 	return filtered, nil
@@ -696,14 +625,6 @@ func (s *Service) getConversationSuggestion(ctx context.Context, id string) (dom
 
 func localConversationFallback(content string) ConversationAdvisorResponse {
 	return ConversationAdvisorResponse{Reply: "模型请求未完成：模型未启用\n原因：当前没有可用的模型配置。\n处理建议：\n- 打开“模型”配置\n- 填写接口地址、模型名称和 API Key\n- 保存后运行完整协议检查\n本次消息已保存在本地，且没有执行任何工具。\n错误代码：MODEL_DISABLED"}
-}
-
-func conversationDataLevel(value string) (string, error) {
-	level := strings.ToUpper(strings.TrimSpace(defaultString(value, DataD0)))
-	if !validDataLevel(level) {
-		return "", fmt.Errorf("conversation data level must be D0-D6")
-	}
-	return level, nil
 }
 
 func boolPointer(value bool) *bool {

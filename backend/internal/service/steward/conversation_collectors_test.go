@@ -155,18 +155,6 @@ func TestConversationModelContentModesDoNotTreatSummaryAsRaw(t *testing.T) {
 	}
 }
 
-func TestConversationDataLevelAcceptsConfiguredSensitivityRange(t *testing.T) {
-	for _, expected := range []string{DataD0, DataD1, DataD2, DataD3, DataD4, DataD5, DataD6} {
-		level, err := conversationDataLevel(" " + strings.ToLower(expected) + " ")
-		if err != nil || level != expected {
-			t.Fatalf("conversationDataLevel(%s) = %q, %v", expected, level, err)
-		}
-	}
-	if _, err := conversationDataLevel("D7"); err == nil {
-		t.Fatal("expected unsupported conversation data level to be rejected")
-	}
-}
-
 func TestNormalizeCollectorSettingsRejectsFilesystemRoot(t *testing.T) {
 	root := string(filepath.Separator)
 	if volume := filepath.VolumeName(t.TempDir()); volume != "" {

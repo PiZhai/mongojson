@@ -698,7 +698,6 @@ export type StewardConversation = {
   id: string;
   title: string;
   status: string;
-  data_level: string;
   message_count: number;
   last_message_at?: string;
   archived_at?: string;
@@ -714,8 +713,6 @@ export type StewardConversationSuggestion = {
   summary: string;
   content: string;
   suggested_action: string;
-  data_level: string;
-  permission_level: string;
   risk_level: string;
   status: string;
   target_id?: string;
@@ -728,7 +725,6 @@ export type StewardConversationMessage = {
   conversation_id: string;
   role: "user" | "assistant";
   content: string;
-  data_level: string;
   model?: string;
   context_summary?: string;
   suggestions: StewardConversationSuggestion[];
@@ -884,7 +880,6 @@ export type StewardConversationExecution = {
   orchestration_id?: string;
   target_device_id: string;
   target_device_name: string;
-  permission_level: string;
   risk_level: string;
   plan_hash: string;
   requires_confirmation: boolean;
@@ -893,11 +888,13 @@ export type StewardConversationExecution = {
   capability?: string;
   approval_subject?: string;
   control_generation?: number;
+  episode_id?: string;
+  turn_id?: string;
+  round_index?: number;
   evidence: {
     child_run_count?: number;
     artifact_count?: number;
     redacted_count?: number;
-    data_levels?: string[];
     manifest_sha256?: string;
   };
   failure_summary?: string;
@@ -1394,7 +1391,6 @@ export type StewardAutonomyAdvisorStatus = {
   provider: string;
   model?: string;
   base_url?: string;
-  max_data_level?: string;
   reason?: string;
   circuit_open?: boolean;
   consecutive_failures?: number;
@@ -1437,7 +1433,6 @@ export type StewardModelSettings = {
   api_key_configured: boolean;
   api_key_mask?: string;
   allow_no_api_key: boolean;
-  max_data_level: string;
   timeout_seconds: number;
   agent_max_rounds: number;
   agent_max_tool_calls: number;
