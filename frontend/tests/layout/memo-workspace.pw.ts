@@ -43,7 +43,7 @@ for (const width of [1920, 2560, 3440]) {
   test(`memo standard workspace stays bounded at ${width}px`, async ({ page }) => {
     await mockMemoApi(page)
     await page.setViewportSize({ width, height: 1000 })
-    await page.goto('/tools/memo-docs?slug=layout-test')
+    await page.goto('/documents/memo?slug=layout-test')
     await expect(page.locator('.memo-block-editor .bn-editor')).toBeVisible()
 
     const [workspace, grid, primary, editor, outlineHeader, documentMeta, noteHeader] = await Promise.all([
@@ -72,7 +72,7 @@ for (const width of [1920, 2560, 3440]) {
 test('memo uses an adjacent outline and note drawer on medium desktop', async ({ page }) => {
   await mockMemoApi(page)
   await page.setViewportSize({ width: 1600, height: 900 })
-  await page.goto('/tools/memo-docs?slug=layout-test')
+  await page.goto('/documents/memo?slug=layout-test')
   await expect(page.locator('.memo-outline-panel')).toHaveCSS('position', 'static')
   await expect(page.locator('.memo-side-note-rail')).toHaveCSS('position', 'absolute')
   await page.getByRole('button', { name: '打开便签栏' }).click()
@@ -83,7 +83,7 @@ test('memo uses an adjacent outline and note drawer on medium desktop', async ({
 test('memo converts both secondary panels to drawers on compact landscape', async ({ page }) => {
   await mockMemoApi(page)
   await page.setViewportSize({ width: 1024, height: 768 })
-  await page.goto('/tools/memo-docs?slug=layout-test')
+  await page.goto('/documents/memo?slug=layout-test')
   await expect(page.locator('.memo-outline-panel')).toHaveCSS('position', 'absolute')
   await expect(page.locator('.memo-side-note-rail')).toHaveCSS('position', 'absolute')
   await page.getByRole('button', { name: '打开目录' }).click()
@@ -94,7 +94,7 @@ test('memo converts both secondary panels to drawers on compact landscape', asyn
 test('memo uses a bottom note sheet on portrait mobile', async ({ page }) => {
   await mockMemoApi(page)
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/tools/memo-docs?slug=layout-test')
+  await page.goto('/documents/memo?slug=layout-test')
   await page.getByRole('button', { name: '打开便签栏' }).click()
   const rail = page.locator('.memo-side-note-rail')
   await expect(rail).toHaveCSS('position', 'fixed')
@@ -109,7 +109,7 @@ test('memo uses a bottom note sheet on portrait mobile', async ({ page }) => {
 test('memo focus mode removes secondary panels from layout', async ({ page }) => {
   await mockMemoApi(page)
   await page.setViewportSize({ width: 1920, height: 1000 })
-  await page.goto('/tools/memo-docs?slug=layout-test')
+  await page.goto('/documents/memo?slug=layout-test')
   await page.getByRole('button', { name: '专注' }).click()
   await expect(page.locator('.memo-workspace')).toHaveAttribute('data-workspace-mode', 'focus')
   await expect(page.locator('.memo-outline-panel')).toBeHidden()

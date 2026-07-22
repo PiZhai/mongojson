@@ -11,10 +11,11 @@ const routeByModule = {
   json: '/tools/json',
   'mongo-json': '/tools/mongodb-json',
   visualize: '/tools/visualize',
-  'memo-docs': '/tools/memo-docs',
-  music: '/tools/music',
-  'watch-party': '/tools/watch-party',
-  canvas: '/tools/canvas',
+  'memo-docs': '/documents/memo',
+  music: '/entertainment/music',
+  'watch-party': '/entertainment/watch',
+  canvas: '/documents/canvas',
+  steward: '/steward',
 }
 const cssMarkerByModule = {
   inspect: '.inspect-',
@@ -22,7 +23,7 @@ const cssMarkerByModule = {
   visualize: '.visualization-',
   'memo-docs': '.memo-',
   music: '.music-',
-  'watch-party': '.watch-',
+  'watch-party': '.watch-video-frame-idle',
   canvas: '.canvas-',
 }
 

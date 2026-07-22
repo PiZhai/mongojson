@@ -122,6 +122,7 @@ export function MemoDocsWorkspace() {
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null)
   const [workspaceMode, setWorkspaceMode] = useState<MemoWorkspaceMode>(readStoredMode)
   const [archiveOpen, setArchiveOpen] = useState(false)
+  const [libraryPinned, setLibraryPinned] = useState(() => window.matchMedia('(min-width: 1281px)').matches)
   const [archivedDocuments, setArchivedDocuments] = useState<MemoDocumentSummary[]>([])
   const [archiveLoading, setArchiveLoading] = useState(false)
   const [archiveError, setArchiveError] = useState('')
@@ -136,6 +137,15 @@ export function MemoDocsWorkspace() {
   const [status, setStatus] = useState<ToolStatus>({ kind: 'idle', message: '正在载入随手记。' })
   const [isSaving, setIsSaving] = useState(false)
   const [syncStatus, setSyncStatus] = useState<MemoSyncStatus>('connecting')
+  const libraryOpen = libraryPinned || archiveOpen
+
+  useEffect(() => {
+    const desktopLibrary = window.matchMedia('(min-width: 1281px)')
+    const updatePinnedState = () => setLibraryPinned(desktopLibrary.matches)
+    updatePinnedState()
+    desktopLibrary.addEventListener('change', updatePinnedState)
+    return () => desktopLibrary.removeEventListener('change', updatePinnedState)
+  }, [])
 
   const commitNotes = useCallback((updater: (current: MemoSideNoteRecord[]) => MemoSideNoteRecord[]) => {
     const next = updater(notesRef.current)
@@ -292,19 +302,19 @@ export function MemoDocsWorkspace() {
   }, [reloadDocument])
 
   useEffect(() => {
-    if (!archiveOpen) return
+    if (!libraryOpen) return
     const loadTimer = window.setTimeout(() => void loadArchivedDocuments(), 0)
-    const focusTimer = window.setTimeout(() => archiveCloseButtonRef.current?.focus(), 0)
+    const focusTimer = libraryPinned ? undefined : window.setTimeout(() => archiveCloseButtonRef.current?.focus(), 0)
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeArchive()
+      if (event.key === 'Escape' && !libraryPinned) closeArchive()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => {
       window.clearTimeout(loadTimer)
-      window.clearTimeout(focusTimer)
+      if (focusTimer !== undefined) window.clearTimeout(focusTimer)
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [archiveOpen, closeArchive, loadArchivedDocuments])
+  }, [closeArchive, libraryOpen, libraryPinned, loadArchivedDocuments])
 
   useEffect(() => {
     const documentId = document?.id
@@ -806,12 +816,12 @@ export function MemoDocsWorkspace() {
         <div className="memo-toolbar-leading">
           <button
             aria-controls="memo-document-drawer"
-            aria-expanded={archiveOpen}
-            aria-label={archiveOpen ? '收起存档文件' : '展开存档文件'}
+            aria-expanded={libraryOpen}
+            aria-label={libraryOpen ? '收起文档库' : '展开文档库'}
             className={`memo-icon-button memo-archive-toggle${archiveOpen ? ' memo-icon-button-active' : ''}`}
             onClick={toggleArchive}
             ref={archiveToggleRef}
-            title={archiveOpen ? '收起存档文件' : '展开存档文件'}
+            title={libraryOpen ? '收起文档库' : '展开文档库'}
             type="button"
           ><MemoIcon name="archive" /></button>
           <button aria-label="打开正文目录" className="memo-icon-button memo-panel-toggle" onClick={() => setOutlineOpen(true)} title="正文目录" type="button"><MemoIcon name="outline" /></button>
@@ -854,7 +864,8 @@ export function MemoDocsWorkspace() {
         onClose={closeArchive}
         onCreate={() => void createNewDocument()}
         onSelect={(item) => void selectArchivedDocument(item)}
-        open={archiveOpen}
+        open={libraryOpen}
+        pinned={libraryPinned}
         switchingDocumentId={switchingDocumentId}
       />
 
@@ -941,12 +952,12 @@ export function MemoDocsWorkspace() {
           open={notesOpen}
         />
       </div>
-      {(archiveOpen || outlineOpen || notesOpen) && (
+      {((archiveOpen && !libraryPinned) || outlineOpen || notesOpen) && (
         <button
           aria-label="关闭面板"
           className={`memo-panel-backdrop${archiveOpen ? ' memo-archive-backdrop' : ''}`}
           onClick={() => {
-            if (archiveOpen) closeArchive()
+            if (archiveOpen && !libraryPinned) closeArchive()
             setOutlineOpen(false)
             setNotesOpen(false)
           }}

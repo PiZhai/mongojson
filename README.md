@@ -79,7 +79,7 @@ go run ./cmd/server
 ./steward run
 ```
 
-默认本地管理地址是 `http://127.0.0.1:18080`，工作台入口是 `http://127.0.0.1:18080/tools/steward`。二进制会自动托管同级 `ui/`，仍需要可用的 PostgreSQL `DATABASE_URL`。从构建发布包到三台真实设备安装、配对和 24 小时验收的完整步骤见 [三端打包、安装与验证教程](docs/personal-ai-steward-three-platform-deployment-guide.md)；自动记录、证据关系和清理规则见 [自动记录、关联记忆与信息生命周期](docs/personal-ai-steward-activity-memory-lifecycle.md)；协议和验收字段定义见 [S3/S4 运行与验证基线](docs/personal-ai-steward-s3-s4-runtime.md)。
+默认本地管理地址是 `http://127.0.0.1:18080`，智能管家入口是 `http://127.0.0.1:18080/steward`。二进制会自动托管同级 `ui/`，仍需要可用的 PostgreSQL `DATABASE_URL`。从构建发布包到三台真实设备安装、配对和 24 小时验收的完整步骤见 [三端打包、安装与验证教程](docs/personal-ai-steward-three-platform-deployment-guide.md)；自动记录、证据关系和清理规则见 [自动记录、关联记忆与信息生命周期](docs/personal-ai-steward-activity-memory-lifecycle.md)；协议和验收字段定义见 [S3/S4 运行与验证基线](docs/personal-ai-steward-s3-s4-runtime.md)。
 
 工作台使用设备所有者模式：普通对话直接进入模型，模型结合长期记忆、活动、设备状态和完整工具目录决定回答或调用工具；底层仍校验工具是否存在、参数是否合法、目标设备是否可用，并保留 Broker 签名、进程隔离、Watchdog、证据、暂停、取消和全局急停等技术完整性边界。高权限执行只接受已登记的结构化工具，不把模型文本直接当作 shell 命令。
 

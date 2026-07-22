@@ -18,12 +18,38 @@ import type {
   StewardConversationExecution,
   StewardConversationMessage,
   StewardConversationSuggestion,
+  StewardSignedApprovalProof,
 } from '../types'
+
 import { formatDate } from './model'
 import { authorityMatchesOrigin, issueWebAuthnApprovalProof } from './webauthnApproval'
 import { ModelSettingsDialog } from './ModelSettingsDialog'
 import { ArchivedConversationsDialog } from './ArchivedConversationsDialog'
 import { isConversationNearBottom } from './conversationScroll'
+
+const transientControlErrorPattern = /agent episode is busy|retry the control action|正在处理当前轮次/i
+
+async function retryTransientControl(action: () => Promise<unknown>) {
+  const delays = [180, 420, 800]
+  let lastError: unknown
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return await action()
+    } catch (reason) {
+      lastError = reason
+      const message = reason instanceof Error ? reason.message : String(reason)
+      if (!transientControlErrorPattern.test(message) || attempt === delays.length) throw reason
+      await new Promise<void>((resolve) => window.setTimeout(resolve, delays[attempt]))
+    }
+  }
+  throw lastError
+}
+
+function friendlyControlError(reason: unknown, fallback: string) {
+  const message = reason instanceof Error ? reason.message : ''
+  if (transientControlErrorPattern.test(message)) return '管家正在切换任务状态，请稍后再试。'
+  return message || fallback
+}
 
 type Props = {
   onDataChanged: () => Promise<void>
@@ -249,7 +275,7 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     setBusy(true)
     setError('')
     try {
-      let proof
+      let proof: StewardSignedApprovalProof | undefined
       const reason = decision === 'confirm' ? '在管家对话中确认执行' : `在管家对话中${decision === 'pause' ? '暂停' : '取消'}`
       if (decision === 'confirm' && execution.capability) {
         const { control } = await getStewardExecutionControl()
@@ -267,14 +293,14 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
           origin,
         })
       }
-      await decideStewardConversationExecution(execution.id, decision, reason, proof)
+      await retryTransientControl(() => decideStewardConversationExecution(execution.id, decision, reason, proof))
       if (activeId) {
         const result = await getStewardConversationMessages(activeId)
         setMessages(result.messages)
       }
       await onDataChanged()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '处理操作失败')
+      setError(friendlyControlError(reason, '处理操作失败'))
     } finally {
       setBusy(false)
     }
@@ -345,14 +371,14 @@ export function ConversationWorkspace({ onDataChanged }: Props) {
     setBusy(true)
     setError('')
     try {
-      await decideStewardAgentEpisode(episode.id, decision)
+      await retryTransientControl(() => decideStewardAgentEpisode(episode.id, decision))
       if (activeId) {
         const result = await getStewardConversationMessages(activeId)
         setMessages(result.messages)
       }
       await onDataChanged()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '控制 Agent 任务失败')
+      setError(friendlyControlError(reason, '控制任务失败'))
     } finally {
       setBusy(false)
     }

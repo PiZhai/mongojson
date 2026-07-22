@@ -156,13 +156,16 @@ parallel hard-coded lists.
 Recommended contract:
 
 ```ts
+export type WorkspaceId = 'tools' | 'documents' | 'entertainment' | 'steward'
+
 export type ToolModuleManifest = {
   id: string
   version: string
   title: string
-  group: 'data' | 'documents' | 'media' | 'system'
+  workspace: WorkspaceId
   route: {
     path: string
+    legacyPaths?: string[]
     load: () => Promise<{ default: React.ComponentType }>
   }
   navigation?: {
@@ -184,12 +187,20 @@ export type ToolModuleManifest = {
 The manifest is metadata and integration wiring. It MUST NOT contain domain
 business logic.
 
+Workspaces are a separate presentation contract. The workspace registry owns the
+label, description, default module, semantic theme, and ordered module list for
+each workspace. A module belongs to exactly one workspace, and its primary route
+must use that workspace's route prefix. Legacy paths are compatibility redirects
+only and must preserve query strings and hashes.
+
 ### 5.2 Registry
 
 The **Module Registry** is the single source of truth for registered modules.
 It MUST:
 
 - reject duplicate module IDs, routes, and capability providers;
+- reject modules assigned to an invalid workspace or route prefix;
+- ensure every enabled workspace has a valid default module;
 - validate required capabilities before rendering;
 - evaluate gates before constructing routes and navigation;
 - load module code only when the module is enabled and requested;

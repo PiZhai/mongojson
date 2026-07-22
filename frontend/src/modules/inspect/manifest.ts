@@ -4,7 +4,7 @@ export const inspectModule = {
   id: 'inspect',
   version: '1.0.0',
   title: '智能诊断',
-  group: 'data',
+  workspace: 'tools',
   order: 10,
   default: true,
   route: {

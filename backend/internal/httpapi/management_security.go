@@ -236,7 +236,7 @@ func (s *managementSecurity) consumeBrowserTicket(w http.ResponseWriter, r *http
 		return
 	}
 	s.setSessionCookie(w, r, sessionToken, expires)
-	http.Redirect(w, r, "/tools/steward", http.StatusSeeOther)
+	http.Redirect(w, r, "/steward", http.StatusSeeOther)
 }
 
 func (s *managementSecurity) handlePreflight(w http.ResponseWriter, r *http.Request, originPresent bool) {

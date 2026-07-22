@@ -11,6 +11,15 @@ const FLOATING_PLAYER_HEIGHT = 82
 const FLOATING_PLAYER_MARGIN = 16
 
 type FloatingPlayerPosition = { x: number; y: number }
+type PlayerWorkspace = 'tools' | 'documents' | 'steward' | 'entertainment'
+
+function getPlayerWorkspace(pathname: string): PlayerWorkspace {
+  const routeNamespace = pathname.split('/').filter(Boolean)[0]
+  if (routeNamespace === 'documents') return 'documents'
+  if (routeNamespace === 'entertainment') return 'entertainment'
+  if (routeNamespace === 'tools') return 'tools'
+  return 'steward'
+}
 
 function formatPlayerTime(value: number) {
   if (!Number.isFinite(value) || value <= 0) {
@@ -293,13 +302,12 @@ export function MusicMiniPlayer() {
     setVolume,
     statusMessage,
     togglePlay,
-    tracks,
     volume,
   } = useMusicPlayer()
 
   const isMusicPage = location.pathname === musicModule.route.path
 
-  if (!isMusicPage && !currentTrack && tracks.length === 0) {
+  if (!isMusicPage && !isPlaying) {
     return null
   }
 
@@ -308,11 +316,11 @@ export function MusicMiniPlayer() {
   const modeIcon = getModeIcon(mode)
 
   if (!isMusicPage) {
-    return <MusicFloatingPlayer />
+    return <MusicFloatingPlayer workspace={getPlayerWorkspace(location.pathname)} />
   }
 
   return (
-    <section className="music-mini-player" aria-label="音乐播放器">
+    <section className="music-mini-player music-mini-player-entertainment" aria-label="音乐播放器">
       <div className="music-mini-surface">
         <div className="music-now-playing">
           <span className="music-equalizer" aria-hidden="true">
@@ -401,6 +409,7 @@ export function MusicMiniPlayer() {
 }
 
 export function MusicQueueDrawer() {
+  const location = useLocation()
   const {
     clearQueue,
     closeQueue,
@@ -419,6 +428,11 @@ export function MusicQueueDrawer() {
   const queueTracks = queue
     .map((id) => tracks.find((track) => track.id === id))
     .filter((track): track is MusicTrack => Boolean(track))
+  const isEntertainmentPage = location.pathname.startsWith('/entertainment/')
+
+  useEffect(() => {
+    if (!isEntertainmentPage && isQueueOpen) closeQueue()
+  }, [closeQueue, isEntertainmentPage, isQueueOpen])
 
   useEffect(() => {
     if (!isQueueOpen) return
@@ -446,12 +460,12 @@ export function MusicQueueDrawer() {
     }
   }, [closeQueue, isQueueOpen])
 
-  if (!isQueueOpen) {
+  if (!isEntertainmentPage || !isQueueOpen) {
     return null
   }
 
   return (
-    <aside aria-label="播放队列" className="music-queue-drawer">
+    <aside aria-label="播放队列" className="music-queue-drawer music-queue-drawer-entertainment">
       <div className="music-queue-panel" ref={queuePanelRef} role="dialog" aria-modal="true">
         <div className="music-queue-header">
           <div>
@@ -533,7 +547,7 @@ export function MusicQueueDrawer() {
   )
 }
 
-function MusicFloatingPlayer() {
+function MusicFloatingPlayer({ workspace }: { workspace: PlayerWorkspace }) {
   const { currentTrack, isPlaying, playNext, playPrevious, statusMessage, togglePlay } = useMusicPlayer()
   const [position, setPosition] = useState(loadFloatingPosition)
   const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null)
@@ -587,6 +601,7 @@ function MusicFloatingPlayer() {
     <section
       aria-label="浮动音乐播放器"
       className="music-floating-player"
+      data-workspace={workspace}
       style={{ left: position.x, top: position.y }}
     >
       <Link aria-label="打开音乐页" className="music-floating-page-link" title="打开音乐页" to={musicModule.route.path}>

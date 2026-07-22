@@ -11,7 +11,9 @@ export type ToolModuleId =
   | 'canvas'
   | 'steward'
 
-export type ToolModuleGroup = 'data' | 'documents' | 'media'
+export type WorkspaceId = 'tools' | 'entertainment' | 'documents' | 'steward'
+
+export type WorkspaceTheme = 'tooling-light' | 'entertainment-dark' | 'documents-warm' | 'steward-soft'
 
 export type ToolModuleIcon = 'inspect' | 'json' | 'mongo' | 'visualize' | 'memo' | 'music' | 'watch' | 'canvas' | 'steward'
 
@@ -56,12 +58,13 @@ export type ToolModuleManifest = {
   id: ToolModuleId
   version: string
   title: string
-  group: ToolModuleGroup
+  workspace: WorkspaceId
   order: number
   default?: boolean
   gate?: string
   route: {
     path: string
+    legacyPaths?: string[]
     load: () => Promise<{ default: ComponentType }>
   }
   navigation: {

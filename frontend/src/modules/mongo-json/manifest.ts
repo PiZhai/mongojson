@@ -15,7 +15,7 @@ export const mongoJsonModule = {
   id: 'mongo-json',
   version: '1.0.0',
   title: 'MongoDB JSON 工具',
-  group: 'data',
+  workspace: 'tools',
   order: 30,
   route: {
     path: '/tools/mongodb-json',

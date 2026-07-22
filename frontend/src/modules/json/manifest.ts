@@ -4,7 +4,7 @@ export const jsonModule = {
   id: 'json',
   version: '1.0.0',
   title: 'JSON 工具',
-  group: 'data',
+  workspace: 'tools',
   order: 20,
   route: {
     path: '/tools/json',

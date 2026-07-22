@@ -15,7 +15,7 @@
 | 管理 HTTP | `127.0.0.1:18080` | 仅本机 | CLI、工作台、运行状态、审批与审计 |
 | Peer HTTP | `:18081` | 受信局域网或私有 VPN | 三端签名同步协议，不承载工作台 |
 | PostgreSQL | `127.0.0.1:5432` | 仅本机 | 每个节点的持久数据 |
-| Web 工作台 | `http://127.0.0.1:18080/tools/steward` | 仅本机 | 与管家沟通并查看记忆、任务和审计 |
+| Web 工作台 | `http://127.0.0.1:18080/steward` | 仅本机 | 与管家沟通并查看记忆、任务和审计 |
 
 必须遵守以下边界：
 
@@ -512,7 +512,7 @@ Windows：
 ```powershell
 & "C:\Program Files\MongojsonSteward\steward.exe" service status --name MongojsonSteward --scope system
 Invoke-RestMethod http://127.0.0.1:18080/healthz
-Start-Process http://127.0.0.1:18080/tools/steward
+Start-Process http://127.0.0.1:18080/steward
 ```
 
 macOS/Linux：

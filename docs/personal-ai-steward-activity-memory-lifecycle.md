@@ -271,7 +271,7 @@ Windows/macOS 默认 profile 为 `deep`，Linux 默认为 `light`。可用 `STEW
 
 ## 13. 自动采集、模型发送与操作执行配置
 
-工作台 `http://127.0.0.1:18080/tools/steward` 中的“数据采集与模型发送”按 `data_level + source_pattern` 保存规则，更具体的 glob 规则优先于 `*`。例如 `D4 + adapter:screenpipe` 不影响 `D4 + conversation`。
+工作台 `http://127.0.0.1:18080/steward` 中的“数据采集与模型发送”按 `data_level + source_pattern` 保存规则，更具体的 glob 规则优先于 `*`。例如 `D4 + adapter:screenpipe` 不影响 `D4 + conversation`。
 
 每个 D0-D6 规则有独立字段：
 

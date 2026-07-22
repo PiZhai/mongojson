@@ -163,7 +163,7 @@ func TestManagementSecurityBrowserTicketCreatesPersistentCookieSession(t *testin
 	consume := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18080/api/auth/browser-tickets/"+issued.Ticket, nil)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, consume)
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/tools/steward" {
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/steward" {
 		t.Fatalf("ticket consume status = %d location=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
 	}
 	cookies := recorder.Result().Cookies()

@@ -1,4 +1,45 @@
 /* Music module: light studio design system. */
+.entertainment-workspace-shell .music-page-shell,
+.music-mini-player-entertainment,
+.music-queue-drawer-entertainment {
+  --music-accent: #8b5cf6;
+  --music-accent-strong: #c4b5fd;
+  --music-accent-soft: rgba(124, 58, 237, 0.2);
+  --music-line: rgba(255, 255, 255, 0.1);
+  --music-surface: rgba(18, 22, 37, 0.94);
+}
+.entertainment-workspace-shell .music-library-panel,
+.entertainment-workspace-shell .music-now-panel,
+.entertainment-workspace-shell .music-source-drawer,
+.entertainment-workspace-shell .music-playlist-dialog { background: var(--surface-primary); border-color: var(--border-default); }
+.music-mini-player-entertainment .music-mini-surface,
+.music-queue-drawer-entertainment .music-queue-panel {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(18, 22, 37, 0.96);
+}
+.music-mini-player-entertainment,
+.music-queue-drawer-entertainment {
+  --text: #f8fafc;
+  --text-strong: #f8fafc;
+  --text-muted: #a7b0c3;
+}
+.entertainment-workspace-shell .music-search-field,
+.entertainment-workspace-shell .music-sort-field,
+.entertainment-workspace-shell .music-filter-tabs,
+.entertainment-workspace-shell .music-now-tabs,
+.entertainment-workspace-shell .music-track-row:hover,
+.entertainment-workspace-shell .music-playlist-item,
+.entertainment-workspace-shell .music-source-option,
+.entertainment-workspace-shell .music-folder-item { background: var(--surface-raised); }
+.entertainment-workspace-shell .music-filter-tabs button.is-active,
+.entertainment-workspace-shell .music-now-tabs button[aria-selected='true'],
+.entertainment-workspace-shell .music-playlist-picker,
+.entertainment-workspace-shell .music-source-option > span { background: #242a40; }
+.entertainment-workspace-shell .music-icon-button:hover,
+.entertainment-workspace-shell .music-mini-action-button:hover,
+.entertainment-workspace-shell .music-queue-icon-button:hover,
+.entertainment-workspace-shell .music-queue-item:hover { background: rgba(255, 255, 255, 0.08); }
+
 .music-page-shell,
 .music-mini-player,
 .music-queue-drawer,
@@ -9,6 +50,34 @@
   --music-line: rgba(15, 23, 42, 0.08);
   --music-surface: rgba(255, 255, 255, 0.94);
   color: var(--text);
+}
+
+.music-floating-player[data-workspace='steward'] {
+  --music-accent: #5b4bc4;
+  --music-accent-strong: #493aa8;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.music-floating-player[data-workspace='documents'] {
+  --music-accent: #a94908;
+  --music-accent-strong: #873b08;
+  border-color: rgba(222, 213, 199, 0.9);
+  background: rgba(255, 253, 248, 0.95);
+}
+
+.music-floating-player[data-workspace='entertainment'] {
+  --music-accent: #8b5cf6;
+  --music-accent-strong: #c4b5fd;
+  --text-strong: #f8fafc;
+  --text-muted: #a7b0c3;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(18, 22, 37, 0.94);
+}
+
+.music-floating-player[data-workspace='entertainment'] .music-floating-page-link,
+.music-floating-player[data-workspace='entertainment'] .music-floating-control-button {
+  background: #242a40;
+  color: #f8fafc;
 }
 
 .music-page-shell {

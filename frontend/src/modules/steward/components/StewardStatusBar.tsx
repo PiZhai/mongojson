@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getStewardBackgroundStatus,
   probeStewardModelConnection,
@@ -25,6 +25,8 @@ export function StewardStatusBar({ refreshToken }: Props) {
   const [toolsOpen, setToolsOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
 	const [intelligenceOpen, setIntelligenceOpen] = useState(false)
+	const [inspectorOpen, setInspectorOpen] = useState(false)
+	const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null)
 
   const refresh = useCallback(async (probeModel = false) => {
     setChecking(true)
@@ -53,6 +55,17 @@ export function StewardStatusBar({ refreshToken }: Props) {
     const timer = window.setInterval(() => void refresh(false), 10_000)
     return () => window.clearInterval(timer)
   }, [refresh])
+
+	useEffect(() => {
+		if (!inspectorOpen) return
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key !== 'Escape') return
+			setInspectorOpen(false)
+			window.requestAnimationFrame(() => inspectorTriggerRef.current?.focus())
+		}
+		window.addEventListener('keydown', onKeyDown)
+		return () => window.removeEventListener('keydown', onKeyDown)
+	}, [inspectorOpen])
 
 	const background = snapshot?.background
 	const sourceCount = background?.pipeline.sources.length ?? 0
@@ -84,13 +97,42 @@ export function StewardStatusBar({ refreshToken }: Props) {
       </div>
 
       <div className="steward-status-actions">
-		<button className="steward-button steward-button-secondary steward-status-check" onClick={() => setIntelligenceOpen(true)} type="button">个人智能</button>
-        <button className="steward-button steward-button-secondary steward-status-check" onClick={() => setNotificationsOpen(true)} type="button">通知</button>
-        <button className="steward-button steward-button-secondary steward-status-check" onClick={() => setToolsOpen(true)} type="button">工具库</button>
-        <button className="steward-button steward-status-check" disabled={checking} onClick={() => void refresh(true)} type="button">{checking ? '检查中…' : '检查连接'}</button>
+		<button
+			aria-expanded={inspectorOpen}
+			className="steward-button steward-button-secondary steward-status-check"
+			onClick={() => setInspectorOpen(true)}
+			ref={inspectorTriggerRef}
+			type="button"
+		>
+			状态与设置
+		</button>
       </div>
 
       {error ? <div className="steward-status-error" role="alert">{error}</div> : null}
+	  {inspectorOpen ? (
+		<div className="steward-status-inspector-layer">
+			<button aria-label="关闭状态与设置" className="steward-status-inspector-scrim" onClick={() => setInspectorOpen(false)} type="button" />
+			<aside aria-label="管家状态与设置" aria-modal="true" className="steward-status-inspector" role="dialog">
+				<header>
+					<div><small>STATUS</small><h2>状态与设置</h2></div>
+					<button aria-label="关闭状态与设置" onClick={() => setInspectorOpen(false)} type="button">关闭</button>
+				</header>
+				<div className="steward-status-inspector-list">
+					<InspectorRow label="管家服务" ready={background?.state === 'healthy'} value={backgroundStateLabel(background?.state)} />
+					<InspectorRow label="大模型" ready={modelReady} value={modelLabel} />
+					<InspectorRow label="自动收集" ready={activityReady} value={!background?.pipeline.enabled ? '未启用' : sourceCount === 0 ? '等待数据' : `${freshSourceCount}/${sourceCount} 个来源新鲜`} />
+					<InspectorRow label="本机管理" ready value="已解锁" />
+				</div>
+				<div className="steward-status-inspector-actions">
+					<button className="steward-button" disabled={checking} onClick={() => void refresh(true)} type="button">{checking ? '检查中…' : '检查连接'}</button>
+					<button className="steward-button steward-button-secondary" onClick={() => { setInspectorOpen(false); setIntelligenceOpen(true) }} type="button">个人智能</button>
+					<button className="steward-button steward-button-secondary" onClick={() => { setInspectorOpen(false); setNotificationsOpen(true) }} type="button">通知中心</button>
+					<button className="steward-button steward-button-secondary" onClick={() => { setInspectorOpen(false); setToolsOpen(true) }} type="button">工具库</button>
+				</div>
+				<p className="steward-status-inspector-note">复杂运行信息只在这里展示，普通对话不会显示 Agent 轮次、调度器或内部工具日志。</p>
+			</aside>
+		</div>
+	  ) : null}
       <ToolLibraryDialog onClose={() => setToolsOpen(false)} open={toolsOpen} />
       <NotificationCenterDialog onClose={() => setNotificationsOpen(false)} open={notificationsOpen} />
 		<PersonalIntelligenceDialog onClose={() => setIntelligenceOpen(false)} open={intelligenceOpen} />
@@ -114,4 +156,14 @@ function backgroundStateLabel(state?: StewardBackgroundStatus['state']) {
 	if (state === 'unhealthy') return '管家离线'
 	if (state === 'disabled') return '自动采集已关闭'
 	return '管家在线'
+}
+
+function InspectorRow({ label, ready, value }: { label: string; ready: boolean; value: string }) {
+	return (
+		<div className="steward-status-inspector-row">
+			<span className={ready ? 'is-ready' : 'is-warning'} aria-hidden="true" />
+			<strong>{label}</strong>
+			<small>{value}</small>
+		</div>
+	)
 }

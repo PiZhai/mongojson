@@ -4,7 +4,7 @@ export const visualizeModule = {
   id: 'visualize',
   version: '1.0.0',
   title: '数据可视化',
-  group: 'data',
+  workspace: 'tools',
   order: 40,
   route: {
     path: '/tools/visualize',

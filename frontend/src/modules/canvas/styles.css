@@ -1,3 +1,12 @@
+.documents-workspace-shell .canvas-workspace { height: 100%; min-height: 0; background: #eee9df; }
+.documents-workspace-shell .canvas-command-bar,
+.documents-workspace-shell .canvas-drawer-heading { background: var(--surface-primary); border-color: var(--border-default); }
+.documents-workspace-shell .canvas-board-drawer { background: #f3ecdf; border-color: var(--border-default); }
+.documents-workspace-shell .canvas-stage { background: #f5f2ec; }
+.documents-workspace-shell .canvas-board-row.is-active { border-color: #d4aa7d; background: #f5e4d2; }
+.documents-workspace-shell .canvas-board-preview { color: var(--accent-primary); }
+.documents-workspace-shell .canvas-title-input { background: var(--surface-primary); color: var(--text-primary); }
+
 .canvas-workspace {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);

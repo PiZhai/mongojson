@@ -19,11 +19,10 @@ docs/       架构和实现说明
 
 ## Modules
 
-- JSON Tool
-- Inspect Tool
-- MongoDB JSON Tool
-- Visualization Tool
-- Memo Docs Tool
+- 智能管家：默认入口 `/steward`
+- 工具：Inspect、JSON、MongoDB JSON、Visualization
+- 文档：在线备忘录、无界画布
+- 娱乐：音乐、一起看
 
 前端模块边界、插件契约、功能开关、可删除性、可独立运行和未来微前端升级的
 强制规范见 [Frontend Modular Platform Architecture Standard](frontend-modular-platform-standard.md)。
@@ -33,6 +32,8 @@ docs/       架构和实现说明
 
 - `frontend/module-catalog.json` 定义构建时可发现模块；
 - `frontend/src/modules/*/manifest.ts` 声明路由、导航、能力、Provider 和壳层扩展点；
+- `frontend/src/app/workspaces/definitions.ts` 声明四个工作区的默认模块、主题与导航元数据；
+- 工作区注册表校验模块唯一归属、路由前缀和默认入口，旧 `/tools/*` 地址通过保留 query/hash 的兼容重定向迁移；
 - `VITE_INCLUDED_MODULES` 生成只包含指定模块的构建产物；
 - `VITE_DISABLED_MODULES` 在启动时关闭已随构建发布的模块；
 - `npm run check:architecture` 检查依赖方向；

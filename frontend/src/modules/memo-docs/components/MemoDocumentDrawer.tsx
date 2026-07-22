@@ -1,4 +1,4 @@
-import type { RefObject } from 'react'
+import { useMemo, useState, type RefObject } from 'react'
 import type { MemoDocumentSummary } from '../types'
 import { MemoIcon } from './MemoIcon'
 
@@ -10,6 +10,7 @@ type MemoDocumentDrawerProps = {
   error: string
   loading: boolean
   open: boolean
+  pinned: boolean
   switchingDocumentId?: string
   onClose: () => void
   onCreate: () => void
@@ -30,26 +31,39 @@ export function MemoDocumentDrawer({
   error,
   loading,
   open,
+  pinned,
   switchingDocumentId,
   onClose,
   onCreate,
   onSelect,
 }: MemoDocumentDrawerProps) {
+  const [query, setQuery] = useState('')
+  const visibleDocuments = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
+    if (!normalizedQuery) return documents
+    return documents.filter((document) => (
+      document.title.toLocaleLowerCase('zh-CN').includes(normalizedQuery)
+      || document.slug.toLocaleLowerCase('zh-CN').includes(normalizedQuery)
+    ))
+  }, [documents, query])
+
   return (
     <aside
       aria-hidden={!open}
-      aria-label="存档文件"
-      className={`memo-document-drawer${open ? ' memo-document-drawer-open' : ''}`}
+      aria-label="文档库"
+      className={`memo-document-drawer${open ? ' memo-document-drawer-open' : ''}${pinned ? ' memo-document-drawer-pinned' : ''}`}
       id="memo-document-drawer"
     >
       <header className="memo-document-drawer-header">
         <div>
           <span className="memo-document-drawer-icon"><MemoIcon name="archive" /></span>
-          <span><strong>存档文件</strong><small>{documents.length} 个文档</small></span>
+          <span><strong>文档库</strong><small>{documents.length} 个文档</small></span>
         </div>
-        <button aria-label="关闭存档文件" className="memo-icon-button" onClick={onClose} ref={closeButtonRef} title="关闭" type="button">
-          <MemoIcon name="close" />
-        </button>
+        {!pinned ? (
+          <button aria-label="关闭文档库" className="memo-icon-button" onClick={onClose} ref={closeButtonRef} title="关闭" type="button">
+            <MemoIcon name="close" />
+          </button>
+        ) : null}
       </header>
 
       <div className="memo-document-create-area">
@@ -63,13 +77,19 @@ export function MemoDocumentDrawer({
           <MemoIcon name="plus" />
           <span>{creating ? '正在新建…' : '新建文档'}</span>
         </button>
+        <label className="memo-document-search">
+          <span className="sr-only">搜索文档</span>
+          <MemoIcon name="search" />
+          <input aria-label="搜索文档" onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题或标识" type="search" value={query} />
+        </label>
       </div>
 
-      <nav aria-label="存档文件列表" className="memo-document-list">
-        {loading ? <p className="memo-document-list-state" role="status">正在载入存档文件…</p> : null}
+      <nav aria-label="文档列表" className="memo-document-list">
+        {loading ? <p className="memo-document-list-state" role="status">正在载入文档…</p> : null}
         {!loading && error ? <p className="memo-document-list-state memo-document-list-error" role="alert">{error}</p> : null}
-        {!loading && !error && documents.length === 0 ? <p className="memo-document-list-state">还没有存档文件</p> : null}
-        {!loading && !error ? documents.map((item) => {
+        {!loading && !error && documents.length === 0 ? <p className="memo-document-list-state">还没有文档</p> : null}
+        {!loading && !error && documents.length > 0 && visibleDocuments.length === 0 ? <p className="memo-document-list-state">没有匹配的文档</p> : null}
+        {!loading && !error ? visibleDocuments.map((item) => {
           const active = item.id === activeDocumentId
           const switching = item.id === switchingDocumentId
           return (

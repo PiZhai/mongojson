@@ -1,19 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { moduleRegistry } from '../../app/modules/registry'
-import { ShellExtensionSlot } from '../../app/modules/runtime'
-import type { ToolModuleGroup, ToolModuleIcon } from '../../platform/contracts/modules'
+import type { ToolModuleIcon } from '../../platform/contracts/modules'
+import { WorkspaceLauncher } from './WorkspaceLauncher'
 
-const groupLabels: Record<ToolModuleGroup, string> = {
-  data: '数据工具',
-  documents: '文档能力',
-  media: '媒体工具',
-}
-
-const navGroups = (Object.keys(groupLabels) as ToolModuleGroup[]).map((group) => ({
-  label: groupLabels[group],
-  items: moduleRegistry.modules.filter((module) => module.group === group),
-}))
+const toolModules = moduleRegistry.modules.filter((module) => module.workspace === 'tools')
 
 const pageMeta = new Map(moduleRegistry.modules.map((module) => [module.route.path, { title: module.title }]))
 
@@ -130,7 +121,7 @@ function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
   )
 }
 
-export function AppShell() {
+export function ToolsWorkspaceShell() {
   const location = useLocation()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') {
@@ -172,10 +163,12 @@ export function AppShell() {
       className="app-shell"
       data-layout-region="app-shell"
       data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}
+      data-workspace="tools"
     >
       <a className="skip-link" href="#main-content">
         跳到主内容
       </a>
+      <WorkspaceLauncher currentWorkspace="tools" />
       <aside aria-label="主导航" className="app-sidebar">
         <div className="sidebar-topbar">
           <div className="app-brand">
@@ -199,12 +192,9 @@ export function AppShell() {
           </button>
         </div>
 
-        {navGroups
-          .filter((group) => group.items.length > 0)
-          .map((group) => (
-            <div className="nav-group" key={group.label}>
-              <p className="nav-group-label">{group.label}</p>
-              {group.items.map((item) => {
+        <div className="nav-group">
+          <p className="nav-group-label">数据工具</p>
+          {toolModules.map((item) => {
                 return (
                   <NavLink
                     className={({ isActive }) => `nav-link${isActive ? ' nav-link-active' : ''}`}
@@ -221,9 +211,8 @@ export function AppShell() {
                     <span className="nav-link-title">{item.navigation.label}</span>
                   </NavLink>
                 )
-              })}
-            </div>
-          ))}
+          })}
+        </div>
 
       </aside>
 
@@ -242,8 +231,6 @@ export function AppShell() {
         <div className="app-content" data-layout-region="app-content">
           <Outlet />
         </div>
-        <ShellExtensionSlot id="shell.bottom-player" />
-        <ShellExtensionSlot id="shell.right-drawer" />
       </main>
     </div>
   )

@@ -33,7 +33,7 @@
 - `service env plan --current-env-file` 离线服务环境计划入口：可从显式 JSON 当前环境计算 key 轮换和目标环境，不读取或写入系统服务管理器，适合三端部署前验证密钥轮换、strict-security、脱敏输出和验收命令建议。
 - `service plan --current-env-file` 离线三端安装计划入口：可用同一份当前服务环境渲染 Windows Service、macOS LaunchAgent/LaunchDaemon 和 Linux systemd user/system unit 的脱敏安装 artifact，并按目标平台生成 `verification_by_platform` 验收命令建议。
 - `--log-dir` / `STEWARD_LOG_DIR` 统一服务进程日志：`steward run` 启动时会把 Go 运行日志追加到 `<service-name>.log`，Windows Service、macOS LaunchAgent/LaunchDaemon 和 Linux systemd user/system unit 都能通过同一目录保留长时间后台运行证据；macOS 仍额外配置 launchd stdout/stderr 文件。
-- 工作台托管：正式发布目录默认在二进制同级包含 `ui/index.html`，`steward run` 会自动识别并托管，不需要额外参数；显式 `--ui-dir` / `STEWARD_UI_DIR` 仍可覆盖默认目录。`/api`、`/healthz` 和 `/readyz` 继续走管理 API，`/tools/steward` 等 SPA 路由返回 `index.html`，Peer 协议面不会托管 UI。
+- 工作台托管：正式发布目录默认在二进制同级包含 `ui/index.html`，`steward run` 会自动识别并托管，不需要额外参数；显式 `--ui-dir` / `STEWARD_UI_DIR` 仍可覆盖默认目录。`/api`、`/healthz` 和 `/readyz` 继续走管理 API，`/steward` 等 SPA 路由返回 `index.html`，Peer 协议面不会托管 UI。
 - 设备信任挑战验证：本机管理面可通过 `POST /api/steward/devices/{id}/verify` 远程挑战对端 Peer 面的 `POST /api/steward/pairing/challenge`，验证对端持有已登记公钥对应的 Ed25519 私钥。
 - 每台 peer 的远端拉取序号、最近同步时间和最近同步错误记录。
 - 设备吊销会写入 `device_revoke` 同步变更，其他设备接收后只会禁用该设备，不允许通过同步恢复信任。
@@ -716,7 +716,7 @@ go run ./cmd/steward run
 - `STEWARD_PEER_HTTP_ADDR`
 - `DATABASE_URL`
 - `STORAGE_DIR`
-- `STEWARD_UI_DIR`，显式 `--ui-dir` 或当前环境已有值优先；未提供时，如果安装目标二进制同级存在 `ui/index.html`，安装器会自动写入该目录。它用于让后台服务直接提供 `/tools/steward` 等本地界面入口。
+- `STEWARD_UI_DIR`，显式 `--ui-dir` 或当前环境已有值优先；未提供时，如果安装目标二进制同级存在 `ui/index.html`，安装器会自动写入该目录。它用于让后台服务直接提供 `/steward` 等本地界面入口。
 - `STEWARD_AGENT_ID`
 - `STEWARD_PUBLIC_API_BASE`，仅在传入 `--public-api-base` 时写入。
 - `STEWARD_SYNC_SECRET`，仅在传入 `--sync-secret` 时写入，干跑输出会脱敏。
@@ -1713,7 +1713,7 @@ POST /api/steward/autonomy/approvals/{id}/reject
 前端入口：
 
 ```text
-/tools/steward
+/steward
 ```
 
 开发模式下通常由 Vite 提供该路由；`deploy/build-steward.ps1` 生成的后台软件目录会自动托管同级 `ui/`。自定义布局仍可通过 `steward run --ui-dir <frontend-dist>` 或 `steward service install --ui-dir <frontend-dist>` 覆盖。工作台目录必须包含 `index.html`；缺失的静态资源返回 404，普通 SPA 路由回退到 `index.html`。

@@ -38,9 +38,10 @@ func TestWithStaticWorkspaceServesAPIAndSPA(t *testing.T) {
 	assertResponseBody(t, handler, "/api/ping", `{"ok":true}`)
 	assertResponseBody(t, handler, "/healthz", "ok")
 	assertResponseBody(t, handler, "/assets/app.js", "console.log('steward')")
+	assertResponseBody(t, handler, "/steward", "steward workspace")
 	assertResponseBody(t, handler, "/tools/steward", "steward workspace")
 	assertCacheControl(t, handler, "/assets/app.js", "no-cache")
-	assertCacheControl(t, handler, "/tools/steward", "no-store")
+	assertCacheControl(t, handler, "/steward", "no-store")
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)

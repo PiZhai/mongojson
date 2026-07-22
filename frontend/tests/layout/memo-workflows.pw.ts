@@ -146,7 +146,7 @@ async function installMemoWebSocket(page: Page) {
 }
 
 async function openMemoWorkspace(page: Page) {
-  await page.goto('/tools/memo-docs?slug=workflow-test')
+  await page.goto('/documents/memo?slug=workflow-test')
   await expect(page.getByText('编辑这里')).toBeVisible()
   await page.waitForLoadState('networkidle')
 }

@@ -4,10 +4,11 @@ export const stewardModule = {
   id: 'steward',
   version: '4.8.0',
   title: '私人管家',
-  group: 'documents',
+  workspace: 'steward',
   order: 40,
   route: {
-    path: '/tools/steward',
+    path: '/steward',
+    legacyPaths: ['/tools/steward'],
     load: () => import('./StewardWorkspace').then((module) => ({ default: module.StewardWorkspace })),
   },
   navigation: { label: '私人管家', icon: 'steward' },

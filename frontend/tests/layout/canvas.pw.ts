@@ -10,7 +10,7 @@ async function expectNoRootOverflow(page: import('@playwright/test').Page) {
 
 test('canvas renders a stable full-size editing surface', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await page.goto('/tools/canvas')
+  await page.goto('/documents/canvas')
   await expect(page.locator('.canvas-stage .excalidraw')).toBeVisible()
   await expect(page.getByRole('button', { name: '插入便签' })).toBeEnabled()
 
@@ -26,7 +26,7 @@ test('canvas renders a stable full-size editing surface', async ({ page }) => {
 
 test('canvas mobile drawer overlays without widening the page', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/tools/canvas')
+  await page.goto('/documents/canvas')
   await expect(page.locator('.canvas-stage .excalidraw')).toBeVisible()
 
   const [drawer, stage] = await Promise.all([

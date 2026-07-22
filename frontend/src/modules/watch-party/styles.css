@@ -1,4 +1,11 @@
 /* Feature-owned styles. Keep selectors scoped to this module. */
+.entertainment-workspace-shell .watch-party-shell { background: transparent; }
+.entertainment-workspace-shell .watch-control-bar,
+.entertainment-workspace-shell .watch-panel,
+.entertainment-workspace-shell .watch-icon-button,
+.entertainment-workspace-shell .watch-rate-control { background: var(--surface-primary); border-color: var(--border-default); }
+.entertainment-workspace-shell .watch-file-picker { background: var(--surface-raised); border-color: rgba(196, 181, 253, 0.4); }
+
 .watch-party-shell {
   flex: 1 1 auto;
   min-width: 0;

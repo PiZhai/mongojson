@@ -4,13 +4,14 @@ export const musicModule = {
   id: 'music',
   version: '1.0.0',
   title: '音乐播放器',
-  group: 'media',
+  workspace: 'entertainment',
   order: 60,
   route: {
-    path: '/tools/music',
+    path: '/entertainment/music',
+    legacyPaths: ['/tools/music'],
     load: () => import('./MusicWorkspace').then((module) => ({ default: module.MusicWorkspace })),
   },
-  navigation: { label: '音乐播放器', icon: 'music' },
+  navigation: { label: '音乐', icon: 'music' },
   runtime: {
     provider: () =>
       import('./MusicPlayerProvider').then((module) => ({ default: module.MusicPlayerProvider })),
