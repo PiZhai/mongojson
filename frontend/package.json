@@ -16,6 +16,7 @@
     "validate:breakpoints": "node scripts/validate-breakpoints.cjs"
   },
   "dependencies": {
+    "@base-ui/react": "^1.6.0",
     "@blocknote/core": "^0.51.4",
     "@blocknote/mantine": "^0.51.4",
     "@blocknote/react": "^0.51.4",

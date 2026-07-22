@@ -193,6 +193,12 @@ each workspace. A module belongs to exactly one workspace, and its primary route
 must use that workspace's route prefix. Legacy paths are compatibility redirects
 only and must preserve query strings and hashes.
 
+Shared accessible interaction primitives SHOULD use Base UI (`@base-ui/react`)
+instead of duplicating focus management, keyboard navigation, dismissal, and
+ARIA behavior. Base UI remains an unstyled behavior layer: workspace components
+MUST apply the project's semantic tokens and scoped styles rather than introducing
+a second visual system. The global workspace launcher is the reference integration.
+
 ### 5.2 Registry
 
 The **Module Registry** is the single source of truth for registered modules.
