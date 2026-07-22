@@ -833,24 +833,6 @@
   }
   .memo-document-drawer-pinned { visibility: visible; pointer-events: auto; transform: none; }
   .memo-archive-toggle { display: none; }
-  .memo-workbench { grid-template-columns: minmax(660px, 1fr) 6px minmax(240px, 280px); }
-  .memo-document-surface { grid-row: 1; grid-column: 1; }
-  .memo-resize-outline { grid-row: 1; grid-column: 2; }
-  .memo-outline-panel { grid-row: 1; grid-column: 3; }
-  .memo-resize-notes { display: none; }
-  .memo-side-note-rail {
-    position: absolute;
-    z-index: 12;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(var(--memo-note-rail-width), calc(100% - 48px));
-    box-shadow: -12px 0 32px rgb(72 51 27 / 16%);
-    transform: translateX(105%);
-    transition: transform 180ms ease;
-  }
-  .memo-side-note-rail.memo-panel-open { transform: translateX(0); }
-  .memo-toolbar-actions .memo-panel-toggle { display: inline-flex; }
   .memo-mode-focus { grid-template-columns: minmax(0, 1fr); }
   .memo-mode-focus .memo-document-drawer { display: none; }
   .memo-mode-focus .memo-workspace-toolbar,
