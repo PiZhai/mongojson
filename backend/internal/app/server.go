@@ -44,13 +44,17 @@ func NewServer() (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	discoveryOptions, err := peerdiscovery.OptionsFromEnv()
-	if err != nil {
-		return nil, fmt.Errorf("load steward peer discovery config: %w", err)
-	}
-	peerDiscovery, err := peerdiscovery.New(discoveryOptions)
-	if err != nil {
-		return nil, fmt.Errorf("configure steward peer discovery: %w", err)
+	stewardDisabled := cfg.ModuleDisabled("steward")
+	var peerDiscovery *peerdiscovery.Manager
+	if !stewardDisabled {
+		discoveryOptions, discoveryErr := peerdiscovery.OptionsFromEnv()
+		if discoveryErr != nil {
+			return nil, fmt.Errorf("load steward peer discovery config: %w", discoveryErr)
+		}
+		peerDiscovery, discoveryErr = peerdiscovery.New(discoveryOptions)
+		if discoveryErr != nil {
+			return nil, fmt.Errorf("configure steward peer discovery: %w", discoveryErr)
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "uploads"), 0o755); err != nil {
@@ -82,14 +86,17 @@ func NewServer() (*Server, error) {
 	memoSyncHub := memosync.NewHub()
 	musicService := music.NewService(db, fileStore)
 	canvasService := canvas.NewService(db, fileStore)
-	stewardService := steward.NewService(db, steward.WithPeerDiscovery(peerDiscovery), steward.WithStorageDir(cfg.StorageDir))
 	watchSyncHub := watchsync.NewHub()
-	if err := stewardService.EnsureDefaults(context.Background()); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("ensure steward defaults: %w", err)
+	var stewardService *steward.Service
+	var stewardDaemon *steward.Daemon
+	if !stewardDisabled {
+		stewardService = steward.NewService(db, steward.WithPeerDiscovery(peerDiscovery), steward.WithStorageDir(cfg.StorageDir))
+		if err := stewardService.EnsureDefaults(context.Background()); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("ensure steward defaults: %w", err)
+		}
+		stewardDaemon = steward.NewDaemon(stewardService, steward.DaemonOptionsFromEnv())
 	}
-
-	stewardDaemon := steward.NewDaemon(stewardService, steward.DaemonOptionsFromEnv())
 
 	worker := jobs.NewWorker(jobService, cfg)
 
@@ -104,10 +111,13 @@ func NewServer() (*Server, error) {
 		MusicService:       musicService,
 		CanvasService:      canvasService,
 		PresetService:      presetService,
-		StewardService:     stewardService,
 		WatchSync:          watchSyncHub,
 		Readiness:          readinessChecker(cfg, db, worker, stewardDaemon, peerDiscovery),
 		ManagementSessions: db,
+		StewardDisabled:    stewardDisabled,
+	}
+	if stewardService != nil {
+		deps.StewardService = stewardService
 	}
 
 	managementRouter := chi.NewRouter()
@@ -120,15 +130,20 @@ func NewServer() (*Server, error) {
 
 	peerRouter := chi.NewRouter()
 	httpapi.RegisterPeerRoutes(peerRouter, httpapi.PeerDependencies{
-		StewardService: stewardService,
-		Readiness:      deps.Readiness,
+		StewardService:  stewardService,
+		Readiness:       deps.Readiness,
+		StewardDisabled: stewardDisabled,
 	})
 
-	if err := peerDiscovery.Start(context.Background()); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("start steward peer discovery: %w", err)
+	if peerDiscovery != nil {
+		if err := peerDiscovery.Start(context.Background()); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("start steward peer discovery: %w", err)
+		}
 	}
-	stewardDaemon.Start(context.Background())
+	if stewardDaemon != nil {
+		stewardDaemon.Start(context.Background())
+	}
 	worker.Start(context.Background())
 	cleanup.Start(context.Background())
 
@@ -170,33 +185,41 @@ func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker, s
 			failures = append(failures, "worker")
 		}
 
-		if stewardDaemon.IsRunning() {
+		if stewardDaemon == nil {
+			checks["steward"] = "disabled"
+		} else if stewardDaemon.IsRunning() {
 			checks["steward_daemon"] = "ok"
 		} else {
 			checks["steward_daemon"] = "error: not running"
 			failures = append(failures, "steward_daemon")
 		}
-		if err := stewardDaemon.Readiness(ctx); err != nil {
-			checks["steward_runtime"] = "error: " + err.Error()
-			failures = append(failures, "steward_runtime")
-		} else {
-			checks["steward_runtime"] = "ok"
+		if stewardDaemon != nil {
+			if err := stewardDaemon.Readiness(ctx); err != nil {
+				checks["steward_runtime"] = "error: " + err.Error()
+				failures = append(failures, "steward_runtime")
+			} else {
+				checks["steward_runtime"] = "ok"
+			}
 		}
 
-		discoveryStatus := peerDiscovery.Status()
-		if !discoveryStatus.Enabled {
+		if peerDiscovery == nil {
 			checks["peer_discovery"] = "disabled"
-		} else if !peerDiscovery.IsRunning() {
-			checks["peer_discovery"] = "error: not running"
-			failures = append(failures, "peer_discovery")
-		} else if strings.TrimSpace(discoveryStatus.LastError) != "" {
-			checks["peer_discovery"] = "error: " + discoveryStatus.LastError
-			failures = append(failures, "peer_discovery")
-		} else if discoveryStatus.LastAnnouncementAt == nil {
-			checks["peer_discovery"] = "error: no signed announcement sent yet"
-			failures = append(failures, "peer_discovery")
 		} else {
-			checks["peer_discovery"] = "ok"
+			discoveryStatus := peerDiscovery.Status()
+			if !discoveryStatus.Enabled {
+				checks["peer_discovery"] = "disabled"
+			} else if !peerDiscovery.IsRunning() {
+				checks["peer_discovery"] = "error: not running"
+				failures = append(failures, "peer_discovery")
+			} else if strings.TrimSpace(discoveryStatus.LastError) != "" {
+				checks["peer_discovery"] = "error: " + discoveryStatus.LastError
+				failures = append(failures, "peer_discovery")
+			} else if discoveryStatus.LastAnnouncementAt == nil {
+				checks["peer_discovery"] = "error: no signed announcement sent yet"
+				failures = append(failures, "peer_discovery")
+			} else {
+				checks["peer_discovery"] = "ok"
+			}
 		}
 
 		if len(failures) > 0 {

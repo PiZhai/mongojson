@@ -11,6 +11,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/backend ./cmd/server
 
 FROM debian:bookworm-slim
+ARG APP_DISABLED_MODULES=""
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
     && sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
@@ -19,6 +20,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+ENV APP_DISABLED_MODULES=$APP_DISABLED_MODULES
 COPY --from=build /out/backend /usr/local/bin/backend
 COPY .env.example /app/.env.example
 

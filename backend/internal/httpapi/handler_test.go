@@ -119,6 +119,20 @@ func TestManagementAndPeerRoutersExposeDisjointStewardSurfaces(t *testing.T) {
 	assertRouteStatus(t, peer, http.MethodGet, "/api/steward/sync/probe?entity_type=task&entity_id=task-1", http.StatusServiceUnavailable)
 }
 
+func TestDisabledStewardModuleReturnsNotFound(t *testing.T) {
+	readiness := func(context.Context) (map[string]string, error) {
+		return map[string]string{"database": "ok"}, nil
+	}
+	management := chi.NewRouter()
+	RegisterManagementRoutes(management, Dependencies{Readiness: readiness, StewardDisabled: true})
+	peer := chi.NewRouter()
+	RegisterPeerRoutes(peer, PeerDependencies{Readiness: readiness, StewardDisabled: true})
+
+	assertRouteStatus(t, management, http.MethodGet, "/api/steward/overview", http.StatusNotFound)
+	assertRouteStatus(t, peer, http.MethodGet, "/api/steward/sync/changes", http.StatusNotFound)
+	assertRouteStatus(t, management, http.MethodGet, "/healthz", http.StatusOK)
+}
+
 func TestPeerReadyzDoesNotExposeInternalFailureDetails(t *testing.T) {
 	peer := chi.NewRouter()
 	RegisterPeerRoutes(peer, PeerDependencies{

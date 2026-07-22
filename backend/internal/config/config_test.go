@@ -123,3 +123,24 @@ func TestLoadRejectsWeakManagementTokenAndWildcardOrigin(t *testing.T) {
 		t.Fatalf("wildcard origin Load() error = %v", err)
 	}
 }
+
+func TestLoadDisablesStewardModule(t *testing.T) {
+	t.Setenv("APP_DISABLED_MODULES", " steward,STEWARD ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.ModuleDisabled("steward") {
+		t.Fatal("steward module should be disabled")
+	}
+}
+
+func TestLoadRejectsUnknownDisabledModule(t *testing.T) {
+	t.Setenv("APP_DISABLED_MODULES", "steward,unknown")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "APP_DISABLED_MODULES") {
+		t.Fatalf("Load() error = %v, want unsupported module error", err)
+	}
+}

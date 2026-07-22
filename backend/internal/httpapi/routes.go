@@ -279,11 +279,13 @@ type Dependencies struct {
 	WatchSync          *watchsync.Hub
 	Readiness          func(context.Context) (map[string]string, error)
 	ManagementSessions managementSessionStore
+	StewardDisabled    bool
 }
 
 type PeerDependencies struct {
-	StewardService StewardPeerStore
-	Readiness      func(context.Context) (map[string]string, error)
+	StewardService  StewardPeerStore
+	Readiness       func(context.Context) (map[string]string, error)
+	StewardDisabled bool
 }
 
 const maxPeerRequestBodyBytes int64 = 16 << 20
@@ -295,6 +297,9 @@ func RegisterRoutes(router chi.Router, deps Dependencies) {
 }
 
 func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
+	if deps.StewardDisabled {
+		router.Use(blockDisabledStewardRoutes)
+	}
 	handler := &Handler{deps: deps}
 	security := newManagementSecurity(
 		deps.Config.ManagementAuthRequired,
@@ -531,6 +536,9 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 // devices. It deliberately excludes tasks, memories, autonomy, permissions,
 // device revocation, and every other management operation.
 func RegisterPeerRoutes(router chi.Router, deps PeerDependencies) {
+	if deps.StewardDisabled {
+		router.Use(blockDisabledStewardRoutes)
+	}
 	handler := &Handler{deps: Dependencies{
 		Readiness: deps.Readiness,
 	}, peerService: deps.StewardService}
@@ -547,6 +555,17 @@ func RegisterPeerRoutes(router chi.Router, deps PeerDependencies) {
 		r.Get("/remote-execution/dispatches/{id}", handler.getStewardRemoteExecutionStatus)
 		r.Post("/remote-execution/dispatches/{id}/cancel", handler.cancelStewardRemoteExecution)
 		r.Get("/broker-federation/status", handler.getStewardRemoteBrokerStatus)
+	})
+}
+
+func blockDisabledStewardRoutes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "/api/steward" || strings.HasPrefix(path, "/api/steward/") {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

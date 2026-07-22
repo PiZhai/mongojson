@@ -1,6 +1,9 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 
+ARG VITE_INCLUDED_MODULES=""
+ENV VITE_INCLUDED_MODULES=$VITE_INCLUDED_MODULES
+
 COPY package.json package-lock.json* ./
 RUN npm config set registry https://registry.npmmirror.com \
     && npm install

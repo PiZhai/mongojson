@@ -24,6 +24,7 @@ type Config struct {
 	StorageDir               string
 	StewardUIDir             string
 	FileRetention            time.Duration
+	DisabledModules          map[string]bool
 }
 
 const DefaultHTTPAddr = "127.0.0.1:18080"
@@ -55,6 +56,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	disabledModules, err := parseDisabledModules(os.Getenv("APP_DISABLED_MODULES"))
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		HTTPAddr:                 strings.TrimSpace(getenv("HTTP_ADDR", DefaultHTTPAddr)),
 		PeerHTTPAddr:             strings.TrimSpace(os.Getenv("STEWARD_PEER_HTTP_ADDR")),
@@ -66,6 +71,7 @@ func Load() (Config, error) {
 		StorageDir:               getenv("STORAGE_DIR", "./data"),
 		StewardUIDir:             strings.TrimSpace(os.Getenv("STEWARD_UI_DIR")),
 		FileRetention:            time.Duration(retentionHours) * time.Hour,
+		DisabledModules:          disabledModules,
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -75,6 +81,26 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func (c Config) ModuleDisabled(module string) bool {
+	return c.DisabledModules[strings.ToLower(strings.TrimSpace(module))]
+}
+
+func parseDisabledModules(value string) (map[string]bool, error) {
+	const stewardModule = "steward"
+	disabled := map[string]bool{}
+	for _, raw := range strings.Split(value, ",") {
+		module := strings.ToLower(strings.TrimSpace(raw))
+		if module == "" {
+			continue
+		}
+		if module != stewardModule {
+			return nil, fmt.Errorf("APP_DISABLED_MODULES contains unsupported backend module %q", module)
+		}
+		disabled[module] = true
+	}
+	return disabled, nil
 }
 
 func parseManagementAllowedOrigins(value string) ([]string, error) {
