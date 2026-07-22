@@ -300,7 +300,7 @@
   min-height: 38px;
   padding: 0 12px;
   border-radius: 8px;
-  color: var(--text-secondary);
+  color: #fff;
   cursor: pointer;
   font-size: 13px;
   font-weight: 750;
@@ -309,8 +309,8 @@
 }
 
 .watch-rate-menu-item[data-highlighted],
-.watch-rate-menu-item:hover { background: transparent; color: var(--text-primary); }
-.watch-rate-menu-item.is-active { color: #c4b5fd; }
+.watch-rate-menu-item:hover { background: transparent; color: #fff; }
+.watch-rate-menu-item.is-active { color: #fff; }
 
 .watch-video-volume-panel {
   background: transparent;

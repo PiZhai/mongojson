@@ -230,6 +230,8 @@ test('watch controls reserve Space activation for Tab focus', async ({ page }) =
   await playbackRateTrigger.click({ force: true })
   await expect(page.locator('.watch-rate-menu')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await expect(page.locator('.watch-rate-menu')).toHaveCSS('outline-style', 'none')
+  await expect(page.locator('.watch-rate-menu-item').first()).toHaveCSS('color', 'rgb(255, 255, 255)')
+  await expect(page.locator('.watch-rate-menu-item.is-active')).toHaveCSS('color', 'rgb(255, 255, 255)')
   await page.keyboard.press('Escape')
   await playbackRateTrigger.focus()
   await page.keyboard.press('Tab')
