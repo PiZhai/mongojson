@@ -9,6 +9,7 @@ import { getWatchRoomWebSocketUrl } from './api'
 import { createManagementWebSocket } from '../../platform/auth/managementSession'
 import type { ToolStatus } from '../../shared/ui/toolStatus'
 import { StatusBanner } from '../../components/common/StatusBanner'
+import { inspectVideoAudioCompatibility } from './mediaCompatibility'
 import './midnight.css'
 
 type LocalVideo = {
@@ -185,6 +186,7 @@ export function WatchPartyWorkspace() {
     kind: 'idle',
     message: '选择本地视频后即可参与同步。',
   })
+  const [audioCompatibilityWarning, setAudioCompatibilityWarning] = useState<string | null>(null)
   const [localVideo, setLocalVideo] = useState<LocalVideo | null>(null)
   const [peerCount, setPeerCount] = useState(0)
   const [remoteState, setRemoteState] = useState<PlaybackState | null>(null)
@@ -437,8 +439,9 @@ export function WatchPartyWorkspace() {
     if (!file) {
       return
     }
-    if (localVideoRef.current) {
-      URL.revokeObjectURL(localVideoRef.current.objectUrl)
+    const previousVideo = localVideoRef.current
+    if (previousVideo) {
+      URL.revokeObjectURL(previousVideo.objectUrl)
     }
     const nextVideo: LocalVideo = {
       file,
@@ -446,10 +449,22 @@ export function WatchPartyWorkspace() {
       name: file.name,
       objectUrl: URL.createObjectURL(file),
     }
+    localVideoRef.current = nextVideo
     setLocalVideo(nextVideo)
     setPosition(0)
     setDuration(0)
+    setAudioCompatibilityWarning(null)
     setVideoStatus({ kind: 'success', message: `已选择：${file.name}` })
+
+    void inspectVideoAudioCompatibility(file).then((compatibility) => {
+      if (localVideoRef.current?.file !== file || !compatibility.unsupported) {
+        return
+      }
+
+      setAudioCompatibilityWarning(
+        `检测到 ${compatibility.audioCodec} 音轨，当前浏览器无法解码；画面可以播放，但不会有声音。请改用 AAC、Opus 或 MP3 音轨的视频。`,
+      )
+    })
   }
 
   const togglePlayback = useCallback(() => {
@@ -885,7 +900,7 @@ export function WatchPartyWorkspace() {
           <div className="watch-stage-footer">
             <div>
               <strong>{localVideo?.name || '尚未选择视频'}</strong>
-              <span>{videoStatus.message}</span>
+              <span>{audioCompatibilityWarning ?? videoStatus.message}</span>
             </div>
             <label className="watch-change-file">{localVideo ? '更换视频' : '选择视频'}<input accept="video/*,.mp4,.webm,.mkv,.mov,.m4v" onChange={(event) => chooseVideo(event.target.files)} type="file" /></label>
           </div>
