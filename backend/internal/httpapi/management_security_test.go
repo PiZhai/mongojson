@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -100,8 +101,9 @@ func TestManagementSecuritySupportsBearerAndExplicitSessionExchange(t *testing.T
 	if len(exchange.SessionToken) < 32 || strings.Contains(exchange.SessionToken, token) {
 		t.Fatalf("session exchange returned an invalid session token: %q", exchange.SessionToken)
 	}
-	if len(recorder.Result().Cookies()) != 0 {
-		t.Fatal("plaintext loopback session exchange must not issue a host-wide cookie")
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != managementSessionCookieName || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode || cookies[0].Path != "/api" {
+		t.Fatalf("session exchange cookie = %#v", cookies)
 	}
 
 	read := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18080/api/protected", nil)
@@ -110,6 +112,14 @@ func TestManagementSecuritySupportsBearerAndExplicitSessionExchange(t *testing.T
 	handler.ServeHTTP(recorder, read)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("session read status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	cookieRead := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18080/api/protected", nil)
+	cookieRead.AddCookie(cookies[0])
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, cookieRead)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("cookie session read status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 
 	writeWithoutOrigin := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:18080/api/protected", nil)
@@ -127,6 +137,64 @@ func TestManagementSecuritySupportsBearerAndExplicitSessionExchange(t *testing.T
 	handler.ServeHTTP(recorder, write)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("same-origin session write status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestManagementSecurityBrowserTicketCreatesPersistentCookieSession(t *testing.T) {
+	const token = "management-token-0123456789abcdef"
+	store := newMemoryManagementSessionStore()
+	security := newManagementSecurity(true, token, nil, false, store)
+	handler := managementSecurityRouter(security)
+
+	issue := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:18080/api/auth/browser-tickets", nil)
+	issue.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, issue)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("ticket issue status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var issued struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &issued); err != nil || issued.Ticket == "" {
+		t.Fatalf("ticket response = %q, error = %v", recorder.Body.String(), err)
+	}
+
+	consume := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18080/api/auth/browser-tickets/"+issued.Ticket, nil)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, consume)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/tools/steward" {
+		t.Fatalf("ticket consume status = %d location=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != managementSessionCookieName {
+		t.Fatalf("ticket cookie = %#v", cookies)
+	}
+
+	replayed := httptest.NewRecorder()
+	handler.ServeHTTP(replayed, consume.Clone(context.Background()))
+	if replayed.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed ticket status = %d, want 401", replayed.Code)
+	}
+
+	restarted := newManagementSecurity(true, token, nil, false, store)
+	restartedHandler := managementSecurityRouter(restarted)
+	protected := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18080/api/protected", nil)
+	protected.AddCookie(cookies[0])
+	recorder = httptest.NewRecorder()
+	restartedHandler.ServeHTTP(recorder, protected)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("persisted cookie after restart status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestManagementSecurityBrowserTicketRequiresRootToken(t *testing.T) {
+	handler := managementSecurityTestRouter(config.Config{ManagementAuthRequired: true, ManagementAuthToken: "management-token-0123456789abcdef"})
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:18080/api/auth/browser-tickets", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated ticket issue status = %d, want 401", recorder.Code)
 	}
 }
 
@@ -353,15 +421,53 @@ func TestManagementSecurityRejectsInvalidTrustedForwardedProtocol(t *testing.T) 
 }
 
 func managementSecurityTestRouter(cfg config.Config) http.Handler {
-	router := chi.NewRouter()
 	security := newManagementSecurity(cfg.ManagementAuthRequired, cfg.ManagementAuthToken, cfg.ManagementAllowedOrigins, cfg.AllowRemoteManagement)
+	return managementSecurityRouter(security)
+}
+
+func managementSecurityRouter(security *managementSecurity) http.Handler {
+	router := chi.NewRouter()
 	router.Route("/api", func(r chi.Router) {
 		r.Use(security.middleware)
 		r.Get("/auth/session", security.getSession)
 		r.Post("/auth/session", security.exchangeSession)
 		r.Delete("/auth/session", security.deleteSession)
+		r.Post("/auth/browser-tickets", security.issueBrowserTicket)
+		r.Get("/auth/browser-tickets/{ticket}", security.consumeBrowserTicket)
 		r.Get("/protected", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 		r.Post("/protected", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	})
 	return router
+}
+
+type memoryManagementSessionStore struct {
+	sessions map[string]time.Time
+}
+
+func newMemoryManagementSessionStore() *memoryManagementSessionStore {
+	return &memoryManagementSessionStore{sessions: make(map[string]time.Time)}
+}
+
+func (s *memoryManagementSessionStore) SaveManagementSession(_ context.Context, tokenHash []byte, expiresAt time.Time) error {
+	s.sessions[string(tokenHash)] = expiresAt
+	return nil
+}
+
+func (s *memoryManagementSessionStore) ManagementSessionExpiry(_ context.Context, tokenHash []byte, now time.Time) (time.Time, bool, error) {
+	expiresAt, ok := s.sessions[string(tokenHash)]
+	return expiresAt, ok && now.Before(expiresAt), nil
+}
+
+func (s *memoryManagementSessionStore) DeleteManagementSession(_ context.Context, tokenHash []byte) error {
+	delete(s.sessions, string(tokenHash))
+	return nil
+}
+
+func (s *memoryManagementSessionStore) DeleteExpiredManagementSessions(_ context.Context, now time.Time) error {
+	for tokenHash, expiresAt := range s.sessions {
+		if !now.Before(expiresAt) {
+			delete(s.sessions, tokenHash)
+		}
+	}
+	return nil
 }

@@ -56,6 +56,28 @@ function Normalize-CompanionAPIBase([string]$Value) {
   if(-not $path.Equals('/api',[StringComparison]::OrdinalIgnoreCase)){throw "APIBase must end with /api: $Value"}
   return $uri.GetLeftPart([UriPartial]::Authority)+'/api'
 }
+function Get-WorkspaceShortcutPath {
+  $programs=[Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+  if([string]::IsNullOrWhiteSpace($programs)){throw 'current-user Start Menu programs directory is unavailable'}
+  return Join-Path $programs 'MongoJSON Steward.lnk'
+}
+function Write-WorkspaceShortcut([string]$Path,[string]$Executable,[string]$Arguments,[string]$WorkingDirectory) {
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path)|Out-Null
+  $shell=New-Object -ComObject WScript.Shell
+  try{
+    $shortcut=$shell.CreateShortcut($Path)
+    $shortcut.TargetPath=$Executable
+    $shortcut.Arguments=$Arguments
+    $shortcut.WorkingDirectory=$WorkingDirectory
+    $shortcut.Description='打开 MongoJSON Steward 工作区'
+    $shortcut.IconLocation="$Executable,0"
+    $shortcut.Save()
+  }finally{
+    if($null -ne $shortcut){[Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)|Out-Null}
+    if($null -ne $shell){[Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)|Out-Null}
+  }
+  Protect-CurrentUserPath $Path
+}
 function Stop-CompanionInstance([string]$ExecutablePath) {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   $expected=[IO.Path]::GetFullPath($ExecutablePath)
@@ -97,6 +119,7 @@ $installFull=[IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
 $APIBase=Normalize-CompanionAPIBase $APIBase
 $effectiveManagementTokenFile=if(-not [string]::IsNullOrWhiteSpace($ManagementAccessTokenFile)){[IO.Path]::GetFullPath($ManagementAccessTokenFile)}else{Join-Path $installFull 'management-access-token.txt'}
 $requireManagementToken=-not [bool]$AllowUnauthenticatedDevelopment
+$shortcutPath=Get-WorkspaceShortcutPath
 if(Test-Path -LiteralPath $effectiveManagementTokenFile -PathType Leaf){
   $managementTokenItem=Get-Item -LiteralPath $effectiveManagementTokenFile -Force
   if(($managementTokenItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "ManagementAccessTokenFile must not be a reparse point: $effectiveManagementTokenFile"}
@@ -108,7 +131,7 @@ if(Test-Path -LiteralPath $effectiveManagementTokenFile -PathType Leaf){
   throw "ManagementAccessTokenFile is required for a production Companion installation: $effectiveManagementTokenFile. Use -AllowUnauthenticatedDevelopment only for an explicit local development instance."
 }
 
-$result=[ordered]@{ok=$true;task_name=$TaskName;install_dir=$InstallDir;service_name=$ServiceName;api_base=$APIBase;management_auth_required=$requireManagementToken;run_level="Limited";updated=$false;rollback_dir=$null;rollback_task_xml=$null;previous_task_present=$false;previous_task_running=$false;transaction_state='not_started'}
+$result=[ordered]@{ok=$true;task_name=$TaskName;install_dir=$InstallDir;service_name=$ServiceName;api_base=$APIBase;management_auth_required=$requireManagementToken;run_level="Limited";shortcut_path=$shortcutPath;updated=$false;rollback_dir=$null;rollback_task_xml=$null;previous_task_present=$false;previous_task_running=$false;transaction_state='not_started'}
 if ($PSCmdlet.ShouldProcess($InstallDir, "atomically install Steward Session Companion")) {
   $parent=Split-Path -Parent $installFull
   if([string]::IsNullOrWhiteSpace($parent)){throw "Companion InstallDir must have a parent directory: $installFull"}
@@ -126,12 +149,15 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "atomically install Steward Session Com
   $stageDir=Assert-PathWithin (Join-Path $parent (".MongojsonSteward.stage-"+$operationID)) $parent 'Companion stage directory'
   $backupDir=Assert-PathWithin (Join-Path $rollbackArea ("MongojsonSteward.rollback-"+$operationID)) $rollbackArea 'Companion rollback directory'
   $taskXMLPath=Assert-PathWithin (Join-Path $rollbackArea ("MongojsonSteward.task-"+$operationID+".xml")) $rollbackArea 'Companion task backup'
+  $shortcutBackupPath=Assert-PathWithin (Join-Path $rollbackArea ("MongojsonSteward.shortcut-"+$operationID+".lnk")) $rollbackArea 'Companion shortcut backup'
 
   # These flags are the transaction journal. Rollback is deliberately limited
   # to mutations which this invocation actually completed; an early copy or
   # ACL failure must never delete the pre-existing installation or task.
   $stageCreated=$false;$taskExported=$false;$oldTaskStopped=$false;$oldTaskUnregistered=$false
   $oldInstallMoved=$false;$stageActivated=$false;$newTaskRegistered=$false;$newTaskStarted=$false
+  $oldShortcutPresent=Test-Path -LiteralPath $shortcutPath -PathType Leaf
+  $shortcutBackedUp=$false;$newShortcutWritten=$false
   $oldTask=Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   $oldTaskRunning=$false
   $hadInstallDir=Test-Path -LiteralPath $installFull
@@ -145,6 +171,7 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "atomically install Steward Session Com
       Protect-CurrentUserPath $taskXMLPath
       $taskExported=$true
     }
+    if($oldShortcutPresent){Copy-Item -LiteralPath $shortcutPath -Destination $shortcutBackupPath -Force;Protect-CurrentUserPath $shortcutBackupPath;$shortcutBackedUp=$true}
 
     New-Item -ItemType Directory -Path $stageDir | Out-Null
     $stageCreated=$true;$result.transaction_state='staged'
@@ -188,15 +215,21 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "atomically install Steward Session Com
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
     $newTaskRegistered=$true;$result.transaction_state='registered'
+    $launchArguments = "--open-workspace --management-access-token-file `"$managementTokenPath`" --require-management-token=$requireManagementTokenArgument --api `"$APIBase`""
+    Write-WorkspaceShortcut $shortcutPath $exe $launchArguments $installFull
+    $newShortcutWritten=$true
     if ($Start) { Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop;$newTaskStarted=$true }
     $result.updated=$hadInstallDir -or $null -ne $oldTask
     if($KeepRollbackData -and $hadInstallDir){$result.rollback_dir=$backupDir}else{Remove-DirectoryWithRetry $backupDir}
     if($KeepRollbackData -and $oldTask){$result.rollback_task_xml=$taskXMLPath}elseif($taskExported -and (Test-Path -LiteralPath $taskXMLPath)){Remove-Item -LiteralPath $taskXMLPath -Force}
+    if($shortcutBackedUp -and (Test-Path -LiteralPath $shortcutBackupPath)){Remove-Item -LiteralPath $shortcutBackupPath -Force}
     $result.transaction_state='committed'
   } catch {
     $reason=$_.Exception.Message
     $rollbackErrors=New-Object System.Collections.Generic.List[string]
     if($newTaskStarted){try{Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop}catch{$rollbackErrors.Add("stop new task: $($_.Exception.Message)")}}
+    if($newShortcutWritten -and (Test-Path -LiteralPath $shortcutPath)){try{Remove-Item -LiteralPath $shortcutPath -Force -ErrorAction Stop}catch{$rollbackErrors.Add("remove new shortcut: $($_.Exception.Message)")}}
+    if($shortcutBackedUp){try{Copy-Item -LiteralPath $shortcutBackupPath -Destination $shortcutPath -Force -ErrorAction Stop}catch{$rollbackErrors.Add("restore workspace shortcut: $($_.Exception.Message)")}}
     if($newTaskRegistered){try{Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop}catch{$rollbackErrors.Add("remove new task: $($_.Exception.Message)")}}
     if($stageActivated){
       try{Assert-OperationDirectory $installFull $operationID;Remove-DirectoryWithRetry $installFull}catch{$rollbackErrors.Add("remove activated Companion: $($_.Exception.Message)")}
@@ -212,6 +245,7 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "atomically install Steward Session Com
     }
     if($stageCreated){try{Assert-OperationDirectory $stageDir $operationID;Remove-DirectoryWithRetry $stageDir}catch{$rollbackErrors.Add("remove Companion stage: $($_.Exception.Message)")}}
     if($taskExported -and (Test-Path -LiteralPath $taskXMLPath)){Remove-Item -LiteralPath $taskXMLPath -Force -ErrorAction SilentlyContinue}
+    if($shortcutBackedUp -and (Test-Path -LiteralPath $shortcutBackupPath)){Remove-Item -LiteralPath $shortcutBackupPath -Force -ErrorAction SilentlyContinue}
     $suffix=if($rollbackErrors.Count -gt 0){" Rollback also reported: $($rollbackErrors -join '; ')"}else{''}
     throw "Session Companion installation failed; completed transaction steps were rolled back: $reason.$suffix"
   }

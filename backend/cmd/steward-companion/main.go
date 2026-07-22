@@ -46,6 +46,7 @@ func main() {
 	managementAccessTokenFile := fs.String("management-access-token-file", envOrDefault("STEWARD_MANAGEMENT_ACCESS_TOKEN_FILE", defaultManagementAccessTokenFile()), "protected file containing the local management API bearer token")
 	requireManagementToken := fs.Bool("require-management-token", boolEnvOrDefault("STEWARD_COMPANION_REQUIRE_MANAGEMENT_TOKEN", true), "fail closed unless a management API bearer token is available; set false only for explicit unauthenticated development")
 	apiBase := fs.String("api", envOrDefault("STEWARD_API_BASE", "http://127.0.0.1:18080/api"), "local steward API base")
+	openWorkspace := fs.Bool("open-workspace", false, "authenticate the current Windows user and open the Steward workspace in the default browser")
 	dbPath := fs.String("db", filepath.Join(dataDir, "MongojsonSteward", "companion.db"), "encrypted row buffer SQLite path")
 	flushInterval := fs.Duration("flush-interval", 10*time.Second, "buffer flush interval")
 	controlInterval := fs.Duration("control-interval", 15*time.Second, "main-service capture control refresh interval")
@@ -74,6 +75,18 @@ func main() {
 	managementClient, err := stewardcompanion.NewManagementHTTPClient(managementToken, 20*time.Second)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *openWorkspace {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		launchURL, err := stewardcompanion.RequestBrowserLaunchURL(ctx, *apiBase, managementClient)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := openDefaultBrowser(launchURL); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 	key, err := companionKey()
 	if err != nil {

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -12,12 +13,23 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const (
-	managementSessionTTL        = 12 * time.Hour
+	managementSessionTTL        = 30 * 24 * time.Hour
+	managementBrowserTicketTTL  = 45 * time.Second
 	maxManagementLoginBodyBytes = 4 << 10
+	managementSessionCookieName = "steward_management_session"
 )
+
+type managementSessionStore interface {
+	SaveManagementSession(context.Context, []byte, time.Time) error
+	ManagementSessionExpiry(context.Context, []byte, time.Time) (time.Time, bool, error)
+	DeleteManagementSession(context.Context, []byte) error
+	DeleteExpiredManagementSessions(context.Context, time.Time) error
+}
 
 type managementSecurity struct {
 	required        bool
@@ -27,14 +39,21 @@ type managementSecurity struct {
 	now             func() time.Time
 	sessionsMu      sync.Mutex
 	sessions        map[[sha256.Size]byte]time.Time
+	sessionStore    managementSessionStore
+	ticketsMu       sync.Mutex
+	tickets         map[[sha256.Size]byte]time.Time
 }
 
-func newManagementSecurity(required bool, token string, allowedOrigins []string, allowRemoteHost bool) *managementSecurity {
+func newManagementSecurity(required bool, token string, allowedOrigins []string, allowRemoteHost bool, stores ...managementSessionStore) *managementSecurity {
 	origins := make(map[string]struct{}, len(allowedOrigins))
 	for _, origin := range allowedOrigins {
 		if normalized := normalizeManagementOrigin(origin); normalized != "" {
 			origins[normalized] = struct{}{}
 		}
+	}
+	var sessionStore managementSessionStore
+	if len(stores) > 0 {
+		sessionStore = stores[0]
 	}
 	return &managementSecurity{
 		required:        required || allowRemoteHost,
@@ -43,6 +62,8 @@ func newManagementSecurity(required bool, token string, allowedOrigins []string,
 		allowRemoteHost: allowRemoteHost,
 		now:             time.Now,
 		sessions:        make(map[[sha256.Size]byte]time.Time),
+		sessionStore:    sessionStore,
+		tickets:         make(map[[sha256.Size]byte]time.Time),
 	}
 }
 
@@ -78,7 +99,7 @@ func (s *managementSecurity) middleware(next http.Handler) http.Handler {
 		}
 
 		authenticatedByRoot := s.validRootBearer(r.Header.Get("Authorization"))
-		authenticatedBySession := s.validSessionBearer(r.Header.Get("Authorization"))
+		authenticatedBySession := s.validSessionBearerContext(r.Context(), r.Header.Get("Authorization")) || s.validSessionCookie(r)
 		authenticatedByWebSocket := s.validWebSocketSession(r)
 		if !authenticatedByRoot && !authenticatedBySession && !authenticatedByWebSocket {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="steward-management"`)
@@ -117,7 +138,7 @@ func managementRequestHostname(hostport string) string {
 }
 
 func (s *managementSecurity) getSession(w http.ResponseWriter, r *http.Request) {
-	authenticated := !s.required || s.validBearer(r.Header.Get("Authorization"))
+	authenticated := !s.required || s.validRootBearer(r.Header.Get("Authorization")) || s.validSessionBearerContext(r.Context(), r.Header.Get("Authorization")) || s.validSessionCookie(r)
 	w.Header().Set("Cache-Control", "no-store")
 	respondJSON(w, http.StatusOK, map[string]bool{
 		"required":      s.required,
@@ -151,11 +172,12 @@ func (s *managementSecurity) exchangeSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	sessionToken, expires, err := s.issueSessionToken()
+	sessionToken, expires, err := s.issueSessionTokenContext(r.Context())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "management session could not be created")
 		return
 	}
+	s.setSessionCookie(w, r, sessionToken, expires)
 	w.Header().Set("Cache-Control", "no-store")
 	respondJSON(w, http.StatusOK, map[string]any{
 		"required":      true,
@@ -166,9 +188,55 @@ func (s *managementSecurity) exchangeSession(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *managementSecurity) deleteSession(w http.ResponseWriter, r *http.Request) {
-	s.revokeSessionToken(bearerToken(r.Header.Get("Authorization")))
+	token := bearerToken(r.Header.Get("Authorization"))
+	if token == "" || s.validRootBearer(r.Header.Get("Authorization")) {
+		if cookie, err := r.Cookie(managementSessionCookieName); err == nil {
+			token = cookie.Value
+		}
+	}
+	_ = s.revokeSessionTokenContext(r.Context(), token)
+	s.clearSessionCookie(w, r)
 	w.Header().Set("Cache-Control", "no-store")
 	respondJSON(w, http.StatusOK, map[string]bool{"required": s.required, "authenticated": !s.required})
+}
+
+func (s *managementSecurity) issueBrowserTicket(w http.ResponseWriter, r *http.Request) {
+	if !s.required || s.token == "" {
+		httpError(w, http.StatusServiceUnavailable, "management authentication is not configured")
+		return
+	}
+	if !s.validRootBearer(r.Header.Get("Authorization")) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="steward-management"`)
+		httpError(w, http.StatusUnauthorized, "the root management token is required to create a browser ticket")
+		return
+	}
+	ticket, expires, err := s.newBrowserTicket()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "browser ticket could not be created")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	respondJSON(w, http.StatusCreated, map[string]any{
+		"ticket":      ticket,
+		"launch_path": "/api/auth/browser-tickets/" + url.PathEscape(ticket),
+		"expires_at":  expires.UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *managementSecurity) consumeBrowserTicket(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if !s.consumeBrowserTicketValue(chi.URLParam(r, "ticket")) {
+		httpError(w, http.StatusUnauthorized, "browser ticket is invalid, expired, or already used")
+		return
+	}
+	sessionToken, expires, err := s.issueSessionTokenContext(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "management session could not be created")
+		return
+	}
+	s.setSessionCookie(w, r, sessionToken, expires)
+	http.Redirect(w, r, "/tools/steward", http.StatusSeeOther)
 }
 
 func (s *managementSecurity) handlePreflight(w http.ResponseWriter, r *http.Request, originPresent bool) {
@@ -260,6 +328,15 @@ func (s *managementSecurity) validSessionBearer(header string) bool {
 	return s.validSessionToken(bearerToken(header))
 }
 
+func (s *managementSecurity) validSessionBearerContext(ctx context.Context, header string) bool {
+	return s.validSessionTokenContext(ctx, bearerToken(header))
+}
+
+func (s *managementSecurity) validSessionCookie(r *http.Request) bool {
+	cookie, err := r.Cookie(managementSessionCookieName)
+	return err == nil && s.validSessionTokenContext(r.Context(), cookie.Value)
+}
+
 func (s *managementSecurity) validWebSocketSession(r *http.Request) bool {
 	if !headerContainsToken(r.Header, "Connection", "upgrade") || !strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") {
 		return false
@@ -267,7 +344,7 @@ func (s *managementSecurity) validWebSocketSession(r *http.Request) bool {
 	for _, value := range r.Header.Values("Sec-WebSocket-Protocol") {
 		for _, protocol := range strings.Split(value, ",") {
 			protocol = strings.TrimSpace(protocol)
-			if strings.HasPrefix(protocol, "steward-management.") && s.validSessionToken(strings.TrimPrefix(protocol, "steward-management.")) {
+			if strings.HasPrefix(protocol, "steward-management.") && s.validSessionTokenContext(r.Context(), strings.TrimPrefix(protocol, "steward-management.")) {
 				return true
 			}
 		}
@@ -276,6 +353,10 @@ func (s *managementSecurity) validWebSocketSession(r *http.Request) bool {
 }
 
 func (s *managementSecurity) validSessionToken(token string) bool {
+	return s.validSessionTokenContext(context.Background(), token)
+}
+
+func (s *managementSecurity) validSessionTokenContext(ctx context.Context, token string) bool {
 	if !s.required {
 		return false
 	}
@@ -285,12 +366,25 @@ func (s *managementSecurity) validSessionToken(token string) bool {
 	hash := sha256.Sum256([]byte(token))
 	now := s.now()
 	s.sessionsMu.Lock()
-	defer s.sessionsMu.Unlock()
 	expires, ok := s.sessions[hash]
-	if !ok || !now.Before(expires) {
+	if ok && !now.Before(expires) {
 		delete(s.sessions, hash)
+		ok = false
+	}
+	s.sessionsMu.Unlock()
+	if ok {
+		return true
+	}
+	if s.sessionStore == nil {
 		return false
 	}
+	persistedExpiry, valid, err := s.sessionStore.ManagementSessionExpiry(ctx, hash[:], now)
+	if err != nil || !valid {
+		return false
+	}
+	s.sessionsMu.Lock()
+	s.sessions[hash] = persistedExpiry
+	s.sessionsMu.Unlock()
 	return true
 }
 
@@ -306,6 +400,10 @@ func headerContainsToken(header http.Header, name string, token string) bool {
 }
 
 func (s *managementSecurity) issueSessionToken() (string, time.Time, error) {
+	return s.issueSessionTokenContext(context.Background())
+}
+
+func (s *managementSecurity) issueSessionTokenContext(ctx context.Context) (string, time.Time, error) {
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
 		return "", time.Time{}, err
@@ -313,6 +411,12 @@ func (s *managementSecurity) issueSessionToken() (string, time.Time, error) {
 	token := base64.RawURLEncoding.EncodeToString(random)
 	hash := sha256.Sum256([]byte(token))
 	expires := s.now().Add(managementSessionTTL)
+	if s.sessionStore != nil {
+		if err := s.sessionStore.SaveManagementSession(ctx, hash[:], expires); err != nil {
+			return "", time.Time{}, err
+		}
+		_ = s.sessionStore.DeleteExpiredManagementSessions(ctx, s.now())
+	}
 	s.sessionsMu.Lock()
 	for existing, existingExpiry := range s.sessions {
 		if !s.now().Before(existingExpiry) {
@@ -325,13 +429,87 @@ func (s *managementSecurity) issueSessionToken() (string, time.Time, error) {
 }
 
 func (s *managementSecurity) revokeSessionToken(token string) {
+	_ = s.revokeSessionTokenContext(context.Background(), token)
+}
+
+func (s *managementSecurity) revokeSessionTokenContext(ctx context.Context, token string) error {
 	if token == "" {
-		return
+		return nil
 	}
 	hash := sha256.Sum256([]byte(token))
 	s.sessionsMu.Lock()
 	delete(s.sessions, hash)
 	s.sessionsMu.Unlock()
+	if s.sessionStore != nil {
+		return s.sessionStore.DeleteManagementSession(ctx, hash[:])
+	}
+	return nil
+}
+
+func (s *managementSecurity) newBrowserTicket() (string, time.Time, error) {
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		return "", time.Time{}, err
+	}
+	ticket := base64.RawURLEncoding.EncodeToString(random)
+	hash := sha256.Sum256([]byte(ticket))
+	now := s.now()
+	expires := now.Add(managementBrowserTicketTTL)
+	s.ticketsMu.Lock()
+	for existing, existingExpiry := range s.tickets {
+		if !now.Before(existingExpiry) {
+			delete(s.tickets, existing)
+		}
+	}
+	s.tickets[hash] = expires
+	s.ticketsMu.Unlock()
+	return ticket, expires, nil
+}
+
+func (s *managementSecurity) consumeBrowserTicketValue(ticket string) bool {
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return false
+	}
+	hash := sha256.Sum256([]byte(ticket))
+	now := s.now()
+	s.ticketsMu.Lock()
+	expires, ok := s.tickets[hash]
+	delete(s.tickets, hash)
+	s.ticketsMu.Unlock()
+	return ok && now.Before(expires)
+}
+
+func (s *managementSecurity) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     managementSessionCookieName,
+		Value:    token,
+		Path:     "/api",
+		Expires:  expires.UTC(),
+		MaxAge:   int(managementSessionTTL / time.Second),
+		HttpOnly: true,
+		Secure:   requestUsesHTTPS(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func (s *managementSecurity) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     managementSessionCookieName,
+		Path:     "/api",
+		Expires:  time.Unix(1, 0).UTC(),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   requestUsesHTTPS(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func requestUsesHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
 func normalizeManagementOrigin(raw string) string {
@@ -351,7 +529,8 @@ func normalizeManagementOrigin(raw string) string {
 }
 
 func isManagementSessionRoute(path string) bool {
-	return strings.TrimSuffix(path, "/") == "/api/auth/session"
+	path = strings.TrimSuffix(path, "/")
+	return path == "/api/auth/session" || path == "/api/auth/browser-tickets" || strings.HasPrefix(path, "/api/auth/browser-tickets/")
 }
 
 func isUnsafeManagementMethod(method string) bool {

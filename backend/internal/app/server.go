@@ -96,17 +96,18 @@ func NewServer() (*Server, error) {
 	cleanup := jobs.NewCleanupLoop(jobService, 30*time.Minute)
 
 	deps := httpapi.Dependencies{
-		Config:         cfg,
-		FileService:    fileService,
-		JobService:     jobService,
-		MemoService:    memoService,
-		MemoSync:       memoSyncHub,
-		MusicService:   musicService,
-		CanvasService:  canvasService,
-		PresetService:  presetService,
-		StewardService: stewardService,
-		WatchSync:      watchSyncHub,
-		Readiness:      readinessChecker(cfg, db, worker, stewardDaemon, peerDiscovery),
+		Config:             cfg,
+		FileService:        fileService,
+		JobService:         jobService,
+		MemoService:        memoService,
+		MemoSync:           memoSyncHub,
+		MusicService:       musicService,
+		CanvasService:      canvasService,
+		PresetService:      presetService,
+		StewardService:     stewardService,
+		WatchSync:          watchSyncHub,
+		Readiness:          readinessChecker(cfg, db, worker, stewardDaemon, peerDiscovery),
+		ManagementSessions: db,
 	}
 
 	managementRouter := chi.NewRouter()

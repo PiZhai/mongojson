@@ -41,6 +41,12 @@ func (db *DB) Migrate(ctx context.Context) error {
 	captureProfileDefault := defaultIntelligenceCaptureProfile(runtime.GOOS)
 	statements := []string{
 		`create extension if not exists "pgcrypto";`,
+		`create table if not exists management_sessions (
+			token_hash bytea primary key,
+			expires_at timestamptz not null,
+			created_at timestamptz not null default now()
+		);`,
+		`create index if not exists idx_management_sessions_expires_at on management_sessions(expires_at);`,
 		`create table if not exists tool_files (
 			id uuid primary key,
 			original_name text not null,

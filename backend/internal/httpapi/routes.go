@@ -267,17 +267,18 @@ type StewardOrchestrationStore interface {
 }
 
 type Dependencies struct {
-	Config         config.Config
-	FileService    *filemeta.Service
-	JobService     *jobs.Service
-	MemoService    MemoStore
-	MemoSync       *memosync.Hub
-	MusicService   MusicStore
-	CanvasService  CanvasStore
-	PresetService  *presets.Service
-	StewardService StewardStore
-	WatchSync      *watchsync.Hub
-	Readiness      func(context.Context) (map[string]string, error)
+	Config             config.Config
+	FileService        *filemeta.Service
+	JobService         *jobs.Service
+	MemoService        MemoStore
+	MemoSync           *memosync.Hub
+	MusicService       MusicStore
+	CanvasService      CanvasStore
+	PresetService      *presets.Service
+	StewardService     StewardStore
+	WatchSync          *watchsync.Hub
+	Readiness          func(context.Context) (map[string]string, error)
+	ManagementSessions managementSessionStore
 }
 
 type PeerDependencies struct {
@@ -300,6 +301,7 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		deps.Config.ManagementAuthToken,
 		deps.Config.ManagementAllowedOrigins,
 		deps.Config.AllowRemoteManagement,
+		deps.ManagementSessions,
 	)
 
 	router.Get("/healthz", handler.healthz)
@@ -310,6 +312,8 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/auth/session", security.getSession)
 		r.Post("/auth/session", security.exchangeSession)
 		r.Delete("/auth/session", security.deleteSession)
+		r.Post("/auth/browser-tickets", security.issueBrowserTicket)
+		r.Get("/auth/browser-tickets/{ticket}", security.consumeBrowserTicket)
 		r.Get("/system/readiness", handler.readinessDetails)
 		r.Post("/files", handler.uploadFile)
 		r.Get("/files/{id}/download", handler.downloadFile)

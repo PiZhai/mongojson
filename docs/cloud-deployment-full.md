@@ -264,7 +264,7 @@ stat -c '%a %U:%G %n' /opt/personal-tooling/env/.htpasswd
 
 ### 7.1 准备浏览器信任的 TLS 证书
 
-远程管理依赖浏览器安全上下文；公网 HTTP 会暴露认证数据，而且 Service Worker 在不安全上下文中不可用。因此生产配置强制 HTTPS，不能用 HTTP 作为正式入口。
+远程管理依赖浏览器安全上下文；公网 HTTP 会暴露认证数据，也无法可靠保护持久管理会话。因此生产配置强制 HTTPS，不能用 HTTP 作为正式入口。
 
 将与 `STEWARD_PUBLIC_ORIGIN` 主机名匹配、且被浏览器信任的证书放到固定位置：
 

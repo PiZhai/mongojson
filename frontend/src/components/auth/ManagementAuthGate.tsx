@@ -1,16 +1,8 @@
 import { type FormEvent, type ReactNode, useEffect, useState } from 'react'
-import {
-  clearManagementSessionToken,
-  ensureManagementTransport,
-  getManagementSessionToken,
-  setManagementSessionToken,
-  unauthorizedEventName,
-} from '../../platform/auth/managementSession'
 
 type SessionStatus = {
   required: boolean
   authenticated: boolean
-  session_token?: string
 }
 
 type ManagementAuthGateProps = {
@@ -76,22 +68,11 @@ export function ManagementAuthGate({ children }: ManagementAuthGateProps) {
 
     const observedFetch: typeof window.fetch = async (...args) => {
       const [input, init] = args
+      const response = await originalFetch.call(window, input, init)
       const requestUrl = input instanceof Request ? input.url : input.toString()
       const url = new URL(requestUrl, window.location.href)
-      const headers = new Headers(input instanceof Request ? input.headers : undefined)
-      new Headers(init?.headers).forEach((value, name) => headers.set(name, value))
-      if (
-        getManagementSessionToken()
-        && url.origin === window.location.origin
-        && url.pathname.startsWith('/api/')
-        && !headers.has('Authorization')
-      ) {
-        headers.set('Authorization', `Bearer ${getManagementSessionToken()}`)
-      }
-      const response = await originalFetch.call(window, input, { ...init, headers })
-      if (response.status === 401 && isSameOriginRequest(args[0])) {
-        clearManagementSessionToken()
-        window.dispatchEvent(new Event(unauthorizedEventName))
+      if (response.status === 401 && isSameOriginRequest(args[0]) && url.pathname !== sessionEndpoint) {
+        lockSession()
       }
       return response
     }
@@ -99,10 +80,9 @@ export function ManagementAuthGate({ children }: ManagementAuthGateProps) {
     const lockSession = () => {
       if (!active) return
       setStatus({ required: true, authenticated: false })
-      clearManagementSessionToken()
       setToken('')
       setSubmitting(false)
-      setError('管理会话已过期，请重新输入管理密钥。')
+      setError('管理会话已过期。请从 MongoJSON Steward 启动器重新打开，或输入恢复密钥。')
     }
 
     const checkSessionWhenVisible = () => {
@@ -110,25 +90,15 @@ export function ManagementAuthGate({ children }: ManagementAuthGateProps) {
     }
 
     window.fetch = observedFetch
-    window.addEventListener(unauthorizedEventName, lockSession)
     window.addEventListener('focus', checkSession)
     document.addEventListener('visibilitychange', checkSessionWhenVisible)
     const interval = window.setInterval(checkSession, sessionCheckIntervalMs)
 
-    void (async () => {
-      const nextStatus = await checkSession()
-      if (nextStatus?.required) {
-        const transportReady = await ensureManagementTransport()
-        if (!transportReady && active) {
-          setError('当前浏览器无法启动安全的本机资源认证通道，请使用支持 Service Worker 的现代浏览器。')
-        }
-      }
-    })()
+    void checkSession()
 
     return () => {
       active = false
       window.clearInterval(interval)
-      window.removeEventListener(unauthorizedEventName, lockSession)
       window.removeEventListener('focus', checkSession)
       document.removeEventListener('visibilitychange', checkSessionWhenVisible)
       if (window.fetch === observedFetch) window.fetch = originalFetch
@@ -141,7 +111,6 @@ export function ManagementAuthGate({ children }: ManagementAuthGateProps) {
     setSubmitting(true)
     setError('')
     try {
-      clearManagementSessionToken()
       const response = await fetch(sessionEndpoint, {
         method: 'POST',
         cache: 'no-store',
@@ -156,13 +125,8 @@ export function ManagementAuthGate({ children }: ManagementAuthGateProps) {
         throw new Error(response.status === 401 ? '管理密钥不正确。' : `认证失败（HTTP ${response.status}）。`)
       }
       const nextStatus = (await response.json()) as SessionStatus
-      if (nextStatus.required && !nextStatus.session_token) {
-        throw new Error('管理服务没有返回可用的短期会话令牌。')
-      }
-      const transportReady = await setManagementSessionToken(nextStatus.session_token ?? '')
-      if (!transportReady) {
-        clearManagementSessionToken()
-        throw new Error('无法启动安全的本机资源认证通道。')
+      if (!nextStatus.authenticated) {
+        throw new Error('管理服务没有建立浏览器会话。')
       }
       setToken('')
       setStatus({ required: nextStatus.required, authenticated: nextStatus.authenticated })
@@ -182,8 +146,9 @@ export function ManagementAuthGate({ children }: ManagementAuthGateProps) {
         <p className="management-auth-eyebrow">Mongojson Steward</p>
         <h1 id="management-auth-title">解锁本机管理界面</h1>
         <p className="management-auth-description">
-          请输入安装时生成的管理密钥。密钥只用于换取当前页面内存中的短期会话令牌；刷新或关闭页面后需要重新解锁。
-          默认可从当前用户的 <code>%LOCALAPPDATA%\MongojsonSteward\management-access-token.txt</code> 读取。
+          通常请从 Windows 的 MongoJSON Steward 启动器进入，系统会使用当前登录用户自动解锁。
+          如果自动解锁不可用，可输入安装时生成的恢复密钥；默认位于当前用户的
+          <code>%LOCALAPPDATA%\MongojsonSteward\management-access-token.txt</code>。
         </p>
         {status === null && !error ? <p className="management-auth-loading">正在检查管理服务…</p> : null}
         {status?.required ? (

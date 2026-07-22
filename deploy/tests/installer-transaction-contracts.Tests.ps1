@@ -63,7 +63,7 @@ Describe 'Windows production installer transaction contracts' {
 
   It 'uses a mutation journal so an early Companion failure cannot delete the old install' {
     $script=Read-Script 'install-steward-companion.ps1'
-    foreach($flag in @('$stageCreated','$oldTaskUnregistered','$oldInstallMoved','$stageActivated','$newTaskRegistered','$newTaskStarted')){
+    foreach($flag in @('$stageCreated','$oldTaskUnregistered','$oldInstallMoved','$stageActivated','$newTaskRegistered','$newTaskStarted','$shortcutBackedUp','$newShortcutWritten')){
       $script.Contains($flag)|Should Be $true
     }
     $script.Contains('if($stageActivated)')|Should Be $true
@@ -99,6 +99,9 @@ Describe 'Windows production installer transaction contracts' {
       '[switch]$AllowUnauthenticatedDevelopment',
       '--require-management-token=$requireManagementTokenArgument',
       '--api `"$APIBase`"',
+      '--open-workspace',
+      'MongoJSON Steward.lnk',
+      'Write-WorkspaceShortcut',
       'ManagementAccessTokenFile is required for a production Companion installation'
     )){$companion.Contains($contract)|Should Be $true}
     foreach($aclContract in @('*S-1-5-18:F','*S-1-5-32-544:F','/setowner "*${identity}"')){

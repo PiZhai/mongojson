@@ -575,15 +575,17 @@ try {
 
 安装失败时，脚本会回滚本次创建的服务和 Companion，不会假装完成。
 
-### 7.3 获取管理密钥并解锁浏览器
+### 7.3 使用当前 Windows 用户打开工作区
 
-生产安装会为主服务生成独立高熵管理密钥，并把给当前登录用户使用的副本写入：
+生产安装会在当前用户的开始菜单创建 **MongoJSON Steward** 快捷方式。日常从该快捷方式进入：Limited 权限的 Session Companion 使用受当前用户 ACL 保护的本机凭据申请一个 45 秒内有效、只能消费一次的浏览器票据，随后用默认浏览器打开工作区。浏览器消费票据后获得 `HttpOnly`、`SameSite=Strict`、仅限 `/api` 的 30 天会话 Cookie；数据库只保存会话令牌的 SHA-256 摘要，因此刷新页面、关闭后重新打开浏览器或重启主服务都不需要再次输入管理密钥。
+
+生产安装仍会为主服务生成独立高熵管理密钥，并把给当前登录用户使用的恢复副本写入：
 
 ```text
 %LOCALAPPDATA%\MongojsonSteward\management-access-token.txt
 ```
 
-不要把密钥放进 URL、截图、日志或 PowerShell 历史。下面把它直接复制到剪贴板，不在终端明文显示：
+管理密钥只用于 Companion 内部认证、CLI 自动化和浏览器恢复入口。不要把它放进 URL、截图、日志或 PowerShell 历史。自动启动不可用时，下面的命令可以把恢复密钥直接复制到剪贴板，而不在终端明文显示：
 
 ```powershell
 $managementTokenFile = Join-Path $env:LOCALAPPDATA 'MongojsonSteward\management-access-token.txt'
@@ -593,7 +595,7 @@ $managementToken | Set-Clipboard
 $managementHeaders = @{ Authorization = "Bearer $managementToken" }
 ```
 
-打开 `http://127.0.0.1:18080/`，把剪贴板内容粘贴到“解锁本机管理界面”。浏览器只用它换取随机的短期 Bearer 会话令牌，并只保存在当前页面内存中；不写 Cookie、`localStorage` 或 `sessionStorage`，刷新或关闭页面后需要重新解锁。这样可避免明文 loopback 上的 Cookie 被其他本机端口接收。会话过期或 API 返回 401 时，界面也会重新锁定。
+打开 `http://127.0.0.1:18080/`，把剪贴板内容粘贴到“解锁本机管理界面”即可恢复。根管理密钥不会写入浏览器存储；后端只签发随机会话 Cookie。主动退出、管理密钥轮换、会话到期或 API 返回 401 时，界面会重新锁定。一次性启动票据不得写入普通访问日志，票据消费响应必须使用 `Cache-Control: no-store` 和 `Referrer-Policy: no-referrer`。
 
 PowerShell、CLI 或自动化调用 `/api/...` 时必须使用 `$managementHeaders`。`/healthz` 与 `/readyz` 保持匿名可读，但业务和管家 API 不允许匿名访问。
 
