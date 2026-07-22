@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,19 +28,25 @@ import (
 
 var ErrUnsupportedAudio = errors.New("unsupported audio file")
 var ErrUnsupportedLyric = errors.New("unsupported lyric file")
+var ErrUnsupportedArtwork = errors.New("unsupported artwork file")
+var ErrArtworkTooLarge = errors.New("artwork file exceeds 8 MiB")
 var ErrInvalidCursor = errors.New("invalid cursor")
 var ErrTrackNotFound = errors.New("music track not found")
 var ErrLyricsNotFound = errors.New("music lyrics not found")
+var ErrArtworkNotFound = errors.New("music artwork not found")
+
+const maxArtworkBytes int64 = 8 << 20
 
 var supportedExtensions = map[string]bool{
 	".mp3": true, ".flac": true, ".wav": true, ".ogg": true,
 	".m4a": true, ".aac": true, ".opus": true, ".webm": true,
 }
 
-const trackSelectColumns = `mt.id, mt.file_id, mt.lyric_file_id, mt.title, mt.artist, mt.note,
+const trackSelectColumns = `mt.id, mt.file_id, mt.lyric_file_id, mt.artwork_file_id, mt.title, mt.artist, mt.note,
 	tf.original_name, tf.mime_type, tf.size_bytes, mt.duration_seconds, mt.audio_quality,
 	coalesce(mt.content_sha256, ''), tf.storage_path, coalesce(lf.original_name, ''), coalesce(lf.mime_type, ''),
-	coalesce(lf.storage_path, ''), mt.created_at`
+	coalesce(lf.storage_path, ''), coalesce(af.original_name, ''), coalesce(af.mime_type, ''),
+	coalesce(af.storage_path, ''), coalesce(af.sha256, ''), mt.created_at`
 
 type Service struct {
 	db    *database.DB
@@ -47,15 +54,17 @@ type Service struct {
 }
 
 type UploadInput struct {
-	File         multipart.File
-	Header       *multipart.FileHeader
-	Lyric        multipart.File
-	LyricHeader  *multipart.FileHeader
-	Title        string
-	Artist       string
-	Note         string
-	Duration     *float64
-	AudioQuality json.RawMessage
+	File          multipart.File
+	Header        *multipart.FileHeader
+	Lyric         multipart.File
+	LyricHeader   *multipart.FileHeader
+	Artwork       multipart.File
+	ArtworkHeader *multipart.FileHeader
+	Title         string
+	Artist        string
+	Note          string
+	Duration      *float64
+	AudioQuality  json.RawMessage
 }
 
 type UploadResult struct {
@@ -93,6 +102,17 @@ func (s *Service) SaveUpload(ctx context.Context, input UploadInput) (UploadResu
 	if input.LyricHeader != nil && strings.ToLower(filepath.Ext(input.LyricHeader.Filename)) != ".lrc" {
 		return UploadResult{}, ErrUnsupportedLyric
 	}
+	artworkMIME := ""
+	if input.Artwork != nil || input.ArtworkHeader != nil {
+		if input.Artwork == nil || input.ArtworkHeader == nil {
+			return UploadResult{}, ErrUnsupportedArtwork
+		}
+		var artworkErr error
+		artworkMIME, artworkErr = validateArtwork(input.Artwork, input.ArtworkHeader)
+		if artworkErr != nil {
+			return UploadResult{}, artworkErr
+		}
+	}
 	if mimeType == "" {
 		mimeType = mime.TypeByExtension(ext)
 	}
@@ -127,6 +147,14 @@ func (s *Service) SaveUpload(ctx context.Context, input UploadInput) (UploadResu
 		} else if input.Lyric != nil {
 			_ = input.Lyric.Close()
 		}
+		if input.Artwork != nil && input.ArtworkHeader != nil && existing.ArtworkFileID == nil {
+			existing, err = s.attachArtwork(ctx, existing, input.Artwork, input.ArtworkHeader, artworkMIME)
+			if err != nil {
+				return UploadResult{}, err
+			}
+		} else if input.Artwork != nil {
+			_ = input.Artwork.Close()
+		}
 		return UploadResult{Track: validateTrackFiles(existing), Duplicate: true}, nil
 	}
 
@@ -155,9 +183,31 @@ func (s *Service) SaveUpload(ctx context.Context, input UploadInput) (UploadResu
 		record.LyricFileName = input.LyricHeader.Filename
 		record.LyricMIMEType = lyricMIME
 	}
+	var artworkStoredName string
+	var artworkSize int64
+	if input.Artwork != nil && input.ArtworkHeader != nil {
+		artworkID := uuid.NewString()
+		artworkStoredName, record.ArtworkStoragePath, artworkSize, record.ArtworkContentSHA256, err = s.store.SaveUploadedFileWithSHA256(input.Artwork, input.ArtworkHeader.Filename, "music-artwork")
+		if err != nil {
+			cleanupAudio()
+			_ = s.store.Delete(record.LyricStoragePath)
+			return UploadResult{}, fmt.Errorf("store artwork file: %w", err)
+		}
+		if artworkSize > maxArtworkBytes {
+			cleanupAudio()
+			_ = s.store.Delete(record.LyricStoragePath)
+			_ = s.store.Delete(record.ArtworkStoragePath)
+			return UploadResult{}, ErrArtworkTooLarge
+		}
+		record.ArtworkFileID = &artworkID
+		record.ArtworkFileName = input.ArtworkHeader.Filename
+		record.ArtworkMIMEType = artworkMIME
+		record.ArtworkAvailable = true
+	}
 	cleanupFiles := func() {
 		cleanupAudio()
 		_ = s.store.Delete(record.LyricStoragePath)
+		_ = s.store.Delete(record.ArtworkStoragePath)
 	}
 
 	tx, err := s.db.Pool.Begin(ctx)
@@ -176,10 +226,16 @@ func (s *Service) SaveUpload(ctx context.Context, input UploadInput) (UploadResu
 			values ($1,$2,$3,$4,$5,$6,'music-lyrics',null,$7)`, *record.LyricFileID, record.LyricFileName,
 			lyricStoredName, record.LyricStoragePath, record.LyricMIMEType, lyricSize, now)
 	}
+	if err == nil && record.ArtworkFileID != nil {
+		_, err = tx.Exec(ctx, `insert into tool_files
+			(id, original_name, stored_name, storage_path, mime_type, size_bytes, category, sha256, expires_at, created_at)
+			values ($1,$2,$3,$4,$5,$6,'music-artwork',$7,null,$8)`, *record.ArtworkFileID, record.ArtworkFileName,
+			artworkStoredName, record.ArtworkStoragePath, record.ArtworkMIMEType, artworkSize, record.ArtworkContentSHA256, now)
+	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `insert into music_tracks
-			(id, file_id, lyric_file_id, content_sha256, title, artist, note, duration_seconds, audio_quality, created_at)
-			values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, record.ID, fileID, record.LyricFileID, digest,
+			(id, file_id, lyric_file_id, artwork_file_id, content_sha256, title, artist, note, duration_seconds, audio_quality, created_at)
+			values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, record.ID, fileID, record.LyricFileID, record.ArtworkFileID, digest,
 			record.Title, record.Artist, record.Note, record.Duration, record.AudioQuality, now)
 	}
 	if err != nil {
@@ -235,6 +291,42 @@ func (s *Service) attachLyric(ctx context.Context, track domain.MusicTrackRecord
 	return s.GetByID(ctx, track.ID)
 }
 
+func (s *Service) attachArtwork(ctx context.Context, track domain.MusicTrackRecord, file multipart.File, header *multipart.FileHeader, mimeType string) (domain.MusicTrackRecord, error) {
+	storedName, path, size, digest, err := s.store.SaveUploadedFileWithSHA256(file, header.Filename, "music-artwork")
+	if err != nil {
+		return domain.MusicTrackRecord{}, fmt.Errorf("store artwork file: %w", err)
+	}
+	if size > maxArtworkBytes {
+		_ = s.store.Delete(path)
+		return domain.MusicTrackRecord{}, ErrArtworkTooLarge
+	}
+	artworkID := uuid.NewString()
+	tx, err := s.db.Pool.Begin(ctx)
+	if err != nil {
+		_ = s.store.Delete(path)
+		return domain.MusicTrackRecord{}, fmt.Errorf("begin artwork attach: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `insert into tool_files
+		(id, original_name, stored_name, storage_path, mime_type, size_bytes, category, sha256, expires_at, created_at)
+		values ($1,$2,$3,$4,$5,$6,'music-artwork',$7,null,now())`, artworkID, header.Filename, storedName, path, mimeType, size, digest); err == nil {
+		var tag pgconn.CommandTag
+		tag, err = tx.Exec(ctx, `update music_tracks set artwork_file_id=$1 where id=$2 and artwork_file_id is null`, artworkID, track.ID)
+		if err == nil && tag.RowsAffected() == 0 {
+			err = fmt.Errorf("artwork already attached")
+		}
+	}
+	if err != nil {
+		_ = s.store.Delete(path)
+		return domain.MusicTrackRecord{}, fmt.Errorf("attach artwork: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		_ = s.store.Delete(path)
+		return domain.MusicTrackRecord{}, fmt.Errorf("commit artwork attach: %w", err)
+	}
+	return s.GetByID(ctx, track.ID)
+}
+
 func (s *Service) List(ctx context.Context, cursor string, limit int) (Page, error) {
 	if limit < 1 {
 		limit = 20
@@ -254,7 +346,8 @@ func (s *Service) List(ctx context.Context, cursor string, limit int) (Page, err
 	}
 	rows, err := s.db.Pool.Query(ctx, fmt.Sprintf(`select %s
 		from music_tracks mt join tool_files tf on tf.id = mt.file_id
-		left join tool_files lf on lf.id = mt.lyric_file_id %s
+		left join tool_files lf on lf.id = mt.lyric_file_id
+		left join tool_files af on af.id = mt.artwork_file_id %s
 		order by mt.created_at desc, mt.id desc limit $1`, trackSelectColumns, where), args...)
 	if err != nil {
 		return Page{}, fmt.Errorf("list music tracks: %w", err)
@@ -284,6 +377,7 @@ func (s *Service) List(ctx context.Context, cursor string, limit int) (Page, err
 func (s *Service) GetByID(ctx context.Context, id string) (domain.MusicTrackRecord, error) {
 	row := s.db.Pool.QueryRow(ctx, fmt.Sprintf(`select %s from music_tracks mt
 		join tool_files tf on tf.id = mt.file_id left join tool_files lf on lf.id = mt.lyric_file_id
+		left join tool_files af on af.id = mt.artwork_file_id
 		where mt.id = $1`, trackSelectColumns), id)
 	item, err := scanTrack(row)
 	if err != nil {
@@ -306,7 +400,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback(ctx)
 	if _, err = tx.Exec(ctx, `delete from music_tracks where id=$1`, id); err == nil {
-		_, err = tx.Exec(ctx, `delete from tool_files where id=$1 or id=$2`, record.FileID, record.LyricFileID)
+		_, err = tx.Exec(ctx, `delete from tool_files where id=$1 or id=$2 or id=$3`, record.FileID, record.LyricFileID, record.ArtworkFileID)
 	}
 	if err != nil {
 		return fmt.Errorf("delete music metadata: %w", err)
@@ -314,7 +408,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit music delete: %w", err)
 	}
-	if err := errors.Join(s.store.Delete(record.StoragePath), s.store.Delete(record.LyricStoragePath)); err != nil {
+	if err := errors.Join(s.store.Delete(record.StoragePath), s.store.Delete(record.LyricStoragePath), s.store.Delete(record.ArtworkStoragePath)); err != nil {
 		return fmt.Errorf("delete music files: %w", err)
 	}
 	return nil
@@ -331,6 +425,7 @@ func (s *Service) findByHash(ctx context.Context, digest string) (domain.MusicTr
 func (s *Service) findIndexedByHash(ctx context.Context, digest string) (domain.MusicTrackRecord, bool, error) {
 	row := s.db.Pool.QueryRow(ctx, fmt.Sprintf(`select %s from music_tracks mt
 		join tool_files tf on tf.id = mt.file_id left join tool_files lf on lf.id = mt.lyric_file_id
+		left join tool_files af on af.id = mt.artwork_file_id
 		where mt.content_sha256 = $1`, trackSelectColumns), digest)
 	item, err := scanTrack(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -393,10 +488,11 @@ func hashFile(path string) (string, error) {
 
 func scanTrack(row rowScanner) (domain.MusicTrackRecord, error) {
 	var item domain.MusicTrackRecord
-	err := row.Scan(&item.ID, &item.FileID, &item.LyricFileID, &item.Title, &item.Artist, &item.Note,
+	err := row.Scan(&item.ID, &item.FileID, &item.LyricFileID, &item.ArtworkFileID, &item.Title, &item.Artist, &item.Note,
 		&item.OriginalName, &item.MIMEType, &item.SizeBytes, &item.Duration, &item.AudioQuality,
 		&item.ContentSHA256, &item.StoragePath, &item.LyricFileName, &item.LyricMIMEType,
-		&item.LyricStoragePath, &item.CreatedAt)
+		&item.LyricStoragePath, &item.ArtworkFileName, &item.ArtworkMIMEType, &item.ArtworkStoragePath,
+		&item.ArtworkContentSHA256, &item.CreatedAt)
 	return item, err
 }
 
@@ -412,7 +508,32 @@ func validateTrackFiles(item domain.MusicTrackRecord) domain.MusicTrackRecord {
 			item.RecordIssue = "歌词文件缺失，歌曲仍可播放"
 		}
 	}
+	item.ArtworkAvailable = false
+	if item.ArtworkStoragePath != "" {
+		if _, err := os.Stat(item.ArtworkStoragePath); err == nil {
+			item.ArtworkAvailable = true
+		}
+	}
 	return item
+}
+
+func validateArtwork(file multipart.File, header *multipart.FileHeader) (string, error) {
+	if header.Size > maxArtworkBytes {
+		return "", ErrArtworkTooLarge
+	}
+	buffer := make([]byte, 512)
+	n, err := io.ReadFull(file, buffer)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", ErrUnsupportedArtwork
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", ErrUnsupportedArtwork
+	}
+	detected := http.DetectContentType(buffer[:n])
+	if detected != "image/jpeg" && detected != "image/png" && detected != "image/webp" {
+		return "", ErrUnsupportedArtwork
+	}
+	return detected, nil
 }
 
 func isDigestConflict(err error) bool {

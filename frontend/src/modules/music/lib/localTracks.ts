@@ -1,4 +1,4 @@
-import type { MusicAudioQuality, MusicTrack } from '../types'
+import type { MusicArtworkRef, MusicAudioQuality, MusicTrack } from '../types'
 
 export type LocalTrackOptions = {
   localHandleId?: string
@@ -8,6 +8,7 @@ export type LocalTrackOptions = {
   lyricFileName?: string
   lyricRelativePath?: string
   audioQuality?: MusicAudioQuality
+  artwork?: MusicArtworkRef
 }
 
 const SUPPORTED_AUDIO_EXTENSIONS = /\.(mp3|flac|wav|ogg|m4a|aac|opus|webm)$/i
@@ -48,6 +49,7 @@ export function createLocalTrackFromFile(file: File, id: string, options: LocalT
     mimeType: file.type || undefined,
     duration: options.audioQuality?.duration,
     audioQuality: options.audioQuality,
+    artwork: options.artwork,
     addedAt: new Date().toISOString(),
   }
 }

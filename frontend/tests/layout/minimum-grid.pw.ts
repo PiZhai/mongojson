@@ -14,8 +14,6 @@ const workspaces: WorkspaceCase[] = [
   { path: '/tools/json', frame: 'json-workspace', first: '.editor-split > :first-child', second: '.editor-split > :nth-child(2)', firstMin: 420, secondMin: 420 },
   { path: '/tools/mongodb-json', frame: 'mongo-workspace', first: '.editor-split > :first-child', second: '.editor-split > :nth-child(2)', firstMin: 420, secondMin: 420 },
   { path: '/tools/visualize', frame: 'visualization-workspace', first: 'visualization-input', second: 'visualization-rail', firstMin: 420, secondMin: 360 },
-  { path: '/entertainment/music', frame: 'music-workspace', first: 'music-sidebar', second: 'music-main', firstMin: 260, secondMin: 620 },
-  { path: '/entertainment/watch', frame: 'watch-workspace', first: 'watch-stage', second: 'watch-rail', firstMin: 640, secondMin: 340 },
 ]
 
 function region(page: Page, selector: string): Locator {

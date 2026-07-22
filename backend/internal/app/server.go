@@ -59,7 +59,7 @@ func NewServer() (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "outputs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir outputs: %w", err)
 	}
-	for _, directory := range []string{"music", "music-lyrics", "canvas-assets"} {
+	for _, directory := range []string{"music", "music-lyrics", "music-artwork", "canvas-assets"} {
 		if err := os.MkdirAll(filepath.Join(cfg.StorageDir, directory), 0o755); err != nil {
 			return nil, fmt.Errorf("mkdir %s: %w", directory, err)
 		}

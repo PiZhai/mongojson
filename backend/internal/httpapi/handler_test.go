@@ -230,6 +230,11 @@ func TestUploadMusicTrackAcceptsMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = lyricPart.Write([]byte("[00:00.00]Song"))
+	artworkPart, err := writer.CreateFormFile("artwork", "cover.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = artworkPart.Write([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
 	_ = writer.Close()
 
 	router := chi.NewRouter()
@@ -242,7 +247,7 @@ func TestUploadMusicTrackAcceptsMetadata(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if captured.Title != "Remote song" || captured.Artist != "Artist" || captured.Header.Filename != "song.mp3" || captured.LyricHeader.Filename != "song.lrc" {
+	if captured.Title != "Remote song" || captured.Artist != "Artist" || captured.Header.Filename != "song.mp3" || captured.LyricHeader.Filename != "song.lrc" || captured.ArtworkHeader.Filename != "cover.png" {
 		t.Fatalf("unexpected upload input: %#v", captured)
 	}
 }
@@ -326,6 +331,56 @@ func TestStreamMusicLyrics(t *testing.T) {
 
 	if rec.Code != http.StatusOK || rec.Body.String() != "[00:00.00]Lyrics" {
 		t.Fatalf("unexpected lyric response %d: %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStreamMusicArtworkUsesInlinePrivateCaching(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "artwork-*.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	_, _ = file.Write(content)
+	_ = file.Close()
+	store := fakeMusicStore{getByID: func(_ context.Context, id string) (domain.MusicTrackRecord, error) {
+		return domain.MusicTrackRecord{
+			ID:                   id,
+			ArtworkAvailable:     true,
+			ArtworkFileName:      "cover.png",
+			ArtworkMIMEType:      "image/png",
+			ArtworkStoragePath:   file.Name(),
+			ArtworkContentSHA256: "artwork-hash",
+		}, nil
+	}}
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := newHTTPAPITestRequest(http.MethodGet, "/api/music/tracks/track-1/artwork", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("unexpected artwork response %d: %q", rec.Code, rec.Body.Bytes())
+	}
+	if rec.Header().Get("Content-Type") != "image/png" || !strings.HasPrefix(rec.Header().Get("Content-Disposition"), "inline") {
+		t.Fatalf("unexpected artwork headers: %#v", rec.Header())
+	}
+	if rec.Header().Get("Cache-Control") != "private, max-age=86400" || rec.Header().Get("ETag") != `"artwork-hash"` {
+		t.Fatalf("unexpected artwork cache headers: %#v", rec.Header())
+	}
+}
+
+func TestStreamMusicArtworkReturnsNotFoundWhenUnavailable(t *testing.T) {
+	store := fakeMusicStore{getByID: func(_ context.Context, id string) (domain.MusicTrackRecord, error) {
+		return domain.MusicTrackRecord{ID: id}, nil
+	}}
+	router := chi.NewRouter()
+	RegisterRoutes(router, Dependencies{MusicService: store})
+	req := newHTTPAPITestRequest(http.MethodGet, "/api/music/tracks/track-1/artwork", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

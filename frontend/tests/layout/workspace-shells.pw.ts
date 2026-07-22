@@ -161,3 +161,85 @@ test('documents pin the library on desktop and use a drawer on compact screens',
   await expect(library).toBeVisible()
   await expect(library).toHaveCSS('position', 'absolute')
 })
+
+for (const viewport of [
+  { width: 375, height: 812 },
+  { width: 768, height: 1024 },
+  { width: 1024, height: 768 },
+  { width: 1440, height: 900 },
+]) {
+  test(`entertainment layouts adapt without root overflow at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+
+    await page.goto('/entertainment/music')
+    await expect(page.getByRole('heading', { name: '曲库' })).toBeVisible()
+    await expectNoRootOverflow(page)
+    await expect(page.locator('.music-collection-rail')).toHaveCSS('display', viewport.width >= 1024 ? 'flex' : 'none')
+    await expect(page.locator('.music-now-desktop')).toHaveCSS('display', viewport.width >= 1280 ? 'block' : 'none')
+
+    await page.goto('/entertainment/watch')
+    await expect(page.getByRole('heading', { name: '把同一刻留在屏幕上' })).toBeVisible()
+    await expectNoRootOverflow(page)
+    await expect(page.locator('.watch-context-desktop')).toHaveCSS('display', viewport.width >= 1200 ? 'block' : 'none')
+  })
+}
+
+test('entertainment Base UI drawers trap and restore focus', async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 1024 })
+  await page.goto('/entertainment/music')
+  const nowPlayingTrigger = page.getByRole('button', { name: '打开正在播放' })
+  await nowPlayingTrigger.click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(nowPlayingTrigger).toBeFocused()
+
+  await page.goto('/entertainment/watch')
+  const roomStatusTrigger = page.getByRole('button', { name: '房间状态' })
+  await roomStatusTrigger.click()
+  await expect(page.getByRole('dialog', { name: '房间状态' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: '房间状态' })).toHaveCount(0)
+  await expect(roomStatusTrigger).toBeFocused()
+})
+
+test('watch controls reserve Space activation for Tab focus', async ({ page }) => {
+  await page.goto('/entertainment/watch')
+  await page.locator("input[type='file']").first().setInputFiles({
+    name: 'focus-test.mp4',
+    mimeType: 'video/mp4',
+    buffer: Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109]),
+  })
+
+  const controls = page.locator('.watch-video-controls')
+  await expect(controls).toBeAttached()
+
+  const volumeTrigger = page.locator('.watch-video-volume-control > .watch-video-icon-button')
+  await volumeTrigger.click({ force: true })
+  await expect(volumeTrigger).toHaveAttribute('aria-expanded', 'true')
+  await expect(volumeTrigger).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(volumeTrigger).toHaveCSS('outline-style', 'none')
+  await expect(page.locator('.watch-video-volume-panel')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+
+  await page.keyboard.press('Space')
+  await expect(volumeTrigger).toHaveAttribute('aria-expanded', 'true')
+
+  await volumeTrigger.click({ force: true })
+  await expect(volumeTrigger).toHaveAttribute('aria-expanded', 'false')
+  const playbackRateTrigger = page.getByRole('button', { name: /播放倍速/ })
+  await playbackRateTrigger.click({ force: true })
+  await expect(page.locator('.watch-rate-menu')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(page.locator('.watch-rate-menu')).toHaveCSS('outline-style', 'none')
+  await page.keyboard.press('Escape')
+  await playbackRateTrigger.focus()
+  await page.keyboard.press('Tab')
+  await expect(volumeTrigger).toBeFocused()
+  await expect(volumeTrigger).toHaveCSS('outline-style', 'solid')
+
+  await page.keyboard.press('Space')
+  await expect(volumeTrigger).toHaveAttribute('aria-expanded', 'true')
+
+  await page.locator('.watch-stage-footer').click({ position: { x: 8, y: 8 } })
+  await expect(volumeTrigger).not.toBeFocused()
+  await expect.poll(() => page.evaluate(() => document.activeElement?.closest('.watch-video-controls, .watch-rate-menu') === null)).toBe(true)
+})

@@ -2,6 +2,10 @@ export type MusicTrackSource = 'remote' | 'local'
 
 export type PlaybackMode = 'order' | 'repeat-all' | 'repeat-one' | 'shuffle'
 
+export type MusicArtworkRef =
+  | { kind: 'remote'; url: string; mimeType: string }
+  | { kind: 'local'; storageKey: string; mimeType: string }
+
 export type MusicAudioQuality = {
   container?: string
   codec?: string
@@ -38,6 +42,9 @@ export type MusicTrack = {
   mimeType?: string
   duration?: number
   audioQuality?: MusicAudioQuality
+  artwork?: MusicArtworkRef
+  /** Resolved at runtime. Never persisted to localStorage. */
+  artworkUrl?: string
   addedAt: string
 }
 

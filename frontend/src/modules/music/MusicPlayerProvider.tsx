@@ -7,15 +7,19 @@ import {
   useState,
 } from 'react'
 import './styles.css'
+import './midnight.css'
 import type { MusicLibraryFolder, MusicLibraryState, MusicTrack, PlaybackMode } from './types'
 import {
   deleteLocalDirectoryHandle,
   deleteLocalFileHandle,
+  deleteMusicArtwork,
   getLocalDirectoryHandle,
   getLocalFileHandle,
+  getMusicArtwork,
   loadMusicLibraryState,
   saveLocalDirectoryHandle,
   saveLocalFileHandle,
+  saveMusicArtwork,
   saveMusicLibraryState,
   supportsPersistentLocalFiles,
   supportsPersistentMusicFolders,
@@ -23,12 +27,13 @@ import {
   type LocalFileHandle,
 } from './lib/storage'
 import {
-  analyzeAudioFileQuality,
+  analyzeAudioFile,
   analyzeRemoteAudioQuality,
   inferAudioQuality,
   mergeDurationIntoQuality,
 } from './lib/audioQuality'
-import type { MusicAudioQuality } from './types'
+import type { MusicArtworkData } from './lib/audioQuality'
+import type { MusicArtworkRef, MusicAudioQuality } from './types'
 import { getTrackSourceKey } from './lib/sourceKey'
 import { deleteRemoteMusicTrack, fetchRemoteMusicPage, uploadMusicTrack } from './api'
 import { MusicPlayerContext, type LrcLine, type MusicPlayerContextValue, type RemoteTrackPayload, type TrackEditPayload } from './MusicPlayerContext'
@@ -52,12 +57,18 @@ type LyricUpdate = {
   lyricRelativePath: string
 }
 
+type ArtworkUpdate = {
+  trackId: string
+  artwork: MusicArtworkRef
+}
+
 type FolderTrackCollectionResult = {
   tracks: MusicTrack[]
   scanned: number
   skipped: number
   lyricsMatched: number
   lyricUpdates: LyricUpdate[]
+  artworkUpdates: ArtworkUpdate[]
 }
 
 
@@ -95,18 +106,38 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
   const [lyrics, setLyrics] = useState<LrcLine[]>([])
   const [lyricStatusMessage, setLyricStatusMessage] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  const [artworkUrls, setArtworkUrls] = useState<ReadonlyMap<string, string>>(() => new Map())
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const objectUrlRef = useRef<string | null>(null)
   const pendingPlayRef = useRef(false)
   const sessionFilesRef = useRef(new Map<string, File>())
   const sessionLyricsRef = useRef(new Map<string, string>())
+  const sessionArtworksRef = useRef(new Map<string, Blob>())
+  const artworkObjectUrlsRef = useRef(new Map<string, string>())
   const remoteInitialLoadRef = useRef(false)
   const remoteLoadingRef = useRef(false)
 
-  const tracks = useMemo(() => {
+  const persistArtwork = useCallback(async (trackId: string, artwork: MusicArtworkData, persistent: boolean) => {
+    sessionArtworksRef.current.set(trackId, artwork.blob)
+    if (persistent) {
+      await saveMusicArtwork(trackId, {
+        blob: artwork.blob,
+        mimeType: artwork.mimeType,
+        updatedAt: new Date().toISOString(),
+      })
+    }
+    return { kind: 'local', storageKey: trackId, mimeType: artwork.mimeType } as const
+  }, [])
+
+  const storedTracks = useMemo(() => {
     const remoteIds = new Set(remoteTracks.map((track) => track.id))
     return [...remoteTracks, ...library.tracks.filter((track) => !remoteIds.has(track.id))]
   }, [library.tracks, remoteTracks])
+
+  const tracks = useMemo(
+    () => storedTracks.map((track) => ({ ...track, artworkUrl: artworkUrls.get(track.id) })),
+    [artworkUrls, storedTracks],
+  )
 
   const currentTrack = useMemo(
     () => tracks.find((track) => track.id === library.currentTrackId) ?? null,
@@ -114,6 +145,57 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
   )
   const currentTrackRef = useRef<MusicTrack | null>(currentTrack)
   const currentTrackSourceKey = getTrackSourceKey(currentTrack)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function resolveArtworkUrls() {
+      const next = new Map<string, string>()
+      const liveLocalKeys = new Set<string>()
+
+      for (const track of storedTracks) {
+        if (!track.artwork) continue
+        if (track.artwork.kind === 'remote') {
+          next.set(track.id, track.artwork.url)
+          continue
+        }
+
+        liveLocalKeys.add(track.artwork.storageKey)
+        const existingUrl = artworkObjectUrlsRef.current.get(track.artwork.storageKey)
+        if (existingUrl) {
+          next.set(track.id, existingUrl)
+          continue
+        }
+
+        const blob = sessionArtworksRef.current.get(track.artwork.storageKey)
+          ?? (await getMusicArtwork(track.artwork.storageKey).catch(() => undefined))?.blob
+        if (!blob || cancelled) continue
+        const objectUrl = URL.createObjectURL(blob)
+        artworkObjectUrlsRef.current.set(track.artwork.storageKey, objectUrl)
+        next.set(track.id, objectUrl)
+      }
+
+      for (const [key, url] of artworkObjectUrlsRef.current) {
+        if (!liveLocalKeys.has(key)) {
+          URL.revokeObjectURL(url)
+          artworkObjectUrlsRef.current.delete(key)
+        }
+      }
+
+      if (!cancelled) setArtworkUrls(next)
+    }
+
+    void resolveArtworkUrls()
+    return () => { cancelled = true }
+  }, [storedTracks])
+
+  useEffect(
+    () => () => {
+      for (const url of artworkObjectUrlsRef.current.values()) URL.revokeObjectURL(url)
+      artworkObjectUrlsRef.current.clear()
+    },
+    [],
+  )
 
   useEffect(() => {
     currentTrackRef.current = currentTrack
@@ -464,14 +546,16 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       }
 
       await saveLocalFileHandle(handleId, handle)
-      const audioQuality = await analyzeAudioFileQuality(file)
+      const analysis = await analyzeAudioFile(file)
+      const artwork = analysis.artwork ? await persistArtwork(trackId, analysis.artwork, true) : undefined
       sessionFilesRef.current.set(trackId, file)
       tracks.push(
         createLocalTrackFromFile(file, trackId, {
           localHandleId: handleId,
           lyricHandleId,
           lyricFileName: lyricHandle?.name,
-          audioQuality,
+          audioQuality: analysis.audioQuality,
+          artwork,
         }),
       )
     }
@@ -488,7 +572,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       currentTrackId: value.currentTrackId ?? tracks[0]?.id,
     }))
     setStatusMessage(`已添加 ${tracks.length} 个本地音乐文件${lyricsMatched > 0 ? `，自动匹配 ${lyricsMatched} 个歌词` : ''}。`)
-  }, [])
+  }, [persistArtwork])
 
   const addLocalFiles = useCallback(async (files: File[]) => {
     const lyricFiles = new Map<string, File>()
@@ -504,7 +588,8 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     const tracks = await Promise.all(audioFiles.map(async (file) => {
       const trackId = createMusicId('local')
       const lyricFile = lyricFiles.get(getLyricMatchKey(file.name))
-      const audioQuality = await analyzeAudioFileQuality(file)
+      const analysis = await analyzeAudioFile(file)
+      const artwork = analysis.artwork ? await persistArtwork(trackId, analysis.artwork, false) : undefined
       sessionFilesRef.current.set(trackId, file)
       if (lyricFile) {
         sessionLyricsRef.current.set(trackId, await readLyricFileText(lyricFile))
@@ -512,7 +597,8 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       }
       return createLocalTrackFromFile(file, trackId, {
         lyricFileName: lyricFile?.name,
-        audioQuality,
+        audioQuality: analysis.audioQuality,
+        artwork,
       })
     }))
 
@@ -530,7 +616,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
     setStatusMessage(
       `已添加 ${tracks.length} 个本地音乐文件${lyricsMatched > 0 ? `，自动匹配 ${lyricsMatched} 个歌词` : ''}；当前浏览器不支持刷新后自动恢复。`,
     )
-  }, [])
+  }, [persistArtwork])
 
   const uploadLocalTrack = useCallback(async (id: string) => {
     const track = library.tracks.find((item) => item.id === id)
@@ -565,7 +651,17 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
         }
       }
 
-      const result = await uploadMusicTrack(file, track, lyricFile)
+      let artworkFile: File | undefined
+      if (track.artwork?.kind === 'local') {
+        const artworkBlob = sessionArtworksRef.current.get(track.artwork.storageKey)
+          ?? (await getMusicArtwork(track.artwork.storageKey).catch(() => undefined))?.blob
+        if (artworkBlob) {
+          const extension = track.artwork.mimeType === 'image/png' ? 'png' : track.artwork.mimeType === 'image/webp' ? 'webp' : 'jpg'
+          artworkFile = new File([artworkBlob], `cover.${extension}`, { type: track.artwork.mimeType })
+        }
+      }
+
+      const result = await uploadMusicTrack(file, track, lyricFile, artworkFile)
       setRemoteTracks((value) => [result.track, ...value.filter((item) => item.id !== result.track.id)])
       setStatusMessage(
         result.duplicate
@@ -596,6 +692,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       const audioEntries: Array<{ entry: LocalFileHandle; relativePath: string }> = []
       const lyricEntries = new Map<string, { entry: LocalFileHandle; relativePath: string }>()
       const lyricUpdates: LyricUpdate[] = []
+      const artworkUpdates: ArtworkUpdate[] = []
       let scanned = 0
       let skipped = 0
       let lyricsMatched = 0
@@ -645,6 +742,16 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
             })
             lyricsMatched += 1
           }
+          if (!existingTrack.artwork) {
+            const file = await readLocalHandleFile(entry)
+            const analysis = await analyzeAudioFile(file)
+            if (analysis.artwork) {
+              artworkUpdates.push({
+                trackId: existingTrack.id,
+                artwork: await persistArtwork(existingTrack.id, analysis.artwork, true),
+              })
+            }
+          }
           continue
         }
 
@@ -661,7 +768,8 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
         }
 
         await saveLocalFileHandle(handleId, entry)
-        const audioQuality = await analyzeAudioFileQuality(file)
+        const analysis = await analyzeAudioFile(file)
+        const artwork = analysis.artwork ? await persistArtwork(trackId, analysis.artwork, true) : undefined
         sessionFilesRef.current.set(trackId, file)
         const track = createLocalTrackFromFile(file, trackId, {
           localHandleId: handleId,
@@ -670,15 +778,16 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
           lyricHandleId,
           lyricFileName: lyricEntry?.entry.name,
           lyricRelativePath: lyricEntry?.relativePath,
-          audioQuality,
+          audioQuality: analysis.audioQuality,
+          artwork,
         })
         tracks.push(track)
         existingTracksByKey.set(trackKey, track)
       }
 
-      return { tracks, scanned, skipped, lyricsMatched, lyricUpdates }
+      return { tracks, scanned, skipped, lyricsMatched, lyricUpdates, artworkUpdates }
     },
-    [],
+    [persistArtwork],
   )
 
   const scanLocalDirectory = useCallback(
@@ -713,6 +822,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
 
       setLibrary((value) => {
         const lyricUpdatesById = new Map(result.lyricUpdates.map((update) => [update.trackId, update]))
+        const artworkUpdatesById = new Map(result.artworkUpdates.map((update) => [update.trackId, update.artwork]))
         const nextTrackCount =
           value.tracks.filter((track) => track.folderHandleId === folderId).length + result.tracks.length
         const nextFolder: MusicLibraryFolder = {
@@ -733,12 +843,16 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
             ...result.tracks,
             ...value.tracks.map((track) => {
               const lyricUpdate = lyricUpdatesById.get(track.id)
-              return lyricUpdate
+              const artwork = artworkUpdatesById.get(track.id)
+              return lyricUpdate || artwork
                 ? {
                     ...track,
-                    lyricHandleId: lyricUpdate.lyricHandleId,
-                    lyricFileName: lyricUpdate.lyricFileName,
-                    lyricRelativePath: lyricUpdate.lyricRelativePath,
+                    ...(lyricUpdate ? {
+                      lyricHandleId: lyricUpdate.lyricHandleId,
+                      lyricFileName: lyricUpdate.lyricFileName,
+                      lyricRelativePath: lyricUpdate.lyricRelativePath,
+                    } : {}),
+                    ...(artwork ? { artwork } : {}),
                   }
                 : track
             }),
@@ -789,6 +903,7 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
 
       setLibrary((value) => {
         const lyricUpdatesById = new Map(result.lyricUpdates.map((update) => [update.trackId, update]))
+        const artworkUpdatesById = new Map(result.artworkUpdates.map((update) => [update.trackId, update.artwork]))
         const nextTrackCount =
           value.tracks.filter((track) => track.folderHandleId === folderId).length + result.tracks.length
 
@@ -807,12 +922,16 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
             ...result.tracks,
             ...value.tracks.map((track) => {
               const lyricUpdate = lyricUpdatesById.get(track.id)
-              return lyricUpdate
+              const artwork = artworkUpdatesById.get(track.id)
+              return lyricUpdate || artwork
                 ? {
                     ...track,
-                    lyricHandleId: lyricUpdate.lyricHandleId,
-                    lyricFileName: lyricUpdate.lyricFileName,
-                    lyricRelativePath: lyricUpdate.lyricRelativePath,
+                    ...(lyricUpdate ? {
+                      lyricHandleId: lyricUpdate.lyricHandleId,
+                      lyricFileName: lyricUpdate.lyricFileName,
+                      lyricRelativePath: lyricUpdate.lyricRelativePath,
+                    } : {}),
+                    ...(artwork ? { artwork } : {}),
                   }
                 : track
             }),
@@ -882,6 +1001,15 @@ export function MusicPlayerProvider({ children }: PropsWithChildren) {
       }
       if (removedTrack?.lyricHandleId) {
         void deleteLocalFileHandle(removedTrack.lyricHandleId).catch(() => undefined)
+      }
+      if (removedTrack?.artwork?.kind === 'local') {
+        void deleteMusicArtwork(removedTrack.artwork.storageKey).catch(() => undefined)
+        sessionArtworksRef.current.delete(removedTrack.artwork.storageKey)
+        const artworkUrl = artworkObjectUrlsRef.current.get(removedTrack.artwork.storageKey)
+        if (artworkUrl) {
+          URL.revokeObjectURL(artworkUrl)
+          artworkObjectUrlsRef.current.delete(removedTrack.artwork.storageKey)
+        }
       }
       sessionFilesRef.current.delete(id)
       sessionLyricsRef.current.delete(id)

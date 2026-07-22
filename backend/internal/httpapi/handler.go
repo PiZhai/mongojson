@@ -389,6 +389,16 @@ func (h *Handler) uploadMusicTrack(w http.ResponseWriter, r *http.Request) {
 	if lyric != nil {
 		defer lyric.Close()
 	}
+	var artwork multipart.File
+	var artworkHeader *multipart.FileHeader
+	artwork, artworkHeader, err = r.FormFile("artwork")
+	if err != nil && !errors.Is(err, http.ErrMissingFile) {
+		httpError(w, http.StatusBadRequest, "invalid artwork file")
+		return
+	}
+	if artwork != nil {
+		defer artwork.Close()
+	}
 	var duration *float64
 	if value := strings.TrimSpace(r.FormValue("duration")); value != "" {
 		parsed, err := strconv.ParseFloat(value, 64)
@@ -399,12 +409,17 @@ func (h *Handler) uploadMusicTrack(w http.ResponseWriter, r *http.Request) {
 		duration = &parsed
 	}
 	result, err := h.deps.MusicService.SaveUpload(r.Context(), music.UploadInput{
-		File: file, Header: header, Lyric: lyric, LyricHeader: lyricHeader, Title: r.FormValue("title"), Artist: r.FormValue("artist"),
+		File: file, Header: header, Lyric: lyric, LyricHeader: lyricHeader, Artwork: artwork, ArtworkHeader: artworkHeader,
+		Title: r.FormValue("title"), Artist: r.FormValue("artist"),
 		Note: r.FormValue("note"), Duration: duration, AudioQuality: json.RawMessage(r.FormValue("audio_quality")),
 	})
 	if err != nil {
-		if errors.Is(err, music.ErrUnsupportedAudio) || errors.Is(err, music.ErrUnsupportedLyric) {
+		if errors.Is(err, music.ErrUnsupportedAudio) || errors.Is(err, music.ErrUnsupportedLyric) || errors.Is(err, music.ErrUnsupportedArtwork) {
 			httpError(w, http.StatusUnsupportedMediaType, err.Error())
+			return
+		}
+		if errors.Is(err, music.ErrArtworkTooLarge) {
+			httpError(w, http.StatusRequestEntityTooLarge, err.Error())
 			return
 		}
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -492,6 +507,36 @@ func (h *Handler) streamMusicLyrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", record.LyricMIMEType)
 	http.ServeContent(w, r, record.LyricFileName, info.ModTime(), file)
+}
+
+func (h *Handler) streamMusicArtwork(w http.ResponseWriter, r *http.Request) {
+	if h.deps.MusicService == nil {
+		httpError(w, http.StatusServiceUnavailable, "music storage is not configured")
+		return
+	}
+	record, err := h.deps.MusicService.GetByID(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || !record.ArtworkAvailable || record.ArtworkStoragePath == "" {
+		httpError(w, http.StatusNotFound, music.ErrArtworkNotFound.Error())
+		return
+	}
+	file, err := os.Open(record.ArtworkStoragePath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, music.ErrArtworkNotFound.Error())
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot inspect artwork file")
+		return
+	}
+	w.Header().Set("Content-Type", record.ArtworkMIMEType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": record.ArtworkFileName}))
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	if record.ArtworkContentSHA256 != "" {
+		w.Header().Set("ETag", `"`+record.ArtworkContentSHA256+`"`)
+	}
+	http.ServeContent(w, r, record.ArtworkFileName, info.ModTime(), file)
 }
 
 func (h *Handler) deleteMusicTrack(w http.ResponseWriter, r *http.Request) {

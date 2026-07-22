@@ -55,9 +55,11 @@ func (db *DB) Migrate(ctx context.Context) error {
 			mime_type text not null,
 			size_bytes bigint not null,
 			category text not null,
+			sha256 text not null default '',
 			expires_at timestamptz,
 			created_at timestamptz not null default now()
 		);`,
+		`alter table tool_files add column if not exists sha256 text not null default '';`,
 		`create table if not exists tool_jobs (
 			id uuid primary key,
 			tool_type text not null,
@@ -143,6 +145,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 			id uuid primary key,
 			file_id uuid not null unique references tool_files(id) on delete cascade,
 			lyric_file_id uuid unique references tool_files(id) on delete set null,
+			artwork_file_id uuid unique references tool_files(id) on delete set null,
 			content_sha256 text,
 			title text not null,
 			artist text not null default '',
@@ -152,6 +155,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 			created_at timestamptz not null default now()
 		);`,
 		`alter table music_tracks add column if not exists lyric_file_id uuid unique references tool_files(id) on delete set null;`,
+		`alter table music_tracks add column if not exists artwork_file_id uuid unique references tool_files(id) on delete set null;`,
 		`alter table music_tracks add column if not exists content_sha256 text;`,
 		`create table if not exists canvas_boards (
 			id uuid primary key,

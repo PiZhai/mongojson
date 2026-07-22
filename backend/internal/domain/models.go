@@ -885,25 +885,31 @@ type MemoSideNoteRecord struct {
 }
 
 type MusicTrackRecord struct {
-	ID               string          `json:"id"`
-	FileID           string          `json:"-"`
-	LyricFileID      *string         `json:"-"`
-	Title            string          `json:"title"`
-	Artist           string          `json:"artist,omitempty"`
-	Note             string          `json:"note,omitempty"`
-	OriginalName     string          `json:"original_name"`
-	MIMEType         string          `json:"mime_type"`
-	SizeBytes        int64           `json:"size_bytes"`
-	Duration         *float64        `json:"duration,omitempty"`
-	AudioQuality     json.RawMessage `json:"audio_quality,omitempty"`
-	ContentSHA256    string          `json:"-"`
-	StoragePath      string          `json:"-"`
-	LyricFileName    string          `json:"lyric_file_name,omitempty"`
-	LyricMIMEType    string          `json:"lyric_mime_type,omitempty"`
-	LyricStoragePath string          `json:"-"`
-	FileAvailable    bool            `json:"file_available"`
-	RecordIssue      string          `json:"record_issue,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
+	ID                   string          `json:"id"`
+	FileID               string          `json:"-"`
+	LyricFileID          *string         `json:"-"`
+	ArtworkFileID        *string         `json:"-"`
+	Title                string          `json:"title"`
+	Artist               string          `json:"artist,omitempty"`
+	Note                 string          `json:"note,omitempty"`
+	OriginalName         string          `json:"original_name"`
+	MIMEType             string          `json:"mime_type"`
+	SizeBytes            int64           `json:"size_bytes"`
+	Duration             *float64        `json:"duration,omitempty"`
+	AudioQuality         json.RawMessage `json:"audio_quality,omitempty"`
+	ContentSHA256        string          `json:"-"`
+	StoragePath          string          `json:"-"`
+	LyricFileName        string          `json:"lyric_file_name,omitempty"`
+	LyricMIMEType        string          `json:"lyric_mime_type,omitempty"`
+	LyricStoragePath     string          `json:"-"`
+	ArtworkFileName      string          `json:"-"`
+	ArtworkMIMEType      string          `json:"artwork_mime_type,omitempty"`
+	ArtworkStoragePath   string          `json:"-"`
+	ArtworkContentSHA256 string          `json:"-"`
+	ArtworkAvailable     bool            `json:"artwork_available"`
+	FileAvailable        bool            `json:"file_available"`
+	RecordIssue          string          `json:"record_issue,omitempty"`
+	CreatedAt            time.Time       `json:"created_at"`
 }
 
 type CanvasBoardRecord struct {

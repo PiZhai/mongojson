@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Dialog } from '@base-ui/react/dialog'
+import { Drawer } from '@base-ui/react/drawer'
+import { Menu } from '@base-ui/react/menu'
+import { Tabs } from '@base-ui/react/tabs'
+import { Tooltip } from '@base-ui/react/tooltip'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from 'react'
 import './styles.css'
 import { getWatchRoomWebSocketUrl } from './api'
 import { createManagementWebSocket } from '../../platform/auth/managementSession'
 import type { ToolStatus } from '../../shared/ui/toolStatus'
 import { StatusBanner } from '../../components/common/StatusBanner'
+import './midnight.css'
 
 type LocalVideo = {
   file: File
@@ -159,6 +165,14 @@ function isSpaceShortcutTarget(target: EventTarget | null) {
   return Boolean(target.closest("button, a, input, textarea, select, [role='button'], [contenteditable='true']"))
 }
 
+function isWatchPlayerControlTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  return Boolean(target.closest('.watch-video-controls, .watch-rate-menu'))
+}
+
 export function WatchPartyWorkspace() {
   const clientId = useMemo(() => createClientId(), [])
   const [roomInput, setRoomInput] = useState('main-room')
@@ -182,7 +196,11 @@ export function WatchPartyWorkspace() {
   const [muted, setMuted] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [controlsVisible, setControlsVisible] = useState(true)
-  const [speedMenuOpen, setSpeedMenuOpen] = useState(false)
+  const [volumePanelOpen, setVolumePanelOpen] = useState(false)
+  const [contextDrawerOpen, setContextDrawerOpen] = useState(false)
+  const [roomDialogOpen, setRoomDialogOpen] = useState(false)
+  const [roomSessionEnabled, setRoomSessionEnabled] = useState(true)
+  const [connectionGeneration, setConnectionGeneration] = useState(0)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoFrameRef = useRef<HTMLDivElement | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
@@ -192,6 +210,7 @@ export function WatchPartyWorkspace() {
   const isPlayingRef = useRef(false)
   const controlsHideTimerRef = useRef<number | null>(null)
   const controlsInteractionRef = useRef(false)
+  const playerFocusFromKeyboardRef = useRef(false)
   const rightArrowHoldTimerRef = useRef<number | null>(null)
   const rightArrowHoldActiveRef = useRef(false)
   const rightArrowPressedRef = useRef(false)
@@ -349,6 +368,13 @@ export function WatchPartyWorkspace() {
   )
 
   useEffect(() => {
+    if (!roomSessionEnabled) {
+      socketRef.current?.close()
+      socketRef.current = null
+      setPeerCount(0)
+      setSocketStatus({ kind: 'idle', message: '已离开同步房间。' })
+      return
+    }
     if (!roomPattern.test(activeRoom)) {
       setSocketStatus({ kind: 'error', message: '房间号只能包含字母、数字、下划线或短横线。' })
       return
@@ -393,7 +419,7 @@ export function WatchPartyWorkspace() {
         socketRef.current = null
       }
     }
-  }, [activeRoom, applyRemoteState, clientId, sendControl])
+  }, [activeRoom, applyRemoteState, clientId, connectionGeneration, roomSessionEnabled, sendControl])
 
   const joinRoom = () => {
     const nextRoom = roomInput.trim()
@@ -401,7 +427,9 @@ export function WatchPartyWorkspace() {
       setSocketStatus({ kind: 'error', message: '房间号只能包含字母、数字、下划线或短横线。' })
       return
     }
+    setRoomSessionEnabled(true)
     setActiveRoom(nextRoom)
+    setRoomDialogOpen(false)
   }
 
   const chooseVideo = (files: FileList | null) => {
@@ -530,17 +558,32 @@ export function WatchPartyWorkspace() {
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab') {
+        playerFocusFromKeyboardRef.current = true
+        videoFrameRef.current?.setAttribute('data-focus-origin', 'keyboard')
+        return
+      }
+
       const isSpaceKey = event.code === 'Space' || event.key === ' ' || event.key === 'Spacebar'
       const normalizedKey = event.key.toLowerCase()
       const isPlayerShortcut = event.key === 'ArrowLeft' || event.key === 'ArrowRight' || isSpaceKey || normalizedKey === 'f' || normalizedKey === 'm'
+      const pointerFocusedPlayerControl =
+        isWatchPlayerControlTarget(event.target) && !playerFocusFromKeyboardRef.current
+      const preserveFocusedControlSpace =
+        isSpaceKey &&
+        isSpaceShortcutTarget(event.target) &&
+        !pointerFocusedPlayerControl
+      const preserveEditableShortcut =
+        isEditableShortcutTarget(event.target) &&
+        !(isSpaceKey && pointerFocusedPlayerControl)
 
       if (
         !isPlayerShortcut ||
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
-        isEditableShortcutTarget(event.target) ||
-        (isSpaceKey && isSpaceShortcutTarget(event.target))
+        preserveEditableShortcut ||
+        preserveFocusedControlSpace
       ) {
         return
       }
@@ -613,13 +656,33 @@ export function WatchPartyWorkspace() {
       finishRightArrowPress(false)
     }
 
+    const handlePointerDown = (event: PointerEvent) => {
+      playerFocusFromKeyboardRef.current = false
+      videoFrameRef.current?.setAttribute('data-focus-origin', 'pointer')
+      const pointerTarget = event.target
+
+      window.requestAnimationFrame(() => {
+        const activeElement = document.activeElement
+        if (
+          activeElement instanceof HTMLElement &&
+          isWatchPlayerControlTarget(activeElement) &&
+          pointerTarget instanceof Node &&
+          !activeElement.contains(pointerTarget)
+        ) {
+          activeElement.blur()
+        }
+      })
+    }
+
     document.addEventListener('keydown', handleKeyDown, { capture: true })
     document.addEventListener('keyup', handleKeyUp, { capture: true })
+    document.addEventListener('pointerdown', handlePointerDown, { capture: true })
     window.addEventListener('blur', handleWindowBlur)
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown, { capture: true })
       document.removeEventListener('keyup', handleKeyUp, { capture: true })
+      document.removeEventListener('pointerdown', handlePointerDown, { capture: true })
       window.removeEventListener('blur', handleWindowBlur)
       finishRightArrowPress(false)
       rightArrowPressedRef.current = false
@@ -629,11 +692,59 @@ export function WatchPartyWorkspace() {
 
   const mediaMatchesRoom = !remoteState?.media_id || !localVideo || remoteState.media_id === localVideo.mediaId
 
+  const contextPanel = (
+    <aside className="watch-context-panel" aria-label="房间与同步信息">
+      <Tabs.Root className="watch-context-tabs" defaultValue="room">
+        <Tabs.List className="watch-context-tab-list" aria-label="一起看状态">
+          <Tabs.Tab value="room">房间</Tabs.Tab>
+          <Tabs.Tab value="sync">同步</Tabs.Tab>
+          <Tabs.Indicator className="watch-context-tab-indicator" />
+        </Tabs.List>
+        <Tabs.Panel className="watch-context-tab-panel" value="room">
+          <div className="watch-room-identity">
+            <span>当前房间</span>
+            <strong>{roomSessionEnabled ? activeRoom : '未加入'}</strong>
+            <button disabled={!roomSessionEnabled} onClick={() => void navigator.clipboard?.writeText(activeRoom)} type="button">复制房间号</button>
+          </div>
+          <StatusBanner right={`${peerCount} 个连接`} status={socketStatus} />
+          <dl className="watch-context-facts">
+            <div><dt>连接状态</dt><dd>{socketStatus.kind === 'success' ? '已连接' : socketStatus.kind === 'error' ? '连接失败' : socketStatus.kind === 'warning' ? '已断开' : '等待连接'}</dd></div>
+            <div><dt>房间媒体</dt><dd>{remoteState?.media_name || '暂无'}</dd></div>
+            <div><dt>本地媒体</dt><dd>{localVideo?.name || '未选择'}</dd></div>
+            <div><dt>文件匹配</dt><dd className={mediaMatchesRoom ? 'is-success' : 'is-warning'}>{mediaMatchesRoom ? '匹配' : '需要重新选择'}</dd></div>
+          </dl>
+          <div className="watch-context-actions">
+            <button className="button button-primary" onClick={() => setRoomDialogOpen(true)} type="button">切换房间</button>
+            {roomSessionEnabled ? <button className="button button-ghost" onClick={() => setRoomSessionEnabled(false)} type="button">离开房间</button> : <button className="button button-ghost" onClick={() => setRoomSessionEnabled(true)} type="button">重新加入</button>}
+            {(socketStatus.kind === 'error' || socketStatus.kind === 'warning') && roomSessionEnabled ? <button className="button button-ghost" onClick={() => setConnectionGeneration((value) => value + 1)} type="button">重试连接</button> : null}
+          </div>
+        </Tabs.Panel>
+        <Tabs.Panel className="watch-context-tab-panel" value="sync">
+          <div className="watch-sync-orbit" aria-hidden="true"><span /><i /></div>
+          <dl className="watch-context-facts watch-sync-facts">
+            <div><dt>远端状态</dt><dd>{remoteState ? (remoteState.paused ? '暂停' : '播放') : '等待'}</dd></div>
+            <div><dt>远端进度</dt><dd>{formatClock(remoteState?.position ?? 0)}</dd></div>
+            <div><dt>播放倍速</dt><dd>{remoteState?.playback_rate ?? playbackRate}x</dd></div>
+            <div><dt>状态版本</dt><dd>v{remoteState?.version ?? 0}</dd></div>
+            <div><dt>最近同步</dt><dd>{remoteState?.server_time ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(remoteState.server_time)) : '尚未同步'}</dd></div>
+          </dl>
+          <p className="watch-sync-note">同步只校准播放状态。视频文件始终由每位参与者在本机选择，不会上传到服务器。</p>
+        </Tabs.Panel>
+      </Tabs.Root>
+    </aside>
+  )
+
   return (
-    <div className="page-shell watch-party-shell layout-frame" data-layout-region="watch-workspace">
-      <div className="watch-party-grid layout-min-grid" data-layout-region="watch-grid">
-        <section className="watch-stage layout-cell" data-layout-region="watch-stage">
+    <div className="page-shell watch-party-shell" data-layout-region="watch-workspace">
+      <section className="watch-page-intro">
+        <div><p>Shared screening room</p><h1>把同一刻留在屏幕上</h1><span>视频留在本机，只同步播放、暂停、进度和倍速。</span></div>
+        <div className="watch-page-actions"><button className="button" onClick={() => setContextDrawerOpen(true)} type="button">房间状态</button><button className="button button-primary" onClick={() => setRoomDialogOpen(true)} type="button">进入房间</button></div>
+      </section>
+      <div className="watch-party-grid" data-layout-region="watch-grid">
+        <section className="watch-stage" data-layout-region="watch-stage">
           <div className={`watch-video-frame${controlsVisible ? '' : ' watch-video-frame-idle'}`} onPointerDown={showControls} onPointerMove={showControls} ref={videoFrameRef}>
+            <div className="watch-stage-status"><span className={socketStatus.kind === 'success' ? 'is-online' : ''} /><strong>{roomSessionEnabled ? activeRoom : '未加入房间'}</strong><small>{peerCount} 个连接</small></div>
+            {!mediaMatchesRoom ? <div className="watch-mismatch-banner" role="alert"><strong>本地文件与房间不同</strong><span>房间正在播放：{remoteState?.media_name || '未知视频'}</span><label>选择对应视频<input accept="video/*,.mp4,.webm,.mkv,.mov,.m4v" onChange={(event) => chooseVideo(event.target.files)} type="file" /></label></div> : null}
             {localVideo ? (
               <>
                 <video
@@ -706,6 +817,8 @@ export function WatchPartyWorkspace() {
                       max={duration || 0}
                       min={0}
                       onChange={(event) => seekTo(Number(event.target.value))}
+                      onPointerCancel={(event) => event.currentTarget.blur()}
+                      onPointerUp={(event) => event.currentTarget.blur()}
                       step={0.1}
                       type="range"
                       value={duration ? Math.min(position, duration) : 0}
@@ -713,152 +826,85 @@ export function WatchPartyWorkspace() {
                   </div>
                   <div className="watch-video-control-row">
                     <div className="watch-video-control-group watch-video-transport">
-                      <button aria-label={isPlaying ? '暂停' : '播放'} className="watch-video-icon-button watch-video-control-primary" onClick={togglePlayback} type="button">
-                        <WatchControlIcon name={isPlaying ? 'pause' : 'play'} />
-                      </button>
-                      <button aria-label="快退 10 秒" className="watch-video-icon-button watch-video-skip-button" onClick={() => seekBy(-10)} type="button">
-                        <WatchControlIcon name="rewind" />
-                        <span>10</span>
-                      </button>
-                      <button aria-label="快进 10 秒" className="watch-video-icon-button watch-video-skip-button" onClick={() => seekBy(10)} type="button">
-                        <WatchControlIcon name="forward" />
-                        <span>10</span>
-                      </button>
+                      <WatchTooltip label={isPlaying ? '暂停' : '播放'}><button aria-label={isPlaying ? '暂停' : '播放'} className="watch-video-icon-button watch-video-control-primary" onClick={togglePlayback} type="button"><WatchControlIcon name={isPlaying ? 'pause' : 'play'} /></button></WatchTooltip>
+                      <WatchTooltip label="快退 10 秒"><button aria-label="快退 10 秒" className="watch-video-icon-button watch-video-skip-button" onClick={() => seekBy(-10)} type="button"><WatchControlIcon name="rewind" /><span>10</span></button></WatchTooltip>
+                      <WatchTooltip label="快进 10 秒"><button aria-label="快进 10 秒" className="watch-video-icon-button watch-video-skip-button" onClick={() => seekBy(10)} type="button"><WatchControlIcon name="forward" /><span>10</span></button></WatchTooltip>
                     </div>
                     <span className="watch-video-time">
                       {formatClock(position)} / {formatClock(duration)}
                     </span>
                     <div className="watch-video-control-group watch-video-options">
+                      <Menu.Root>
+                        <Menu.Trigger aria-label={`播放倍速，当前 ${playbackRate}x`} className="watch-video-text-button"><span>倍速</span><strong>{playbackRate}x</strong></Menu.Trigger>
+                        <Menu.Portal><Menu.Positioner className="watch-menu-positioner" sideOffset={8}><Menu.Popup className="watch-rate-menu">{[...playbackRates].reverse().map((rate) => <Menu.Item className={playbackRate === rate ? 'watch-rate-menu-item is-active' : 'watch-rate-menu-item'} key={rate} onClick={() => changePlaybackRate(rate)}>{rate}x</Menu.Item>)}</Menu.Popup></Menu.Positioner></Menu.Portal>
+                      </Menu.Root>
                       <div
-                        className="watch-video-rate-control"
+                        className={`watch-video-volume-control${volumePanelOpen ? ' is-open' : ''}`}
                         onBlurCapture={(event) => {
                           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                            setSpeedMenuOpen(false)
+                            setVolumePanelOpen(false)
                           }
                         }}
-                        onPointerEnter={() => setSpeedMenuOpen(true)}
-                        onPointerLeave={() => setSpeedMenuOpen(false)}
                       >
-                        <button
-                          aria-expanded={speedMenuOpen}
-                          aria-haspopup="menu"
-                          aria-label={`播放倍速，当前 ${playbackRate}x`}
-                          className="watch-video-text-button"
-                          onClick={() => setSpeedMenuOpen((open) => !open)}
-                          type="button"
-                        >
-                          <span>倍速</span>
-                          <strong>{playbackRate}x</strong>
-                        </button>
-                        <div className={`watch-video-rate-menu${speedMenuOpen ? ' watch-video-rate-menu-open' : ''}`} role="menu">
-                          {[...playbackRates].reverse().map((rate) => (
-                            <button
-                              aria-checked={playbackRate === rate}
-                              className={playbackRate === rate ? 'watch-video-rate-option watch-video-rate-option-active' : 'watch-video-rate-option'}
-                              key={rate}
-                              onClick={() => {
-                                changePlaybackRate(rate)
-                                setSpeedMenuOpen(false)
-                              }}
-                              role="menuitemradio"
-                              type="button"
-                            >
-                              {rate}x
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="watch-video-volume-control">
-                        <div className="watch-video-volume-panel">
-                          <strong>{Math.round((muted ? 0 : volume) * 100)}</strong>
-                          <div className="watch-video-volume-slider-slot">
-                            <input
-                              aria-label="音量"
-                              className="watch-video-volume watch-video-volume-vertical"
-                              max={1}
-                              min={0}
-                              onChange={(event) => changeVolume(Number(event.target.value))}
-                              step={0.01}
-                              type="range"
-                              value={muted ? 0 : volume}
-                            />
+                        {volumePanelOpen ? (
+                          <div aria-label="音量设置" className="watch-video-volume-panel" id="watch-video-volume-panel">
+                            <div className="watch-video-volume-panel-header">
+                              <button aria-label={muted ? '取消静音' : '静音'} onClick={toggleMute} type="button"><WatchControlIcon name={muted || volume === 0 ? 'muted' : 'volume'} /></button>
+                              <strong>{Math.round((muted ? 0 : volume) * 100)}</strong>
+                            </div>
+                            <div className="watch-video-volume-slider-slot">
+                              <input
+                                aria-label="音量"
+                                className="watch-video-volume watch-video-volume-vertical"
+                                max={1}
+                                min={0}
+                                onChange={(event) => changeVolume(Number(event.target.value))}
+                                step={0.01}
+                                type="range"
+                                value={muted ? 0 : volume}
+                              />
+                            </div>
                           </div>
-                        </div>
-                        <button aria-label={muted ? '取消静音' : '静音'} className="watch-video-icon-button" onClick={toggleMute} type="button">
-                          <WatchControlIcon name={muted || volume === 0 ? 'muted' : 'volume'} />
-                        </button>
+                        ) : null}
+                        <WatchTooltip label={volumePanelOpen ? '收起音量' : '调节音量'}><button aria-controls="watch-video-volume-panel" aria-expanded={volumePanelOpen} aria-label={volumePanelOpen ? '收起音量设置' : '打开音量设置'} className="watch-video-icon-button" onClick={() => setVolumePanelOpen((open) => !open)} type="button"><WatchControlIcon name={muted || volume === 0 ? 'muted' : 'volume'} /></button></WatchTooltip>
                       </div>
-                      <button aria-label={isFullscreen ? '退出全屏' : '全屏'} className="watch-video-icon-button" onClick={toggleFullscreen} type="button">
-                        <WatchControlIcon name={isFullscreen ? 'fullscreenExit' : 'fullscreen'} />
-                      </button>
+                      <WatchTooltip label={isFullscreen ? '退出全屏' : '全屏'}><button aria-label={isFullscreen ? '退出全屏' : '全屏'} className="watch-video-icon-button" onClick={toggleFullscreen} type="button"><WatchControlIcon name={isFullscreen ? 'fullscreenExit' : 'fullscreen'} /></button></WatchTooltip>
                     </div>
                   </div>
                 </div>
               </>
             ) : (
               <div className="watch-empty-video">
-                <span>VIDEO</span>
+                <span className="watch-empty-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h12v12H4z" /><path d="m16 10 4-2v8l-4-2z" /><path d="m9 10 4 2-4 2z" /></svg></span>
+                <strong>选择今晚要一起看的视频</strong>
+                <p>文件只在本机读取；加入同一房间后，播放状态会自动同步。</p>
+                <div><label className="button button-primary">选择视频<input accept="video/*,.mp4,.webm,.mkv,.mov,.m4v" onChange={(event) => chooseVideo(event.target.files)} type="file" /></label><button className="button button-ghost" onClick={() => setRoomDialogOpen(true)} type="button">切换房间</button></div>
               </div>
             )}
           </div>
+          <div className="watch-stage-footer">
+            <div>
+              <strong>{localVideo?.name || '尚未选择视频'}</strong>
+              <span>{videoStatus.message}</span>
+            </div>
+            <label className="watch-change-file">{localVideo ? '更换视频' : '选择视频'}<input accept="video/*,.mp4,.webm,.mkv,.mov,.m4v" onChange={(event) => chooseVideo(event.target.files)} type="file" /></label>
+          </div>
         </section>
-
-        <aside className="watch-side-panel layout-cell" data-layout-region="watch-rail">
-          <section className="watch-panel">
-            <div className="watch-panel-heading">
-              <span>Room</span>
-              <strong>{peerCount}</strong>
-            </div>
-            <div className="watch-room-row">
-              <input
-                className="field-input"
-                onChange={(event) => setRoomInput(event.target.value)}
-                type="text"
-                value={roomInput}
-              />
-              <button className="button button-primary" onClick={joinRoom} type="button">
-                加入
-              </button>
-            </div>
-            <StatusBanner right={activeRoom} status={socketStatus} />
-          </section>
-
-          <section className="watch-panel">
-            <div className="watch-panel-heading">
-              <span>Local</span>
-              <strong>{localVideo ? '已选择' : '空'}</strong>
-            </div>
-            <label className="watch-file-picker">
-              <input accept="video/*,.mp4,.webm,.mkv,.mov,.m4v" onChange={(event) => chooseVideo(event.target.files)} type="file" />
-              <span>选择视频</span>
-            </label>
-            <StatusBanner right={mediaMatchesRoom ? '匹配' : '不匹配'} status={videoStatus} />
-            {localVideo ? (
-              <div className="watch-file-meta">
-                <strong>{localVideo.name}</strong>
-                <span>{(localVideo.file.size / 1024 / 1024).toFixed(1)} MB</span>
-              </div>
-            ) : null}
-          </section>
-
-          <section className="watch-panel watch-state-panel">
-            <div className="watch-panel-heading">
-              <span>Sync</span>
-              <strong>v{remoteState?.version ?? 0}</strong>
-            </div>
-            <div className="watch-state-list">
-              <span>状态</span>
-              <strong>{remoteState ? (remoteState.paused ? '暂停' : '播放') : '等待'}</strong>
-              <span>进度</span>
-              <strong>{formatClock(remoteState?.position ?? 0)}</strong>
-              <span>倍速</span>
-              <strong>{remoteState?.playback_rate ?? playbackRate}x</strong>
-              <span>视频</span>
-              <strong>{remoteState?.media_name || localVideo?.name || '未选择'}</strong>
-            </div>
-          </section>
-        </aside>
+        <div className="watch-context-desktop" data-layout-region="watch-rail">{contextPanel}</div>
       </div>
+
+      <Drawer.Root onOpenChange={setContextDrawerOpen} open={contextDrawerOpen} swipeDirection="right"><Drawer.Portal><Drawer.Backdrop className="watch-overlay-backdrop" /><Drawer.Viewport className="watch-drawer-viewport"><Drawer.Popup className="watch-drawer-popup"><Drawer.Content><div className="watch-drawer-header"><Drawer.Title>房间状态</Drawer.Title><Drawer.Close aria-label="关闭房间状态">关闭</Drawer.Close></div>{contextPanel}</Drawer.Content></Drawer.Popup></Drawer.Viewport></Drawer.Portal></Drawer.Root>
+
+      <Dialog.Root onOpenChange={setRoomDialogOpen} open={roomDialogOpen}><Dialog.Portal><Dialog.Backdrop className="watch-overlay-backdrop" /><Dialog.Popup className="watch-room-dialog"><header><div><p>Screening room</p><Dialog.Title>进入同步房间</Dialog.Title></div><Dialog.Close aria-label="关闭房间设置">关闭</Dialog.Close></header><Dialog.Description>使用相同房间号的浏览器会共享播放、暂停、进度与倍速。</Dialog.Description><label>房间号<input autoFocus className="field-input" onChange={(event) => setRoomInput(event.target.value)} type="text" value={roomInput} /></label><p className="watch-room-helper">仅支持字母、数字、下划线和短横线，最长 64 个字符。</p><div className="watch-room-dialog-actions"><Dialog.Close className="button button-ghost">取消</Dialog.Close><button className="button button-primary" onClick={joinRoom} type="button">进入房间</button></div></Dialog.Popup></Dialog.Portal></Dialog.Root>
     </div>
+  )
+}
+
+function WatchTooltip({ children, label }: { children: ReactElement; label: string }) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger render={children} />
+      <Tooltip.Portal><Tooltip.Positioner sideOffset={8}><Tooltip.Popup className="watch-player-tooltip">{label}</Tooltip.Popup></Tooltip.Positioner></Tooltip.Portal>
+    </Tooltip.Root>
   )
 }

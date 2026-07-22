@@ -53,5 +53,21 @@ export function DocumentsWorkspaceShell() {
 }
 
 export function EntertainmentWorkspaceShell() {
-  return <BrandedWorkspaceShell eyebrow="MEDIA ROOM" title="娱乐" workspace="entertainment" />
+  return (
+    <div className="workspace-shell entertainment-workspace-shell" data-workspace="entertainment">
+      <a className="skip-link" href="#main-content">跳到主内容</a>
+      <WorkspaceLauncher currentWorkspace="entertainment" />
+      <header className="workspace-shell-header entertainment-shell-header">
+        <div className="workspace-shell-brand entertainment-shell-brand">
+          <span className="entertainment-brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M9 18V6l9-2v12" /><circle cx="6.5" cy="18" r="2.5" /><circle cx="15.5" cy="16" r="2.5" /></svg>
+          </span>
+          <span className="entertainment-brand-copy"><small>MIDNIGHT LOUNGE</small><strong>午夜客厅</strong></span>
+        </div>
+        <WorkspaceNav workspace="entertainment" />
+        <span className="entertainment-shell-status"><i /> 本机媒体空间</span>
+      </header>
+      <main className="workspace-shell-content" id="main-content"><Outlet /></main>
+    </div>
+  )
 }

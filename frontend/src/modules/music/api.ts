@@ -13,6 +13,8 @@ type RemoteMusicTrack = {
   audio_quality?: MusicAudioQuality
   lyric_file_name?: string
   lyric_mime_type?: string
+  artwork_available: boolean
+  artwork_mime_type?: string
   file_available: boolean
   record_issue?: string
   created_at: string
@@ -40,6 +42,13 @@ function toMusicTrack(track: RemoteMusicTrack): MusicTrack {
     audioQuality: track.audio_quality?.analyzedAt ? track.audio_quality : undefined,
     lyricFileName: track.lyric_file_name,
     lyricUrl: track.lyric_file_name ? resolveApiUrl(`/music/tracks/${track.id}/lyrics`).toString() : undefined,
+    artwork: track.artwork_available && track.artwork_mime_type
+      ? {
+          kind: 'remote',
+          url: resolveApiUrl(`/music/tracks/${track.id}/artwork`).toString(),
+          mimeType: track.artwork_mime_type,
+        }
+      : undefined,
     addedAt: track.created_at,
   }
 }
@@ -57,10 +66,11 @@ export async function fetchRemoteMusicPage(cursor?: string, limit = 20) {
   }
 }
 
-export async function uploadMusicTrack(file: File, track: MusicTrack, lyric?: File) {
+export async function uploadMusicTrack(file: File, track: MusicTrack, lyric?: File, artwork?: File) {
   const body = new FormData()
   body.set('file', file)
   if (lyric) body.set('lyric', lyric)
+  if (artwork) body.set('artwork', artwork)
   body.set('title', track.title)
   if (track.artist) body.set('artist', track.artist)
   if (track.note) body.set('note', track.note)

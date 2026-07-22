@@ -4,6 +4,13 @@ export const MUSIC_LIBRARY_STORAGE_KEY = 'personal-tooling-music-library-v1'
 
 const MUSIC_FILES_DB = 'personal-tooling-music-files-v1'
 const MUSIC_FILES_STORE = 'file-handles'
+const MUSIC_ARTWORK_STORE = 'artwork-blobs'
+
+export type StoredMusicArtwork = {
+  blob: Blob
+  mimeType: string
+  updatedAt: string
+}
 
 export type LocalFileHandle = {
   kind: 'file'
@@ -106,22 +113,34 @@ export function saveMusicLibraryState(state: MusicLibraryState) {
     return
   }
 
-  window.localStorage.setItem(MUSIC_LIBRARY_STORAGE_KEY, JSON.stringify(state))
+  window.localStorage.setItem(MUSIC_LIBRARY_STORAGE_KEY, JSON.stringify({
+    ...state,
+    tracks: state.tracks.map((track) => {
+      const persistedTrack = { ...track }
+      delete persistedTrack.artworkUrl
+      return persistedTrack
+    }),
+  }))
 }
 
 function openMusicFilesDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(MUSIC_FILES_DB, 1)
+    const request = indexedDB.open(MUSIC_FILES_DB, 2)
 
     request.onupgradeneeded = () => {
-      request.result.createObjectStore(MUSIC_FILES_STORE)
+      if (!request.result.objectStoreNames.contains(MUSIC_FILES_STORE)) {
+        request.result.createObjectStore(MUSIC_FILES_STORE)
+      }
+      if (!request.result.objectStoreNames.contains(MUSIC_ARTWORK_STORE)) {
+        request.result.createObjectStore(MUSIC_ARTWORK_STORE)
+      }
     }
     request.onerror = () => reject(request.error)
     request.onsuccess = () => resolve(request.result)
   })
 }
 
-function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+function withStore<T>(storeName: string, mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   if (typeof indexedDB === 'undefined') {
     return Promise.reject(new Error('当前浏览器不支持 IndexedDB。'))
   }
@@ -129,8 +148,8 @@ function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) 
   return openMusicFilesDb().then(
     (db) =>
       new Promise<T>((resolve, reject) => {
-        const transaction = db.transaction(MUSIC_FILES_STORE, mode)
-        const request = action(transaction.objectStore(MUSIC_FILES_STORE))
+        const transaction = db.transaction(storeName, mode)
+        const request = action(transaction.objectStore(storeName))
 
         request.onerror = () => reject(request.error)
         request.onsuccess = () => resolve(request.result)
@@ -144,27 +163,39 @@ function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) 
 }
 
 export function saveLocalFileHandle(id: string, handle: LocalFileHandle) {
-  return withStore('readwrite', (store) => store.put(handle, id))
+  return withStore(MUSIC_FILES_STORE, 'readwrite', (store) => store.put(handle, id))
 }
 
 export function getLocalFileHandle(id: string) {
-  return withStore<LocalFileHandle | undefined>('readonly', (store) => store.get(id))
+  return withStore<LocalFileHandle | undefined>(MUSIC_FILES_STORE, 'readonly', (store) => store.get(id))
 }
 
 export function deleteLocalFileHandle(id: string) {
-  return withStore('readwrite', (store) => store.delete(id))
+  return withStore(MUSIC_FILES_STORE, 'readwrite', (store) => store.delete(id))
 }
 
 export function saveLocalDirectoryHandle(id: string, handle: LocalDirectoryHandle) {
-  return withStore('readwrite', (store) => store.put(handle, id))
+  return withStore(MUSIC_FILES_STORE, 'readwrite', (store) => store.put(handle, id))
 }
 
 export function getLocalDirectoryHandle(id: string) {
-  return withStore<LocalDirectoryHandle | undefined>('readonly', (store) => store.get(id))
+  return withStore<LocalDirectoryHandle | undefined>(MUSIC_FILES_STORE, 'readonly', (store) => store.get(id))
 }
 
 export function deleteLocalDirectoryHandle(id: string) {
-  return withStore('readwrite', (store) => store.delete(id))
+  return withStore(MUSIC_FILES_STORE, 'readwrite', (store) => store.delete(id))
+}
+
+export function saveMusicArtwork(key: string, artwork: StoredMusicArtwork) {
+  return withStore(MUSIC_ARTWORK_STORE, 'readwrite', (store) => store.put(artwork, key))
+}
+
+export function getMusicArtwork(key: string) {
+  return withStore<StoredMusicArtwork | undefined>(MUSIC_ARTWORK_STORE, 'readonly', (store) => store.get(key))
+}
+
+export function deleteMusicArtwork(key: string) {
+  return withStore(MUSIC_ARTWORK_STORE, 'readwrite', (store) => store.delete(key))
 }
 
 export function supportsPersistentLocalFiles() {

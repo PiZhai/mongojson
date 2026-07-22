@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import type { MusicTrack } from '../types'
+import { getGeneratedMusicArtworkUrl } from '../lib/artwork'
 
 type MediaSessionControls = {
   currentTime: number
@@ -32,6 +33,9 @@ export function useMediaSession({
           title: track.title,
           artist: track.artist || '未知歌手',
           album: track.note || (track.remoteId ? '云端曲库' : track.source === 'local' ? '本地音乐' : 'URL 音乐'),
+          artwork: track.artworkUrl && track.artwork
+            ? [{ src: track.artworkUrl, type: track.artwork.mimeType }]
+            : [{ src: getGeneratedMusicArtworkUrl(track.title, track.artist), type: 'image/svg+xml', sizes: '512x512' }],
         })
       : null
   }, [track])

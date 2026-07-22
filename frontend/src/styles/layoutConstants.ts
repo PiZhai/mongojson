@@ -28,20 +28,12 @@ export interface LayoutSizeTokens {
   memoCardRailMin: number
   memoCardRailMax: number
   memoWorkspaceMin: number
-  musicSidebarMin: number
-  musicSidebarMax: number
-  musicMainMin: number
-  musicWorkspaceMin: number
-  musicMiniInfoMin: number
-  musicMiniPlaybackMin: number
-  musicMiniActionsMin: number
-  musicMiniWorkspaceMin: number
   watchStageMin: number
   watchRailMin: number
   watchWorkspaceMin: number
 }
 
-export type LayoutLayer = 'shell' | 'component'
+export type LayoutLayer = 'shell' | 'component' | 'module'
 export type LayoutQueryType = 'media' | 'container'
 
 export interface LayoutBreakpoint {
@@ -55,6 +47,12 @@ export interface LayoutBreakpoint {
 export type LayoutBreakpointKey =
   | 'shell.mobilePortraitMax'
   | 'component.controlsCompactBelow'
+  | 'entertainment.musicWideMax'
+  | 'entertainment.musicCompactMax'
+  | 'entertainment.phoneMax'
+  | 'entertainment.watchDesktopMin'
+  | 'entertainment.watchCompactMax'
+  | 'entertainment.watchLandscapeMax'
 
 export interface LayoutConstants {
   description: string

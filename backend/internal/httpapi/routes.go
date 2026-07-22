@@ -333,6 +333,7 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Get("/music/tracks", handler.listMusicTracks)
 		r.Get("/music/tracks/{id}/content", handler.streamMusicTrack)
 		r.Get("/music/tracks/{id}/lyrics", handler.streamMusicLyrics)
+		r.Get("/music/tracks/{id}/artwork", handler.streamMusicArtwork)
 		r.Delete("/music/tracks/{id}", handler.deleteMusicTrack)
 		r.Get("/canvas/boards", handler.listCanvasBoards)
 		r.Post("/canvas/boards", handler.createCanvasBoard)

@@ -1,5 +1,5 @@
 {
-  "description": "Authoritative source of truth for the project-wide minimum-grid layout. Desktop and landscape layouts keep their columns and scroll inside the workspace when space is scarce. Only portrait viewports at or below mobilePortraitMax switch to a stacked layout.",
+  "description": "Authoritative source of truth for shared layout thresholds. Tool grids retain their minimum panes, while immersive entertainment workspaces progressively move contextual rails into accessible drawers.",
   "sizeTokens": {
     "sidebarExpandedWidth": 228,
     "sidebarCollapsedWidth": 72,
@@ -27,14 +27,6 @@
     "memoCardRailMin": 380,
     "memoCardRailMax": 400,
     "memoWorkspaceMin": 1080,
-    "musicSidebarMin": 260,
-    "musicSidebarMax": 300,
-    "musicMainMin": 620,
-    "musicWorkspaceMin": 894,
-    "musicMiniInfoMin": 190,
-    "musicMiniPlaybackMin": 360,
-    "musicMiniActionsMin": 210,
-    "musicMiniWorkspaceMin": 788,
     "watchStageMin": 640,
     "watchRailMin": 340,
     "watchWorkspaceMin": 996
@@ -52,6 +44,48 @@
       "formula": "Component-local compact controls threshold used by narrow panels and the 380-400px memo card rail; it never changes the page grid.",
       "layer": "component",
       "queryType": "container",
+      "containerName": null
+    },
+    "entertainment.musicWideMax": {
+      "value": 1279,
+      "formula": "Below the three-column music layout, current-playing context moves into a drawer.",
+      "layer": "module",
+      "queryType": "media",
+      "containerName": null
+    },
+    "entertainment.musicCompactMax": {
+      "value": 1023,
+      "formula": "Below the two-column music layout, collections also move into a drawer.",
+      "layer": "module",
+      "queryType": "media",
+      "containerName": null
+    },
+    "entertainment.phoneMax": {
+      "value": 767,
+      "formula": "Phone entertainment layouts use compact headers, rows, controls and bottom sheets.",
+      "layer": "module",
+      "queryType": "media",
+      "containerName": null
+    },
+    "entertainment.watchDesktopMin": {
+      "value": 1200,
+      "formula": "The watch room rail is pinned only when the video stage and 320px context rail both fit.",
+      "layer": "module",
+      "queryType": "media",
+      "containerName": null
+    },
+    "entertainment.watchCompactMax": {
+      "value": 1199,
+      "formula": "Below the pinned watch layout, room and sync context move into a drawer.",
+      "layer": "module",
+      "queryType": "media",
+      "containerName": null
+    },
+    "entertainment.watchLandscapeMax": {
+      "value": 1000,
+      "formula": "Short landscape screens prioritize the video stage and hide nonessential framing.",
+      "layer": "module",
+      "queryType": "media",
       "containerName": null
     },
     "memo.notesDrawerBelow": {

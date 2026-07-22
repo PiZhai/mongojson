@@ -1,6 +1,18 @@
 import type { IAudioMetadata } from 'music-metadata'
 import type { MusicAudioQuality } from '../types'
 
+export const MAX_MUSIC_ARTWORK_BYTES = 8 * 1024 * 1024
+
+export type MusicArtworkData = {
+  blob: Blob
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp'
+}
+
+export type AudioFileAnalysis = {
+  audioQuality: MusicAudioQuality
+  artwork?: MusicArtworkData
+}
+
 type AudioQualityInput = {
   fileName?: string
   mimeType?: string
@@ -88,23 +100,49 @@ export function inferAudioQuality(input: AudioQualityInput, error?: string): Mus
 }
 
 export async function analyzeAudioFileQuality(file: File): Promise<MusicAudioQuality> {
+  return (await analyzeAudioFile(file)).audioQuality
+}
+
+function normalizeArtwork(metadata: IAudioMetadata): MusicArtworkData | undefined {
+  const picture = metadata.common.picture?.find((candidate) => candidate.data.byteLength > 0)
+  if (!picture || picture.data.byteLength > MAX_MUSIC_ARTWORK_BYTES) {
+    return undefined
+  }
+
+  const normalized = picture.format.toLowerCase() === 'image/jpg' ? 'image/jpeg' : picture.format.toLowerCase()
+  if (normalized !== 'image/jpeg' && normalized !== 'image/png' && normalized !== 'image/webp') {
+    return undefined
+  }
+
+  return {
+    blob: new Blob([new Uint8Array(picture.data)], { type: normalized }),
+    mimeType: normalized,
+  }
+}
+
+export async function analyzeAudioFile(file: File): Promise<AudioFileAnalysis> {
   try {
     const { parseBlob } = await import('music-metadata')
-    const metadata = await parseBlob(file, { duration: true, skipCovers: true })
-    return normalizeMetadata(metadata, {
-      fileName: file.name,
-      fileSize: file.size,
-      mimeType: file.type,
-    })
-  } catch (error) {
-    return inferAudioQuality(
-      {
+    const metadata = await parseBlob(file, { duration: true, skipCovers: false })
+    return {
+      audioQuality: normalizeMetadata(metadata, {
         fileName: file.name,
         fileSize: file.size,
         mimeType: file.type,
-      },
-      error instanceof Error ? error.message : '无法解析音频元数据。',
-    )
+      }),
+      artwork: normalizeArtwork(metadata),
+    }
+  } catch (error) {
+    return {
+      audioQuality: inferAudioQuality(
+        {
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type,
+        },
+        error instanceof Error ? error.message : '无法解析音频元数据。',
+      ),
+    }
   }
 }
 

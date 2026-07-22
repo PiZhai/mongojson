@@ -1294,8 +1294,7 @@
 .music-queue-icon-button:focus-visible,
 .music-queue-play-target:focus-visible,
 .music-floating-control-button:focus-visible,
-.music-floating-page-link:focus-visible,
-.music-volume-control:focus-within {
+.music-floating-page-link:focus-visible {
   outline: 3px solid rgba(99, 91, 255, 0.25);
   outline-offset: 2px;
 }

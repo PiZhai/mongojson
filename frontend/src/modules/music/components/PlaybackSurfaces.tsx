@@ -1,9 +1,13 @@
-import { type PointerEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { Drawer } from '@base-ui/react/drawer'
+import { Slider } from '@base-ui/react/slider'
+import { Tooltip } from '@base-ui/react/tooltip'
+import { type PointerEvent, type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { summarizeAudioQuality } from '../lib/audioQuality'
 import { musicModule } from '../manifest'
 import type { MusicTrack, PlaybackMode } from '../types'
 import { useMusicPlayer } from '../MusicPlayerContext'
+import { MusicArtwork } from './MusicArtwork'
 
 const FLOATING_PLAYER_POSITION_KEY = 'personal-tooling-music-floating-position'
 const FLOATING_PLAYER_WIDTH = 300
@@ -286,6 +290,19 @@ function getNextMode(mode: PlaybackMode): PlaybackMode {
   return 'order'
 }
 
+function PlayerTooltip({ children, label }: { children: ReactElement; label: string }) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger render={children} />
+      <Tooltip.Portal>
+        <Tooltip.Positioner sideOffset={8}>
+          <Tooltip.Popup className="music-player-tooltip">{label}</Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  )
+}
+
 export function MusicMiniPlayer() {
   const location = useLocation()
   const {
@@ -323,11 +340,7 @@ export function MusicMiniPlayer() {
     <section className="music-mini-player music-mini-player-entertainment" aria-label="音乐播放器">
       <div className="music-mini-surface">
         <div className="music-now-playing">
-          <span className="music-equalizer" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </span>
+          <MusicArtwork className="music-player-artwork" track={currentTrack} />
           <div className="music-now-playing-copy">
             <strong>{currentTrack?.title ?? '未选择音乐'}</strong>
             <span>{currentTrack?.artist || currentTrack?.fileName || currentTrack?.remoteUrl || '打开音乐播放器添加曲目'}</span>
@@ -338,60 +351,56 @@ export function MusicMiniPlayer() {
 
         <div className="music-playback-cluster">
           <div className="music-transport">
-            <button className="music-icon-button" onClick={playPrevious} type="button" aria-label="上一首" title="上一首">
-              <PlayerIcon name="previous" />
-            </button>
-            <button className="music-play-button" onClick={togglePlay} type="button" aria-label={isPlaying ? '暂停' : '播放'} title={isPlaying ? '暂停' : '播放'}>
-              <PlayerIcon name={isPlaying ? 'pause' : 'play'} />
-            </button>
-            <button className="music-icon-button" onClick={playNext} type="button" aria-label="下一首" title="下一首">
-              <PlayerIcon name="next" />
-            </button>
+            <PlayerTooltip label="上一首"><button className="music-icon-button" onClick={playPrevious} type="button" aria-label="上一首"><PlayerIcon name="previous" /></button></PlayerTooltip>
+            <PlayerTooltip label={isPlaying ? '暂停' : '播放'}><button className="music-play-button" onClick={togglePlay} type="button" aria-label={isPlaying ? '暂停' : '播放'}><PlayerIcon name={isPlaying ? 'pause' : 'play'} /></button></PlayerTooltip>
+            <PlayerTooltip label="下一首"><button className="music-icon-button" onClick={playNext} type="button" aria-label="下一首"><PlayerIcon name="next" /></button></PlayerTooltip>
           </div>
 
           <div className="music-progress">
             <span className="music-progress-time">{formatPlayerTime(currentTime)}</span>
-            <input
-              aria-label="播放进度"
-              aria-valuetext={`${formatPlayerTime(currentTime)} / ${formatPlayerTime(duration)}`}
+            <Slider.Root
+              className="music-base-slider music-progress-slider"
               disabled={!currentTrack}
               max={duration || 1}
               min={0}
-              onChange={(event) => seek(Number(event.target.value))}
+              onValueChange={(value) => seek(value)}
               step={1}
-              type="range"
+              thumbAlignment="edge"
               value={duration ? Math.min(currentTime, duration) : 0}
-            />
+            >
+              <Slider.Control className="music-base-slider-control">
+                <Slider.Track className="music-base-slider-track">
+                  <Slider.Indicator className="music-base-slider-indicator" />
+                  <Slider.Thumb aria-label="播放进度" aria-valuetext={`${formatPlayerTime(currentTime)} / ${formatPlayerTime(duration)}`} className="music-base-slider-thumb" />
+                </Slider.Track>
+              </Slider.Control>
+            </Slider.Root>
             <span className="music-progress-time">{formatPlayerTime(duration)}</span>
           </div>
         </div>
 
         <div className="music-mini-actions">
-          <button
-            aria-label={`播放模式：${modeLabel}，点击切换`}
-            className="music-mini-action-button"
-            onClick={() => setMode(nextMode)}
-            title={`播放模式：${modeLabel}`}
-            type="button"
-          >
-            <PlayerIcon name={modeIcon} />
-          </button>
-          <button aria-label="打开播放队列" className="music-mini-action-button" onClick={openQueue} title="播放队列" type="button">
-            <PlayerIcon name="queue" />
-          </button>
+          <PlayerTooltip label={`播放模式：${modeLabel}`}><button aria-label={`播放模式：${modeLabel}，点击切换`} className="music-mini-action-button" onClick={() => setMode(nextMode)} type="button"><PlayerIcon name={modeIcon} /></button></PlayerTooltip>
+          <PlayerTooltip label="播放队列"><button aria-label="打开播放队列" className="music-mini-action-button" onClick={openQueue} type="button"><PlayerIcon name="queue" /></button></PlayerTooltip>
           <label className="music-volume-control" title="音量">
             <span className="sr-only">音量</span>
             <PlayerIcon name="volume" />
-            <input
-              aria-label="音量"
-              className="music-volume"
+            <Slider.Root
+              className="music-base-slider music-volume"
               max={1}
               min={0}
-              onChange={(event) => setVolume(Number(event.target.value))}
+              onValueChange={(value) => setVolume(value)}
               step={0.01}
-              type="range"
+              thumbAlignment="edge"
               value={volume}
-            />
+            >
+              <Slider.Control className="music-base-slider-control">
+                <Slider.Track className="music-base-slider-track">
+                  <Slider.Indicator className="music-base-slider-indicator" />
+                  <Slider.Thumb aria-label="音量" className="music-base-slider-thumb" />
+                </Slider.Track>
+              </Slider.Control>
+            </Slider.Root>
           </label>
           {isMusicPage ? (
             <span aria-label="当前在音乐页" className="music-current-page-chip" title="当前在音乐页">
@@ -422,9 +431,6 @@ export function MusicQueueDrawer() {
     tracks,
   } = useMusicPlayer()
   const [draggedTrackId, setDraggedTrackId] = useState<string | null>(null)
-  const queuePanelRef = useRef<HTMLDivElement | null>(null)
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
-  const previousFocusRef = useRef<HTMLElement | null>(null)
   const queueTracks = queue
     .map((id) => tracks.find((track) => track.id === id))
     .filter((track): track is MusicTrack => Boolean(track))
@@ -434,116 +440,61 @@ export function MusicQueueDrawer() {
     if (!isEntertainmentPage && isQueueOpen) closeQueue()
   }, [closeQueue, isEntertainmentPage, isQueueOpen])
 
-  useEffect(() => {
-    if (!isQueueOpen) return
-    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    window.requestAnimationFrame(() => closeButtonRef.current?.focus())
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeQueue()
-      if (event.key === 'Tab' && queuePanelRef.current) {
-        const focusable = Array.from(queuePanelRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'))
-        const first = focusable[0]
-        const last = focusable.at(-1)
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault()
-          last?.focus()
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault()
-          first?.focus()
-        }
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-      window.requestAnimationFrame(() => previousFocusRef.current?.focus())
-    }
-  }, [closeQueue, isQueueOpen])
-
-  if (!isEntertainmentPage || !isQueueOpen) {
+  if (!isEntertainmentPage) {
     return null
   }
 
   return (
-    <aside aria-label="播放队列" className="music-queue-drawer music-queue-drawer-entertainment">
-      <div className="music-queue-panel" ref={queuePanelRef} role="dialog" aria-modal="true">
-        <div className="music-queue-header">
-          <div>
-            <p className="music-queue-eyebrow">Queue</p>
-            <h2>播放队列</h2>
-          </div>
-          <div className="music-queue-header-actions">
-            <button className="music-queue-text-button" onClick={clearQueue} type="button">
-              清空
-            </button>
-            <button className="music-queue-icon-button" onClick={closeQueue} ref={closeButtonRef} type="button" aria-label="关闭队列">
-              <PlayerIcon name="close" />
-            </button>
-          </div>
-        </div>
-
-        {queueTracks.length === 0 ? (
-          <div className="music-queue-empty">播放队列为空。</div>
-        ) : (
-          <div className="music-queue-list">
-            {queueTracks.map((track, index) => (
-              <article
-                className={`music-queue-item${track.id === currentTrackId ? ' music-queue-item-active' : ''}${track.id === draggedTrackId ? ' is-dragging' : ''}`}
-                draggable
-                key={track.id}
-                onDragEnd={() => setDraggedTrackId(null)}
-                onDragOver={(event) => event.preventDefault()}
-                onDragStart={() => setDraggedTrackId(track.id)}
-                onDrop={() => {
-                  if (!draggedTrackId || draggedTrackId === track.id) return
-                  const sourceIndex = queueTracks.findIndex((item) => item.id === draggedTrackId)
-                  const targetIndex = queueTracks.findIndex((item) => item.id === track.id)
-                  const direction = sourceIndex < targetIndex ? 'down' : 'up'
-                  for (let index = 0; index < Math.abs(targetIndex - sourceIndex); index += 1) moveQueueItem(draggedTrackId, direction)
-                  setDraggedTrackId(null)
-                }}
-              >
-                <button className="music-queue-play-target" onClick={() => playTrack(track.id)} type="button">
-                  <span className="music-queue-index">{track.id === currentTrackId ? '播放中' : String(index + 1)}</span>
-                  <span className="music-queue-copy">
-                    <strong>{track.title}</strong>
-                    <span>{track.artist || track.fileName || track.remoteUrl || '未填写来源'}</span>
-                  </span>
-                </button>
-                <div className="music-queue-item-actions">
-                  <button
-                    aria-label="上移"
-                    className="music-queue-icon-button"
-                    disabled={index === 0}
-                    onClick={() => moveQueueItem(track.id, 'up')}
-                    type="button"
-                  >
-                    <PlayerIcon name="up" />
-                  </button>
-                  <button
-                    aria-label="下移"
-                    className="music-queue-icon-button"
-                    disabled={index === queueTracks.length - 1}
-                    onClick={() => moveQueueItem(track.id, 'down')}
-                    type="button"
-                  >
-                    <PlayerIcon name="down" />
-                  </button>
-                  <button
-                    aria-label="从队列移除"
-                    className="music-queue-icon-button music-queue-danger-button"
-                    onClick={() => removeFromQueue(track.id)}
-                    type="button"
-                  >
-                    <PlayerIcon name="trash" />
-                  </button>
+    <Drawer.Root onOpenChange={(open) => { if (!open) closeQueue() }} open={isQueueOpen} swipeDirection="right">
+      <Drawer.Portal>
+        <Drawer.Backdrop className="music-queue-backdrop" />
+        <Drawer.Viewport className="music-queue-viewport">
+          <Drawer.Popup className="music-queue-drawer music-queue-drawer-entertainment">
+            <Drawer.Content className="music-queue-panel">
+              <div className="music-queue-header">
+                <div>
+                  <p className="music-queue-eyebrow">Queue</p>
+                  <Drawer.Title>播放队列</Drawer.Title>
                 </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </div>
-    </aside>
+                <div className="music-queue-header-actions">
+                  <button className="music-queue-text-button" onClick={clearQueue} type="button">清空</button>
+                  <Drawer.Close className="music-queue-icon-button" aria-label="关闭队列"><PlayerIcon name="close" /></Drawer.Close>
+                </div>
+              </div>
+
+              {queueTracks.length === 0 ? <div className="music-queue-empty">播放队列为空。</div> : (
+                <div className="music-queue-list">
+                  {queueTracks.map((track, index) => (
+                    <article
+                      className={`music-queue-item${track.id === currentTrackId ? ' music-queue-item-active' : ''}${track.id === draggedTrackId ? ' is-dragging' : ''}`}
+                      draggable key={track.id} onDragEnd={() => setDraggedTrackId(null)} onDragOver={(event) => event.preventDefault()} onDragStart={() => setDraggedTrackId(track.id)}
+                      onDrop={() => {
+                        if (!draggedTrackId || draggedTrackId === track.id) return
+                        const sourceIndex = queueTracks.findIndex((item) => item.id === draggedTrackId)
+                        const targetIndex = queueTracks.findIndex((item) => item.id === track.id)
+                        const direction = sourceIndex < targetIndex ? 'down' : 'up'
+                        for (let moveIndex = 0; moveIndex < Math.abs(targetIndex - sourceIndex); moveIndex += 1) moveQueueItem(draggedTrackId, direction)
+                        setDraggedTrackId(null)
+                      }}
+                    >
+                      <button className="music-queue-play-target" onClick={() => playTrack(track.id)} type="button">
+                        <span className="music-queue-index">{track.id === currentTrackId ? '播放中' : String(index + 1)}</span>
+                        <span className="music-queue-copy"><strong>{track.title}</strong><span>{track.artist || track.fileName || track.remoteUrl || '未填写来源'}</span></span>
+                      </button>
+                      <div className="music-queue-item-actions">
+                        <button aria-label="上移" className="music-queue-icon-button" disabled={index === 0} onClick={() => moveQueueItem(track.id, 'up')} type="button"><PlayerIcon name="up" /></button>
+                        <button aria-label="下移" className="music-queue-icon-button" disabled={index === queueTracks.length - 1} onClick={() => moveQueueItem(track.id, 'down')} type="button"><PlayerIcon name="down" /></button>
+                        <button aria-label="从队列移除" className="music-queue-icon-button music-queue-danger-button" onClick={() => removeFromQueue(track.id)} type="button"><PlayerIcon name="trash" /></button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </Drawer.Content>
+          </Drawer.Popup>
+        </Drawer.Viewport>
+      </Drawer.Portal>
+    </Drawer.Root>
   )
 }
 
@@ -605,7 +556,7 @@ function MusicFloatingPlayer({ workspace }: { workspace: PlayerWorkspace }) {
       style={{ left: position.x, top: position.y }}
     >
       <Link aria-label="打开音乐页" className="music-floating-page-link" title="打开音乐页" to={musicModule.route.path}>
-        <PlayerIcon name="music-page" />
+        <MusicArtwork className="music-floating-artwork" track={currentTrack} />
       </Link>
 
       <div

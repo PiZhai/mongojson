@@ -37,7 +37,7 @@ export const musicModule = {
   backend: [{
     id: 'music-catalog-api',
     required: true,
-    endpoints: ['/api/music/tracks', '/api/music/tracks/:id/content', '/api/music/tracks/:id/lyrics'],
+    endpoints: ['/api/music/tracks', '/api/music/tracks/:id/content', '/api/music/tracks/:id/lyrics', '/api/music/tracks/:id/artwork'],
   }],
   standalone: { supported: true },
 } satisfies ToolModuleManifest
