@@ -264,6 +264,13 @@ function Set-ReleaseAuthenticodeSignature {
     [string]$TimestampURL
   )
   foreach ($path in $Paths) {
+    # Windows Authenticode may interpret a BOM-less PowerShell script with the
+    # active ANSI code page while appending its signature block. Preserve any
+    # non-ASCII text by making the script encoding explicit before signing.
+    if ([IO.Path]::GetExtension($path).Equals(".ps1", [StringComparison]::OrdinalIgnoreCase)) {
+      $scriptText = [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false, $true))
+      [IO.File]::WriteAllText($path, $scriptText, [Text.UTF8Encoding]::new($true))
+    }
     $parameters = @{ FilePath = $path; Certificate = $Certificate; HashAlgorithm = "SHA256" }
     if (-not [string]::IsNullOrWhiteSpace($TimestampURL)) {
       $parameters.TimestampServer = $TimestampURL
@@ -274,6 +281,14 @@ function Set-ReleaseAuthenticodeSignature {
     }
     if (-not [string]::IsNullOrWhiteSpace($TimestampURL) -and $null -eq $signature.TimeStamperCertificate) {
       throw "Authenticode signing did not produce a trusted timestamp for '$path'"
+    }
+    if ([IO.Path]::GetExtension($path).Equals(".ps1", [StringComparison]::OrdinalIgnoreCase)) {
+      $tokens = $null
+      $parseErrors = $null
+      [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors) | Out-Null
+      if (@($parseErrors).Count -gt 0) {
+        throw "Authenticode signing produced an invalid PowerShell script '$path': $($parseErrors[0].Message)"
+      }
     }
   }
 }

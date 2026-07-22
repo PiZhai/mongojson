@@ -33,6 +33,13 @@ Describe 'Steward production release supply-chain contracts' {
     $verify.Contains('package catalog signature does not contain a trusted timestamp')|Should Be $true
   }
 
+  It 'preserves non-ASCII PowerShell scripts while Authenticode signing' {
+    $build=Read-DeployScript 'build-steward.ps1'
+    $build.Contains('[Text.UTF8Encoding]::new($true)')|Should Be $true
+    $build.Contains('[Management.Automation.Language.Parser]::ParseFile')|Should Be $true
+    $build.Contains('Authenticode signing produced an invalid PowerShell script')|Should Be $true
+  }
+
   It 'rejects unsupported HTTPS timestamp URLs before release assembly' {
     $build=Read-DeployScript 'build-steward.ps1'
     $build.Contains('Resolve-ReleaseTimestampServer')|Should Be $true
