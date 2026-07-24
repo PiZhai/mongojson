@@ -21,6 +21,7 @@ import (
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
 	"mongojson/backend/internal/service/memosync"
+	"mongojson/backend/internal/service/mongoreview"
 	"mongojson/backend/internal/service/music"
 	"mongojson/backend/internal/service/presets"
 	"mongojson/backend/internal/service/steward"
@@ -86,6 +87,12 @@ func NewServer() (*Server, error) {
 	memoSyncHub := memosync.NewHub()
 	musicService := music.NewService(db, fileStore)
 	canvasService := canvas.NewService(db, fileStore)
+	mongoReviewService := mongoreview.NewService(
+		db,
+		cfg.MongoReviewAnalyzerURL,
+		cfg.MongoReviewRepositoryRoot,
+		cfg.MongoReviewEncryptionKey,
+	)
 	watchSyncHub := watchsync.NewHub()
 	var stewardService *steward.Service
 	var stewardDaemon *steward.Daemon
@@ -112,8 +119,9 @@ func NewServer() (*Server, error) {
 		CanvasService:      canvasService,
 		PresetService:      presetService,
 		WatchSync:          watchSyncHub,
-		Readiness:          readinessChecker(cfg, db, worker, stewardDaemon, peerDiscovery),
+		Readiness:          readinessChecker(cfg, db, worker, stewardDaemon, peerDiscovery, mongoReviewService),
 		ManagementSessions: db,
+		MongoReviewService: mongoReviewService,
 		StewardDisabled:    stewardDisabled,
 	}
 	if stewardService != nil {
@@ -159,7 +167,14 @@ func NewServer() (*Server, error) {
 	}, nil
 }
 
-func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker, stewardDaemon *steward.Daemon, peerDiscovery *peerdiscovery.Manager) func(context.Context) (map[string]string, error) {
+func readinessChecker(
+	cfg config.Config,
+	db *database.DB,
+	worker *jobs.Worker,
+	stewardDaemon *steward.Daemon,
+	peerDiscovery *peerdiscovery.Manager,
+	mongoReviewService *mongoreview.Service,
+) func(context.Context) (map[string]string, error) {
 	return func(ctx context.Context) (map[string]string, error) {
 		checks := map[string]string{}
 		var failures []string
@@ -183,6 +198,15 @@ func readinessChecker(cfg config.Config, db *database.DB, worker *jobs.Worker, s
 		} else {
 			checks["worker"] = "error: not running"
 			failures = append(failures, "worker")
+		}
+
+		if mongoReviewService == nil {
+			checks["mongo_script_analyzer"] = "disabled"
+		} else if err := mongoReviewService.AnalyzerHealth(ctx); err != nil {
+			checks["mongo_script_analyzer"] = "error: unavailable"
+			failures = append(failures, "mongo_script_analyzer")
+		} else {
+			checks["mongo_script_analyzer"] = "ok"
 		}
 
 		if stewardDaemon == nil {

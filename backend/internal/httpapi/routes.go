@@ -20,6 +20,7 @@ import (
 	"mongojson/backend/internal/service/jobs"
 	"mongojson/backend/internal/service/memo"
 	"mongojson/backend/internal/service/memosync"
+	"mongojson/backend/internal/service/mongoreview"
 	"mongojson/backend/internal/service/music"
 	"mongojson/backend/internal/service/presets"
 	"mongojson/backend/internal/service/steward"
@@ -279,6 +280,7 @@ type Dependencies struct {
 	WatchSync          *watchsync.Hub
 	Readiness          func(context.Context) (map[string]string, error)
 	ManagementSessions managementSessionStore
+	MongoReviewService *mongoreview.Service
 	StewardDisabled    bool
 }
 
@@ -347,6 +349,25 @@ func RegisterManagementRoutes(router chi.Router, deps Dependencies) {
 		r.Delete("/canvas/boards/{id}", handler.deleteCanvasBoard)
 		r.Post("/canvas/boards/{id}/assets", handler.uploadCanvasAsset)
 		r.Get("/canvas/assets/{id}/content", handler.streamCanvasAsset)
+		r.Get("/mongodb-review/environments", handler.listMongoReviewEnvironments)
+		r.Put("/mongodb-review/environments/{environment}", handler.saveMongoReviewEnvironment)
+		r.Post("/mongodb-review/environments/{environment}/test", handler.testMongoReviewEnvironment)
+		r.Get("/mongodb-review/query-rules", handler.listMongoReviewRules)
+		r.Post("/mongodb-review/query-rules", handler.saveMongoReviewRule)
+		r.Delete("/mongodb-review/query-rules/{id}", handler.deleteMongoReviewRule)
+		r.Get("/mongodb-review/repository/index", handler.listMongoReviewRepositoryIndex)
+		r.Get("/mongodb-review/repository/tasks/{taskKey}", handler.getMongoReviewRepositoryTask)
+		r.Get("/mongodb-review/repository/files", handler.listMongoReviewRepositoryFiles)
+		r.Post("/mongodb-review/repository/files", handler.createMongoReviewRepositoryFile)
+		r.Get("/mongodb-review/repository/content", handler.readMongoReviewRepositoryFile)
+		r.Post("/mongodb-review/parse", handler.parseMongoReviewScript)
+		r.Get("/mongodb-review/scripts", handler.listMongoReviewScripts)
+		r.Post("/mongodb-review/scripts", handler.saveMongoReviewScript)
+		r.Get("/mongodb-review/scripts/{id}", handler.getMongoReviewScript)
+		r.Delete("/mongodb-review/scripts/{id}", handler.deleteMongoReviewScript)
+		r.Post("/mongodb-review/reviews", handler.startMongoReview)
+		r.Get("/mongodb-review/reviews/{id}", handler.getMongoReview)
+		r.Get("/mongodb-review/reviews/{id}/events", handler.streamMongoReviewEvents)
 		r.Post("/jobs", handler.createJob)
 		r.Get("/jobs/{id}", handler.getJob)
 		r.Get("/presets", handler.listPresets)

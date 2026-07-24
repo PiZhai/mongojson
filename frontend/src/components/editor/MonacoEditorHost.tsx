@@ -13,9 +13,15 @@ export function MonacoEditorHost({
   height = '100%',
   focusLine = null,
   diagnostics = [],
+  allowParentWheelScroll = false,
 }: CodeEditorProps) {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof Monaco | null>(null)
+  const wheelCleanupRef = useRef<(() => void) | null>(null)
+
+  useEffect(() => () => {
+    wheelCleanupRef.current?.()
+  }, [])
 
   useEffect(() => {
     if (!focusLine || !editorRef.current) return
@@ -71,6 +77,54 @@ export function MonacoEditorHost({
       onMount={(editor, monaco) => {
         editorRef.current = editor
         monacoRef.current = monaco
+        wheelCleanupRef.current?.()
+        wheelCleanupRef.current = null
+
+        if (allowParentWheelScroll) {
+          const editorNode = editor.getDomNode()
+          const handleBoundaryWheel = (event: WheelEvent) => {
+            if (!editorNode || event.deltaY === 0) return
+
+            const scrollTop = editor.getScrollTop()
+            const maxScrollTop = Math.max(0, editor.getScrollHeight() - editor.getLayoutInfo().height)
+            const isLeavingTop = event.deltaY < 0 && scrollTop <= 1
+            const isLeavingBottom = event.deltaY > 0 && scrollTop >= maxScrollTop - 1
+            if (!isLeavingTop && !isLeavingBottom) return
+
+            let scrollParent = editorNode.parentElement
+            while (scrollParent) {
+              const { overflowY } = window.getComputedStyle(scrollParent)
+              if (
+                (overflowY === 'auto' || overflowY === 'scroll') &&
+                scrollParent.scrollHeight > scrollParent.clientHeight
+              ) {
+                break
+              }
+              scrollParent = scrollParent.parentElement
+            }
+            if (!scrollParent) return
+
+            const deltaMultiplier =
+              event.deltaMode === WheelEvent.DOM_DELTA_LINE
+                ? 16
+                : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+                  ? scrollParent.clientHeight
+                  : 1
+
+            event.preventDefault()
+            event.stopPropagation()
+            scrollParent.scrollTop += event.deltaY * deltaMultiplier
+          }
+
+          editorNode?.addEventListener('wheel', handleBoundaryWheel, {
+            capture: true,
+            passive: false,
+          })
+          wheelCleanupRef.current = () => {
+            editorNode?.removeEventListener('wheel', handleBoundaryWheel, { capture: true })
+          }
+        }
+
         if (editor.getModel()) {
           monaco.editor.setModelMarkers(editor.getModel()!, language, [])
         }
@@ -85,6 +139,7 @@ export function MonacoEditorHost({
         wordWrap: 'on',
         scrollBeyondLastLine: false,
         smoothScrolling: true,
+        scrollbar: { alwaysConsumeMouseWheel: true },
         padding: { top: 16, bottom: 16 },
         fontFamily: "'JetBrains Mono', 'SFMono-Regular', 'SF Mono', Menlo, Consolas, monospace",
       }}

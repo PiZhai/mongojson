@@ -9,7 +9,7 @@ require_command docker
 
 ensure_runtime_files
 
-compose restart postgres backend frontend nginx
+compose restart postgres mongo-script-analyzer backend frontend nginx
 print_status
 wait_for_url "$HEALTH_URL" "healthz"
 wait_for_url "$READY_URL" "readyz"

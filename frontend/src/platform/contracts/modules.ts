@@ -4,6 +4,7 @@ export type ToolModuleId =
   | 'inspect'
   | 'json'
   | 'mongo-json'
+  | 'mongo-review'
   | 'visualize'
   | 'memo-docs'
   | 'music'

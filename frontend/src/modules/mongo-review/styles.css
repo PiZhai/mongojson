@@ -1,0 +1,615 @@
+.mongo-review-page {
+  align-content: start;
+  padding-bottom: 24px;
+}
+
+.mongo-review-tabs,
+.mongo-review-source-bar,
+.mongo-review-manual-create,
+.mongo-review-editor-card,
+.mongo-review-side-panel,
+.mongo-review-result-panel,
+.mongo-review-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-glass-strong);
+  box-shadow: var(--shadow-soft);
+}
+
+.mongo-review-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 5px;
+}
+
+.mongo-review-tabs button {
+  min-height: 34px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.mongo-review-tabs button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.mongo-review-source-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding: 12px;
+}
+
+.mongo-review-source-bar label {
+  min-width: 240px;
+  flex: 1;
+}
+
+.mongo-review-manual-create {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr)) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px;
+}
+
+.mongo-review-manual-create > div {
+  grid-column: 1 / -1;
+}
+
+.mongo-review-manual-create p,
+.mongo-review-statement-list-heading p {
+  margin: 4px 0 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.mongo-review-statement-list {
+  display: grid;
+  gap: 16px;
+  position: relative;
+}
+
+.mongo-review-statement-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 2px;
+}
+
+.mongo-review-statement-list-heading > span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.mongo-review-statement-row {
+  display: grid;
+  grid-template-columns: minmax(520px, 1fr) minmax(280px, 360px);
+  height: clamp(620px, calc(100vh - 290px), 920px);
+  min-width: 850px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-glass-strong);
+  box-shadow: var(--shadow-soft);
+  scroll-margin-top: 18px;
+}
+
+.mongo-review-statement-code {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+
+.mongo-review-statement-code > .editor-host {
+  min-height: 0;
+}
+
+.mongo-review-statement-code > header {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 68px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mongo-review-statement-code > header span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.mongo-review-statement-code > header code {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mongo-review-statement-detail {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 16px;
+  background: var(--surface-raised);
+}
+
+.mongo-review-statement-operation {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mongo-review-statement-operation span,
+.mongo-review-statement-detail h3 {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.mongo-review-statement-detail section {
+  display: grid;
+  gap: 5px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border);
+}
+
+.mongo-review-statement-detail p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.mongo-review-open-statement {
+  align-self: end;
+  width: 100%;
+  margin-top: auto;
+}
+
+.mongo-review-statement-navigation {
+  position: fixed;
+  z-index: 30;
+  top: 50%;
+  right: 26px;
+  display: grid;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-glass-strong) 92%, transparent);
+  box-shadow: 0 10px 30px rgb(15 23 42 / 18%);
+  backdrop-filter: blur(12px);
+  transform: translateY(-50%);
+}
+
+.mongo-review-statement-navigation button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--accent-strong);
+  cursor: pointer;
+}
+
+.mongo-review-statement-navigation button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.mongo-review-statement-navigation button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.mongo-review-statement-navigation button:disabled {
+  opacity: 0.35;
+}
+
+.mongo-review-statement-navigation svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.mongo-review-page label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mongo-review-page input,
+.mongo-review-page select {
+  min-height: 36px;
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 10px;
+}
+
+.mongo-review-page input:focus,
+.mongo-review-page select:focus {
+  outline: 3px solid var(--focus-ring);
+  border-color: var(--accent);
+}
+
+.mongo-review-main-grid {
+  display: grid;
+  grid-template-columns: minmax(520px, 1fr) minmax(300px, 360px);
+  gap: 14px;
+  min-width: 850px;
+}
+
+.mongo-review-editor-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mongo-review-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mongo-review-title-input {
+  max-width: 420px;
+  font-weight: 650;
+}
+
+.mongo-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.mongo-review-page .primary-button,
+.mongo-review-page .secondary-button,
+.mongo-review-page .text-button {
+  min-height: 34px;
+  padding: 0 13px;
+  border-radius: 7px;
+  font-weight: 600;
+}
+
+.mongo-review-page .primary-button {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.mongo-review-page .secondary-button {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-secondary);
+}
+
+.mongo-review-page button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mongo-review-side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  max-height: 616px;
+  overflow: auto;
+}
+
+.mongo-review-side-panel section {
+  display: grid;
+  gap: 10px;
+}
+
+.mongo-review-page h2 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.mongo-review-env-options {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.mongo-review-env-options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-raised);
+}
+
+.mongo-review-env-options input {
+  width: 15px;
+  min-height: 15px;
+}
+
+.mongo-review-env-options .is-disabled {
+  opacity: 0.48;
+}
+
+.mongo-review-operation {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--success);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.mongo-review-operation.is-uncertain {
+  border-left-color: var(--warning);
+}
+
+.mongo-review-operation > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mongo-review-operation p,
+.mongo-review-result-card p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.mongo-review-uncertain,
+.mongo-review-diagnostic {
+  color: var(--warning) !important;
+}
+
+.mongo-review-run-button {
+  position: sticky;
+  bottom: 0;
+  width: 100%;
+  min-height: 42px !important;
+}
+
+.mongo-review-message {
+  padding: 10px 13px;
+  border: 1px solid #b8d9ff;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.mongo-review-result-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.mongo-review-results {
+  display: grid;
+  gap: 10px;
+}
+
+.mongo-review-review-status,
+.mongo-review-result-card > header,
+.mongo-review-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mongo-review-review-status span,
+.mongo-review-result-card > header > span,
+.mongo-review-muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.mongo-review-result-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.mongo-review-result-card > header > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.mongo-review-status-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mongo-review-status-badge.is-error,
+.mongo-review-status-badge.is-failed,
+.mongo-review-status-badge.is-non_unique {
+  background: #fff0f2;
+  color: var(--error);
+}
+
+.mongo-review-status-badge.is-uncertain,
+.mongo-review-status-badge.is-skipped {
+  background: #fff6df;
+  color: var(--warning);
+}
+
+.mongo-review-document {
+  display: grid;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.mongo-review-difference {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.5fr) 90px minmax(220px, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background: #fff8e8;
+  border-left: 3px solid var(--warning);
+}
+
+.mongo-review-difference pre,
+.mongo-review-document details pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: 12px/1.5 var(--font-mono);
+}
+
+.mongo-review-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.mongo-review-card {
+  display: grid;
+  gap: 13px;
+  padding: 16px;
+}
+
+.mongo-review-card-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mongo-review-env-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.mongo-review-env-dot.is-ready {
+  background: var(--success);
+}
+
+.mongo-review-inline-status {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.mongo-review-rule-layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 0.75fr) minmax(420px, 1.25fr);
+  gap: 14px;
+}
+
+.mongo-review-mappings,
+.mongo-review-rule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mongo-review-mapping-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.mongo-review-rule-list article {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.6fr) minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.mongo-review-rule-list article > div {
+  display: grid;
+}
+
+.mongo-review-rule-list article span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.mongo-review-page .text-button {
+  border: 0;
+  background: transparent;
+}
+
+.mongo-review-page .text-button.danger {
+  color: var(--error);
+}
+
+.mongo-review-empty {
+  margin: 0;
+  padding: 14px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+@container (max-width: 760px) {
+  .mongo-review-settings-grid,
+  .mongo-review-rule-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .mongo-review-manual-create {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mongo-review-main-grid {
+    grid-template-columns: minmax(520px, 1fr) 320px;
+  }
+
+  .mongo-review-statement-row {
+    grid-template-columns: minmax(520px, 1fr) 320px;
+  }
+}

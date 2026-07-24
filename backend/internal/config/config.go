@@ -14,17 +14,20 @@ import (
 )
 
 type Config struct {
-	HTTPAddr                 string
-	PeerHTTPAddr             string
-	AllowRemoteManagement    bool
-	ManagementAuthRequired   bool
-	ManagementAuthToken      string
-	ManagementAllowedOrigins []string
-	DatabaseURL              string
-	StorageDir               string
-	StewardUIDir             string
-	FileRetention            time.Duration
-	DisabledModules          map[string]bool
+	HTTPAddr                  string
+	PeerHTTPAddr              string
+	AllowRemoteManagement     bool
+	ManagementAuthRequired    bool
+	ManagementAuthToken       string
+	ManagementAllowedOrigins  []string
+	DatabaseURL               string
+	StorageDir                string
+	StewardUIDir              string
+	FileRetention             time.Duration
+	DisabledModules           map[string]bool
+	MongoReviewAnalyzerURL    string
+	MongoReviewRepositoryRoot string
+	MongoReviewEncryptionKey  string
 }
 
 const DefaultHTTPAddr = "127.0.0.1:18080"
@@ -61,17 +64,20 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		HTTPAddr:                 strings.TrimSpace(getenv("HTTP_ADDR", DefaultHTTPAddr)),
-		PeerHTTPAddr:             strings.TrimSpace(os.Getenv("STEWARD_PEER_HTTP_ADDR")),
-		AllowRemoteManagement:    allowRemoteManagement,
-		ManagementAuthRequired:   managementAuthRequired || managementAuthToken != "" || allowRemoteManagement || restrictedService,
-		ManagementAuthToken:      managementAuthToken,
-		ManagementAllowedOrigins: managementAllowedOrigins,
-		DatabaseURL:              getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/mongojson?sslmode=disable"),
-		StorageDir:               getenv("STORAGE_DIR", "./data"),
-		StewardUIDir:             strings.TrimSpace(os.Getenv("STEWARD_UI_DIR")),
-		FileRetention:            time.Duration(retentionHours) * time.Hour,
-		DisabledModules:          disabledModules,
+		HTTPAddr:                  strings.TrimSpace(getenv("HTTP_ADDR", DefaultHTTPAddr)),
+		PeerHTTPAddr:              strings.TrimSpace(os.Getenv("STEWARD_PEER_HTTP_ADDR")),
+		AllowRemoteManagement:     allowRemoteManagement,
+		ManagementAuthRequired:    managementAuthRequired || managementAuthToken != "" || allowRemoteManagement || restrictedService,
+		ManagementAuthToken:       managementAuthToken,
+		ManagementAllowedOrigins:  managementAllowedOrigins,
+		DatabaseURL:               getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/mongojson?sslmode=disable"),
+		StorageDir:                getenv("STORAGE_DIR", "./data"),
+		StewardUIDir:              strings.TrimSpace(os.Getenv("STEWARD_UI_DIR")),
+		FileRetention:             time.Duration(retentionHours) * time.Hour,
+		DisabledModules:           disabledModules,
+		MongoReviewAnalyzerURL:    strings.TrimRight(getenv("MONGODB_REVIEW_ANALYZER_URL", "http://127.0.0.1:8090"), "/"),
+		MongoReviewRepositoryRoot: strings.TrimSpace(getenv("MONGODB_REVIEW_REPOSITORY_ROOT", "/Users/administrator/GolandProjects/script")),
+		MongoReviewEncryptionKey:  strings.TrimSpace(os.Getenv("MONGODB_REVIEW_ENCRYPTION_KEY")),
 	}
 
 	if cfg.DatabaseURL == "" {

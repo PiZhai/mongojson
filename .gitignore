@@ -11,6 +11,9 @@ frontend/dist/
 frontend/test-results/
 frontend/playwright-report/
 
+# MongoDB script analyzer
+analyzer/node_modules/
+
 # Backend
 backend/.env
 backend/data/

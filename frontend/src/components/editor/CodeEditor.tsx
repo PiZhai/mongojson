@@ -14,6 +14,7 @@ export type CodeEditorProps = {
   height?: string
   focusLine?: number | null
   diagnostics?: MongoDiagnostic[]
+  allowParentWheelScroll?: boolean
 }
 
 export function CodeEditor({
@@ -25,6 +26,7 @@ export function CodeEditor({
   height = '100%',
   focusLine = null,
   diagnostics = [],
+  allowParentWheelScroll = false,
 }: CodeEditorProps) {
   return (
     <div className="editor-host layout-cell" data-layout-region="editor-host">
@@ -44,6 +46,7 @@ export function CodeEditor({
           readOnly={readOnly}
           value={value}
           diagnostics={diagnostics}
+          allowParentWheelScroll={allowParentWheelScroll}
         />
       </Suspense>
     </div>

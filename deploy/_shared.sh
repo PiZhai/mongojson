@@ -174,6 +174,14 @@ ensure_image_env() {
   if env_has_placeholder_value "FRONTEND_IMAGE" "replace_with_frontend_image"; then
     die "Set FRONTEND_IMAGE in $ENV_FILE before deploying."
   fi
+
+  if env_has_placeholder_value "ANALYZER_IMAGE" "replace_with_analyzer_image"; then
+    die "Set ANALYZER_IMAGE in $ENV_FILE before deploying."
+  fi
+
+  if env_has_placeholder_value "MONGODB_REVIEW_ENCRYPTION_KEY" "replace_with_random_32_byte_secret"; then
+    die "Set MONGODB_REVIEW_ENCRYPTION_KEY in $ENV_FILE before deploying."
+  fi
 }
 
 create_default_dirs() {
@@ -183,6 +191,7 @@ create_default_dirs() {
     "$TLS_DIR" \
     "$DATA_DIR/postgres" \
     "$DATA_DIR/backend" \
+    "$BASE_DIR/scripts" \
     "$LOG_DIR" \
     "$BACKUP_DIR"
   chmod 700 "$ENV_DIR" "$TLS_DIR"

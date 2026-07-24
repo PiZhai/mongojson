@@ -13,6 +13,8 @@ STEWARD_MANAGEMENT_AUTH_TOKEN="${STEWARD_MANAGEMENT_AUTH_TOKEN:-}"
 STEWARD_PUBLIC_ORIGIN="${STEWARD_PUBLIC_ORIGIN:-}"
 BACKEND_IMAGE="${BACKEND_IMAGE:-}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-}"
+ANALYZER_IMAGE="${ANALYZER_IMAGE:-}"
+MONGODB_REVIEW_ENCRYPTION_KEY="${MONGODB_REVIEW_ENCRYPTION_KEY:-}"
 
 require_command git
 require_command docker
@@ -73,6 +75,20 @@ if env_has_placeholder_value "FRONTEND_IMAGE" "replace_with_frontend_image"; the
   log "Updated FRONTEND_IMAGE in $ENV_FILE"
 fi
 
+if env_has_placeholder_value "ANALYZER_IMAGE" "replace_with_analyzer_image"; then
+  [[ -n "$ANALYZER_IMAGE" ]] || die "Set ANALYZER_IMAGE before first deploy, or edit $ENV_FILE manually."
+  replace_env_value "ANALYZER_IMAGE" "$ANALYZER_IMAGE"
+  log "Updated ANALYZER_IMAGE in $ENV_FILE"
+fi
+
+if env_has_placeholder_value "MONGODB_REVIEW_ENCRYPTION_KEY" "replace_with_random_32_byte_secret"; then
+  if [[ -z "$MONGODB_REVIEW_ENCRYPTION_KEY" ]]; then
+    MONGODB_REVIEW_ENCRYPTION_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+  replace_env_value "MONGODB_REVIEW_ENCRYPTION_KEY" "$MONGODB_REVIEW_ENCRYPTION_KEY"
+  log "Generated and stored MONGODB_REVIEW_ENCRYPTION_KEY in the protected env file"
+fi
+
 if [[ ! -f "$HTPASSWD_FILE" ]]; then
   [[ -n "$BASIC_AUTH_PASSWORD" ]] || die "Set BASIC_AUTH_PASSWORD before first deploy, or create $HTPASSWD_FILE manually."
   htpasswd -bc "$HTPASSWD_FILE" "$BASIC_AUTH_USER" "$BASIC_AUTH_PASSWORD"
@@ -81,7 +97,7 @@ fi
 
 ensure_image_env
 ensure_runtime_files
-compose pull backend frontend nginx postgres
+compose pull backend frontend mongo-script-analyzer nginx postgres
 compose up -d
 restart_nginx_gateway
 print_status

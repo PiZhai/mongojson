@@ -173,6 +173,51 @@ func (db *DB) Migrate(ctx context.Context) error {
 			created_at timestamptz not null default now(),
 			unique(board_id, canvas_file_id)
 		);`,
+		`create table if not exists mongodb_review_environments (
+			environment text primary key check (environment in ('demo', 'test', 'stag', 'prod')),
+			connection_uri_cipher bytea not null,
+			database_name text not null,
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists mongodb_review_query_rules (
+			id uuid primary key,
+			name text not null,
+			collection_name text not null,
+			field_mappings jsonb not null default '[]'::jsonb,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique(collection_name, name)
+		);`,
+		`create table if not exists mongodb_review_scripts (
+			id uuid primary key,
+			title text not null,
+			source text not null,
+			origin_path text,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);`,
+		`create table if not exists mongodb_review_operations (
+			id text primary key,
+			script_id uuid not null references mongodb_review_scripts(id) on delete cascade,
+			operation_index integer not null,
+			operation_type text not null,
+			collection_name text not null default '',
+			description text not null default '',
+			parse_payload jsonb not null default '{}'::jsonb,
+			unique(script_id, operation_index)
+		);`,
+		`create table if not exists mongodb_review_summaries (
+			id uuid primary key,
+			script_id uuid references mongodb_review_scripts(id) on delete set null,
+			status text not null,
+			environment_names jsonb not null default '[]'::jsonb,
+			operation_count integer not null default 0,
+			error_message text,
+			created_at timestamptz not null default now(),
+			finished_at timestamptz
+		);`,
+		`create index if not exists idx_mongodb_review_scripts_updated_at on mongodb_review_scripts(updated_at desc);`,
+		`create index if not exists idx_mongodb_review_rules_collection on mongodb_review_query_rules(collection_name);`,
 		`create index if not exists idx_tool_jobs_status on tool_jobs(status);`,
 		`create index if not exists idx_tool_files_expires_at on tool_files(expires_at);`,
 		`create index if not exists idx_music_tracks_created_at_id on music_tracks(created_at desc, id desc);`,

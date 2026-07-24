@@ -14,12 +14,29 @@ services:
     volumes:
       - /opt/personal-tooling/data/postgres:/var/lib/postgresql/data
 
+  mongo-script-analyzer:
+    image: ${ANALYZER_IMAGE:?set ANALYZER_IMAGE}
+    restart: unless-stopped
+    expose:
+      - "8090"
+    networks:
+      - mongo_review_internal
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+
   backend:
     image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      mongo-script-analyzer:
+        condition: service_started
     environment:
       HTTP_ADDR: :8080
       APP_DISABLED_MODULES: ${APP_DISABLED_MODULES:-}
@@ -30,8 +47,15 @@ services:
       DATABASE_URL: postgres://tooling_app:${POSTGRES_PASSWORD}@postgres:5432/mongojson?sslmode=disable
       STORAGE_DIR: /app/data
       FILE_RETENTION_HOURS: 24
+      MONGODB_REVIEW_ANALYZER_URL: http://mongo-script-analyzer:8090
+      MONGODB_REVIEW_ENCRYPTION_KEY: ${MONGODB_REVIEW_ENCRYPTION_KEY:?set MONGODB_REVIEW_ENCRYPTION_KEY}
+      MONGODB_REVIEW_REPOSITORY_ROOT: /scripts
     volumes:
       - /opt/personal-tooling/data/backend:/app/data
+      - ${MONGODB_REVIEW_REPOSITORY_HOST_PATH:-/opt/personal-tooling/scripts}:/scripts
+    networks:
+      - default
+      - mongo_review_internal
 
   frontend:
     image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE}
@@ -53,3 +77,6 @@ services:
       - /opt/personal-tooling/env/.htpasswd:/etc/nginx/conf.d/.htpasswd:ro
       - /opt/personal-tooling/env/tls:/etc/nginx/tls:ro
 
+networks:
+  mongo_review_internal:
+    internal: true
